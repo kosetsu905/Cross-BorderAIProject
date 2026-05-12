@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from fastapi_wrapper_master_orchestrator.models import JobStatus, WorkflowType
+from models import JobStatus, WorkflowType
 
 logger = logging.getLogger(__name__)
 

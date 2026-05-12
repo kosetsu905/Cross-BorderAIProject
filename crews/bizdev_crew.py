@@ -4,14 +4,14 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from pydantic import BaseModel, Field
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
+from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-CONFIG_DIR = BASE_DIR / "config"
+CONFIG_DIR = BASE_DIR / "config" / "business_development"
 DEFAULT_MODEL = "gpt-4o-mini"
 
-from business_development.tools.bizdev_tools import (
+from tools.custom.bizdev_tools import (
     B2BLeadLookupTool,
     CRMFormatterTool,
     OutreachToneValidator,
@@ -97,8 +97,8 @@ def run_bizdev_crew(inputs: dict[str, Any]) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
     os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
 
-    agents_config = _load_yaml_config("bizdev_agents.yaml")
-    tasks_config = _load_yaml_config("bizdev_tasks.yaml")
+    agents_config = _load_yaml_config("agents.yaml")
+    tasks_config = _load_yaml_config("tasks.yaml")
 
     prospector = Agent(
         config=agents_config["lead_prospector"],

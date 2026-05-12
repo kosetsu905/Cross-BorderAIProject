@@ -1,6 +1,33 @@
+import logging
+
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from fastapi_wrapper_master_orchestrator.main import app
+from api.routes import create_router
+from crews.bizdev_crew import run_bizdev_crew
+from models import WorkflowType
+from orchestrator import MasterOrchestrator
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
+orchestrator = MasterOrchestrator()
+orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(create_router(orchestrator))
 
 
 if __name__ == "__main__":
