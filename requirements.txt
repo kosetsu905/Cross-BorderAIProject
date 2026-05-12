@@ -1,0 +1,10 @@
+crewai
+crewai-tools
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+PyYAML
+redis
+celery
+httpx

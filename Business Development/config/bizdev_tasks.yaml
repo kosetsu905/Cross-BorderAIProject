@@ -1,0 +1,24 @@
+lead_research:
+  description: >
+    Research and identify top {partnership_type} prospects in {target_markets} for {product_category}.
+    Extract company profiles, key decision-makers, recent business developments, and strategic alignment scores.
+  expected_output: "A curated list of high-potential leads with company details, contact roles, market position, and partnership fit rationale."
+
+strategy_mapping:
+  description: >
+    Using the lead research, develop customized partnership value propositions and engagement angles for {target_markets}.
+    Define mutual benefits, revenue models, co-marketing opportunities, and localized positioning strategies.
+  expected_output: "A partnership strategy blueprint with value propositions, engagement frameworks, and region-specific opportunity mappings."
+
+outreach_creation:
+  description: >
+    Craft personalized, multi-touch outreach sequences for {key_decision_maker_roles} in {target_markets}.
+    Generate platform-specific messages (Email, LinkedIn, WhatsApp/WeChat where applicable) in {target_languages}.
+    Ensure cultural appropriateness, clear CTAs, and compliance with regional outreach regulations.
+  expected_output: "A complete multi-channel outreach sequence with localized touchpoints, subject lines, body copy, and follow-up triggers."
+
+pipeline_sync:
+  description: >
+    Format the lead research, partnership strategy, and outreach sequences into a structured CRM-ready payload.
+    Define a 30-day follow-up cadence, add compliance/QA notes, and map data fields to standard CRM schemas.
+  expected_output: "A production-ready JSON payload for CRM import, structured follow-up calendar, and compliance verification notes."
