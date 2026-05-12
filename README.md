@@ -82,7 +82,10 @@ The project expects a root-level `.env` file:
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL_NAME=gpt-4o-mini
 SERPER_API_KEY=optional_serper_key
+CREWAI_MEMORY_ENABLED=false
 ```
+
+`CREWAI_MEMORY_ENABLED` defaults to `false`. Turn it on only after your OpenAI account/key can use the embeddings endpoint required by CrewAI memory.
 
 ## No-Token Checks
 
@@ -121,8 +124,31 @@ Expected shape:
 
 This request starts the CrewAI workflow and may consume OpenAI API tokens.
 
+PowerShell recommended:
+
 ```powershell
-curl -X POST http://localhost:8000/api/v1/workflow `
+$body = @{
+  workflow_type = "bizdev"
+  inputs = @{
+    product_category = "Smart Home Security Cameras"
+    partnership_type = "Regional Distributors & Retail Partners"
+    target_markets = "Germany, Japan, Canada"
+    target_languages = @("de", "ja", "en")
+    key_decision_maker_roles = "Head of Procurement, Channel Manager"
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+If you want curl syntax in PowerShell, use `curl.exe`, not `curl`:
+
+```powershell
+curl.exe -X POST http://localhost:8000/api/v1/workflow `
   -H "Content-Type: application/json" `
   -d '{
     "workflow_type": "bizdev",
