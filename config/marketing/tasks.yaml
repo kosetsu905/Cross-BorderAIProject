@@ -1,0 +1,26 @@
+market_research:
+  description: >
+    Conduct comprehensive research on the target product category ({product_category}) for the specified markets ({target_markets}).
+    Analyze competitor campaigns, identify trending keywords, audience pain points, and seasonal demand patterns.
+    Provide actionable insights for campaign positioning and messaging.
+  expected_output: "A structured market research report containing competitor analysis, keyword opportunities, audience insights, and regional demand trends."
+
+campaign_strategy:
+  description: >
+    Using the market research, develop a cross-border campaign strategy for {target_markets} with a budget of {budget}.
+    Define channel mix (Meta, Google, TikTok, Amazon Ads), budget allocation, bidding strategy, KPI targets, and launch timeline.
+  expected_output: "A detailed campaign strategy document outlining channel allocation, budget split, KPIs, timeline, and regional launch priorities."
+
+ad_copy_generation:
+  description: >
+    Generate platform-specific ad copy including headlines, primary text, descriptions, and CTAs for {target_markets}
+    based on the campaign strategy. Adapt tone and language for each region. Include three variants per platform/channel.
+    Ensure alignment with brand voice and product USP ({product_usp}).
+  expected_output: "A structured ad copy package with three variants per platform, localized for each target market, ready for A/B testing."
+
+compliance_qa_review:
+  description: >
+    Review the generated ad copy and campaign strategy for compliance with regional advertising laws such as GDPR and CCPA,
+    local e-commerce regulations, platform policies, and brand guidelines. Flag policy risks, suggest corrections, and provide
+    final approval status per market.
+  expected_output: "A compliance audit report with approval status, flagged issues, recommended edits, and a final ready-to-launch campaign package."

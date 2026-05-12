@@ -11,6 +11,8 @@ Cross-BorderAIProject/
 |   |   |-- agents.yaml
 |   |   `-- tasks.yaml
 |   |-- marketing/
+|   |   |-- agents.yaml
+|   |   `-- tasks.yaml
 |   |-- content/
 |   |-- support/
 |   |-- analytics/
@@ -20,9 +22,11 @@ Cross-BorderAIProject/
 |   |-- base/
 |   |-- integrations/
 |   `-- custom/
-|       `-- bizdev_tools.py
+|       |-- bizdev_tools.py
+|       `-- marketing_tools.py
 |-- crews/
-|   `-- bizdev_crew.py
+|   |-- bizdev_crew.py
+|   `-- marketing_crew.py
 |-- api/
 |   `-- routes.py
 |-- celery_worker/
@@ -56,16 +60,25 @@ docs/CrawAI Enterprise Solution high Level Design Document.docx
 docs/design_assets/
 ```
 
-## About The Marketing Crew Example
+## Marketing Workflow
 
 The `crews/marketing_crew.py` shown inside the original FastAPI wrapper note was an example of how another workflow would be registered with the master orchestrator. It is not Customer Service code and does not directly depend on the Customer Service workflow.
 
 It is related to `docs/original_code_notes/marketing_campaign_code.txt`: the Marketing Campaign note defines a standalone runnable CrewAI script, while the FastAPI wrapper note rewrites that idea as a callable `run_marketing_crew(inputs)` function so the master orchestrator can run it through `/api/v1/workflow`.
 
-Right now only the Business Development workflow has been converted into runnable Python code:
+Marketing has now been converted into runnable project code:
 
 ```text
-workflow_type = "bizdev"
+config/marketing/
+tools/custom/marketing_tools.py
+crews/marketing_crew.py
+```
+
+Registered workflow types:
+
+```text
+bizdev
+marketing
 ```
 
 ## Setup
@@ -92,7 +105,7 @@ CREWAI_MEMORY_ENABLED=false
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\tools\custom\bizdev_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\crews\marketing_crew.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -116,7 +129,7 @@ Expected shape:
 ```json
 {
   "status": "healthy",
-  "registered_workflows": ["bizdev"]
+  "registered_workflows": ["bizdev", "marketing"]
 }
 ```
 
@@ -166,4 +179,26 @@ Poll the returned job:
 
 ```powershell
 curl http://localhost:8000/api/v1/workflow/replace-with-real-job-id
+```
+
+## Run Marketing Campaign
+
+This request starts the Marketing CrewAI workflow and may consume OpenAI API tokens.
+
+```powershell
+$body = @{
+  workflow_type = "marketing"
+  inputs = @{
+    product_category = "Smart Home Security Cameras"
+    product_usp = "AI-powered motion detection, 4K resolution, privacy-first cloud storage"
+    target_markets = "US, UK, Germany, Japan"
+    budget = "$15,000 USD"
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
 ```
