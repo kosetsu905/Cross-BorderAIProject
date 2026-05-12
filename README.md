@@ -48,9 +48,19 @@ docs/original_code_notes/
 
 They are kept as source notes and implementation references. The runnable code is now in `config/`, `tools/`, `crews/`, `api/`, `models.py`, `orchestrator.py`, and `main.py`.
 
+The original high-level architecture note and design document are stored in:
+
+```text
+docs/high_level_architecture.txt
+docs/CrawAI Enterprise Solution high Level Design Document.docx
+docs/design_assets/
+```
+
 ## About The Marketing Crew Example
 
 The `crews/marketing_crew.py` shown inside the original FastAPI wrapper note was an example of how another workflow would be registered with the master orchestrator. It is not Customer Service code and does not directly depend on the Customer Service workflow.
+
+It is related to `docs/original_code_notes/marketing_campaign_code.txt`: the Marketing Campaign note defines a standalone runnable CrewAI script, while the FastAPI wrapper note rewrites that idea as a callable `run_marketing_crew(inputs)` function so the master orchestrator can run it through `/api/v1/workflow`.
 
 Right now only the Business Development workflow has been converted into runnable Python code:
 
