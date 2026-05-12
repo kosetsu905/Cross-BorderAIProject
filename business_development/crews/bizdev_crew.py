@@ -1,21 +1,21 @@
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, Field
+from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config"
 DEFAULT_MODEL = "gpt-4o-mini"
 
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-from tools.bizdev_tools import B2BLeadLookupTool, CRMFormatterTool, OutreachToneValidator
+from business_development.tools.bizdev_tools import (
+    B2BLeadLookupTool,
+    CRMFormatterTool,
+    OutreachToneValidator,
+)
 
 
 class LeadProfile(BaseModel):
