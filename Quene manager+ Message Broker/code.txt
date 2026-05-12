@@ -1,0 +1,298 @@
+
+2. celery_worker/celery_app.py
+
+import os
+import logging
+from celery import Celery
+from celery.signals import task_prerun, task_postrun, task_failure
+
+logger = logging.getLogger(__name__)
+
+# Initialize Celery
+celery_app = Celery(
+    "ecommerce_ai_suite",
+    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
+    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1"),
+    include=["celery_worker.tasks"]
+)
+
+# Production-optimized configuration
+celery_app.conf.update(
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+    task_track_started=True,
+    task_acks_late=True,              # Acknowledge after task completes
+    worker_prefetch_multiplier=1,     # Fair task distribution
+    task_default_retry_delay=30,
+    task_max_retries=3,
+    worker_max_tasks_per_child=500,   # Prevent memory leaks
+    result_expires=3600 * 24,         # Keep results for 24h
+)
+
+# Logging hooks
+@task_prerun.connect
+def task_prerun_handler(task_id, task, *args, **kwargs):
+    logger.info(f"🚀 Task {task.name} [{task_id}] started")
+
+@task_postrun.connect
+def task_postrun_handler(task_id, task, *args, **kwargs):
+    logger.info(f"✅ Task {task.name} [{task_id}] completed")
+
+@task_failure.connect
+def task_failure_handler(task_id, exception, *args, **kwargs):
+    logger.error(f"❌ Task {task_id} failed: {str(exception)}")
+
+
+ 3. celery_worker/tasks.py
+
+import logging
+from celery_worker.celery_app import celery_app
+from crews.marketing_crew import run_marketing_crew
+from crews.content_crew import run_content_crew
+from crews.support_crew import run_support_crew
+from crews.analytics_crew import run_analytics_crew
+from crews.sales_improvement_crew import run_sales_improvement_crew
+from crews.bizdev_crew import run_bizdev_crew
+from crews.scheduler_crew import run_scheduler_crew
+
+logger = logging.getLogger(__name__)
+
+# Time limits (seconds): soft=graceful warning, hard=force kill
+@celery_app.task(bind=True, name="workflow.marketing", soft_time_limit=1200, time_limit=1500)
+def run_marketing_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Initializing Marketing Crew..."})
+    try:
+        return run_marketing_crew(inputs)
+    except Exception as e:
+        logger.warning(f"Marketing task retrying... Error: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, name="workflow.content", soft_time_limit=1200, time_limit=1500)
+def run_content_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Generating localized content..."})
+    try:
+        return run_content_crew(inputs)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, name="workflow.support", soft_time_limit=900, time_limit=1200)
+def run_support_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Drafting & QA support response..."})
+    try:
+        return run_support_crew(inputs)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, name="workflow.analytics", soft_time_limit=1500, time_limit=1800)
+def run_analytics_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Aggregating platform metrics & benchmarking..."})
+    try:
+        return run_analytics_crew(inputs)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, name="workflow.sales_improvement", soft_time_limit=1200, time_limit=1500)
+def run_sales_improvement_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Analyzing funnel & generating CRO playbook..."})
+    try:
+        return run_sales_improvement_crew(inputs)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, name="workflow.bizdev", soft_time_limit=1200, time_limit=1500)
+def run_bizdev_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Prospecting leads & drafting outreach..."})
+    try:
+        return run_bizdev_crew(inputs)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, name="workflow.scheduler", soft_time_limit=900, time_limit=1200)
+def run_scheduler_task(self, inputs: dict) -> dict:
+    self.update_state(state="PROGRESS", meta={"status": "Mapping timezones & resolving conflicts..."})
+    try:
+        return run_scheduler_crew(inputs)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=60)
+
+
+
+4. Updated main.py (FastAPI + Celery Integration
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from celery.result import AsyncResult
+from celery_worker.celery_app import celery_app
+from models import WorkflowRequest, WorkflowType
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="2.0.0")
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
+)
+
+WORKFLOW_TASK_MAP = {
+    WorkflowType.MARKETING: "workflow.marketing",
+    WorkflowType.CONTENT: "workflow.content",
+    WorkflowType.SUPPORT: "workflow.support",
+    WorkflowType.ANALYTICS: "workflow.analytics",
+    WorkflowType.SALES_IMPROVEMENT: "workflow.sales_improvement",
+    WorkflowType.BIZDEV: "workflow.bizdev",
+    WorkflowType.SCHEDULER: "workflow.scheduler",
+}
+
+@app.post("/api/v1/workflow")
+async def trigger_workflow(req: WorkflowRequest):
+    task_name = WORKFLOW_TASK_MAP.get(req.workflow_type)
+    if not task_name:
+        raise HTTPException(400, detail="Invalid workflow_type")
+    
+    task = celery_app.send_task(task_name, args=[req.inputs])
+    return {"job_id": task.id, "status": "PENDING", "message": "Workflow queued successfully"}
+
+@app.get("/api/v1/workflow/{job_id}")
+async def get_workflow_status(job_id: str):
+    res = AsyncResult(job_id, app=celery_app)
+    
+    if res.state == "PENDING":
+        return {"job_id": job_id, "status": "PENDING", "result": None}
+    elif res.state == "PROGRESS":
+        return {"job_id": job_id, "status": "RUNNING", "result": res.info}
+    elif res.state == "SUCCESS":
+        return {"job_id": job_id, "status": "COMPLETED", "result": res.result}
+    elif res.state == "FAILURE":
+        return {"job_id": job_id, "status": "FAILED", "error": str(res.result)}
+    
+    return {"job_id": job_id, "status": res.state, "result": None}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "celery_broker": "redis", "registered_workflows": len(WORKFLOW_TASK_MAP)}
+
+
+
+
+5. docker-compose.yml
+
+
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["redis_data:/data"]
+    command: redis-server --save 60 1 --loglevel warning
+
+  fastapi:
+    build: .
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8000:8000"]
+    env_file: .env
+    depends_on: [redis]
+    volumes: [".:/app"]
+
+  celery_worker:
+    build: .
+    command: >
+      celery -A celery_worker.celery_app worker
+      --loglevel=info
+      --concurrency=4
+      --max-tasks-per-child=500
+    env_file: .env
+    depends_on: [redis]
+    volumes: [".:/app"]
+
+  flower:  # Optional: Celery monitoring dashboard
+    image: mher/flower:latest
+    command: ["flower", "--broker=redis://redis:6379/0", "--port=5555"]
+    ports: ["5555:5555"]
+    depends_on: [redis, celery_worker]
+
+volumes:
+  redis_data:
+
+
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Default command (override in docker-compose)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+
+
+
+ 6. Dockerfile
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Default command (override in docker-compose)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+7. requirements.txt Updates
+
+fastapi>=0.109.0
+uvicorn>=0.27.0
+celery[redis]>=5.3.6
+crewai>=0.28.8
+crewai-tools>=0.1.6
+pydantic>=2.6.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+
+
+#Setup & Run Instructions
+
+#Environment Variables (.env)
+
+OPENAI_API_KEY=sk-...
+SERPER_API_KEY=your_serper_key
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/1
+# Add other API keys as needed
+
+
+#Start Stack
+docker-compose up -d --build
+
+
+#Trigger Workflow
+curl -X POST http://localhost:8000/api/v1/workflow \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_type": "marketing", "inputs": {"product_category": "Smart Cameras", "target_markets": "US,UK,DE", "budget": "$15000"}}'
+
+
+#Poll Status
+curl http://localhost:8000/api/v1/workflow/<JOB_ID>

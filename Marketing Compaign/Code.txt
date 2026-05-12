@@ -1,0 +1,241 @@
+1. config/agents.yaml
+
+campaign_strategist:
+  role: "Senior E-commerce Campaign Strategist"
+  goal: "Develop data-driven, cross-border marketing campaign strategies that maximize ROI across target regions."
+  backstory: >
+    You are an expert in global e-commerce marketing. You analyze market trends, competitor strategies, and audience behavior 
+    to craft high-converting campaign blueprints. You specialize in Amazon, Shopify, TikTok Shop, and Meta/Google ecosystems, 
+    ensuring optimal budget allocation and channel mix for international markets.
+
+ad_copywriter:
+  role: "Multilingual E-commerce Ad Copywriter"
+  goal: "Generate high-converting, culturally adapted ad copy tailored to specific platforms and target regions."
+  backstory: >
+    You are a seasoned copywriter specializing in cross-border e-commerce. You craft compelling headlines, body text, and CTAs 
+    that resonate with local audiences while maintaining brand voice. You adapt messaging for different platforms (Meta, Google, TikTok) 
+    and ensure tone matches regional preferences.
+
+channel_optimizer:
+  role: "Digital Channel & Format Optimizer"
+  goal: "Map ad creatives to optimal platform specifications, bidding strategies, and scheduling for maximum performance."
+  backstory: >
+    You are a performance marketing expert who understands the technical and algorithmic requirements of major ad platforms. 
+    You optimize ad formats, character limits, visual recommendations, and budget pacing to ensure campaigns launch successfully 
+    across regions and devices.
+
+compliance_qa_specialist:
+  role: "Cross-Border Ad Compliance & QA Specialist"
+  goal: "Ensure all campaign materials comply with regional advertising regulations, platform policies, and brand guidelines."
+  backstory: >
+    You are a meticulous compliance expert specializing in international e-commerce advertising. You review all campaign assets 
+    against GDPR, CCPA, platform-specific ad policies (Meta, Google, TikTok, Amazon), and brand voice guidelines. 
+    You flag risks, suggest corrections, and provide final approval before launch.
+
+
+
+
+2. config/tasks.yaml
+
+market_research:
+  description: >
+    Conduct comprehensive research on the target product category ({product_category}) for the specified markets ({target_markets}).
+    Analyze competitor campaigns, identify trending keywords, audience pain points, and seasonal demand patterns.
+    Provide actionable insights for campaign positioning and messaging.
+  expected_output: "A structured market research report containing competitor analysis, keyword opportunities, audience insights, and regional demand trends."
+
+campaign_strategy:
+  description: >
+    Using the market research, develop a cross-border campaign strategy for {target_markets} with a budget of {budget}.
+    Define channel mix (Meta, Google, TikTok, Amazon Ads), budget allocation, bidding strategy, KPI targets, and launch timeline.
+  expected_output: "A detailed campaign strategy document outlining channel allocation, budget split, KPIs, timeline, and regional launch priorities."
+
+ad_copy_generation:
+  description: >
+    Generate platform-specific ad copy (headlines, primary text, descriptions, CTAs) for {target_markets} based on the campaign strategy.
+    Adapt tone and language for each region. Include 3 variants per platform/channel. Ensure alignment with brand voice and product USP ({product_usp}).
+  expected_output: "A structured ad copy package with 3 variants per platform, localized for each target market, ready for A/B testing."
+
+compliance_qa_review:
+  description: >
+    Review the generated ad copy and campaign strategy for compliance with regional advertising laws (GDPR, CCPA, local e-commerce regulations), 
+    platform policies, and brand guidelines. Flag any policy risks, suggest corrections, and provide final approval status per market.
+  expected_output: "A compliance audit report with approval status, flagged issues, recommended edits, and a final ready-to-launch campaign package."
+
+
+
+
+3. tools/marketing_tools.py
+
+from crewai_tools import BaseTool
+from typing import Optional
+import os
+
+class PlatformAdSpecsTool(BaseTool):
+    name: str = "Platform Ad Specifications Fetcher"
+    description: str = "Retrieves ad format limits, character constraints, and policy guidelines for major ad platforms."
+
+    def _run(self, platform: str, region: Optional[str] = None) -> dict:
+        specs = {
+            "meta": {"headline_limit": 40, "text_limit": 125, "image_ratio": "1.91:1", "policy_notes": "Avoid absolute claims, follow Meta Ad Policies"},
+            "google": {"headline_limit": 30, "desc_limit": 90, "policy_notes": "Trademark rules apply, destination must match claims"},
+            "tiktok": {"text_limit": 100, "video_length": "9-60s", "policy_notes": "Avoid unrealistic health/wealth claims, clear CTAs"},
+            "amazon": {"title_limit": 200, "bullet_points": 5, "policy_notes": "No promotional language in titles, region-specific compliance"}
+        }
+        return specs.get(platform.lower(), {"error": "Platform not supported"})
+
+class KeywordResearchTool(BaseTool):
+    name: str = "E-commerce Keyword Research Tool"
+    description: str = "Generates high-intent keywords and search volume estimates for cross-border e-commerce campaigns."
+
+    def _run(self, product_category: str, region: str) -> dict:
+        # In production: integrate with Google Ads API / Semrush / Ahrefs
+        return {
+            "primary_keywords": [f"{product_category} buy online", f"best {product_category} 2026"],
+            "long_tail": [f"affordable {product_category} for {region}", f"{product_category} free shipping"],
+            "search_volume_est": "Medium to High",
+            "cpc_estimate": "$0.50 - $2.10"
+        }
+
+class ComplianceCheckerTool(BaseTool):
+    name: str = "Ad Compliance & Policy Validator"
+    description: str = "Validates ad copy against regional regulations (GDPR, CCPA) and platform advertising policies."
+
+    def _run(self, ad_text: str, platform: str, region: str) -> dict:
+        flagged = []
+        if any(word in ad_text.lower() for word in ["free", "guaranteed", "#1", "best ever", "cure"]):
+            flagged.append("Contains restricted superlatives/absolute claims per platform policy.")
+        if region.lower() in ["eu", "uk", "germany", "france"] and "privacy" not in ad_text.lower():
+            flagged.append("GDPR region: Ensure privacy/data disclaimer is present if collecting info.")
+        return {
+            "compliant": len(flagged) == 0,
+            "flags": flagged if flagged else ["No issues detected."],
+            "recommendations": "Replace absolute claims with 'highly rated'. Add privacy policy link if lead capture is used."
+        }
+
+
+
+
+
+4. crews/marketing_crew.py
+
+
+import os
+import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from typing import List, Dict
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool
+
+# Load environment & configs
+load_dotenv()
+os.environ["OPENAI_MODEL_NAME"] = "gpt-4o-mini"
+
+with open("config/agents.yaml", "r") as f:
+    agents_config = yaml.safe_load(f)
+with open("config/tasks.yaml", "r") as f:
+    tasks_config = yaml.safe_load(f)
+
+# Import custom tools
+from tools.marketing_tools import PlatformAdSpecsTool, KeywordResearchTool, ComplianceCheckerTool
+
+# 1. Define Structured Output
+class CampaignAdVariant(BaseModel):
+    platform: str = Field(..., description="Target ad platform (Meta, Google, TikTok, Amazon)")
+    region: str = Field(..., description="Target market/region")
+    headline: str = Field(..., description="Ad headline")
+    body_text: str = Field(..., description="Primary ad copy")
+    cta: str = Field(..., description="Call to action")
+
+class FinalCampaignOutput(BaseModel):
+    strategy_summary: str = Field(..., description="Concise campaign strategy overview")
+    ad_variants: List[CampaignAdVariant] = Field(..., description="Platform & region specific ad copy variants")
+    compliance_status: Dict[str, str] = Field(..., description="Approval status & key compliance notes per region")
+    launch_checklist: List[str] = Field(..., description="Step-by-step pre-launch checklist")
+
+# 2. Instantiate Tools
+serper_tool = SerperDevTool()
+scraper_tool = ScrapeWebsiteTool()
+platform_specs_tool = PlatformAdSpecsTool()
+keyword_tool = KeywordResearchTool()
+compliance_tool = ComplianceCheckerTool()
+
+# 3. Create Agents
+strategist = Agent(
+    config=agents_config["campaign_strategist"],
+    tools=[serper_tool, scraper_tool]
+)
+copywriter = Agent(
+    config=agents_config["ad_copywriter"],
+    tools=[keyword_tool]
+)
+optimizer = Agent(
+    config=agents_config["channel_optimizer"],
+    tools=[platform_specs_tool]
+)
+qa_agent = Agent(
+    config=agents_config["compliance_qa_specialist"],
+    tools=[compliance_tool],
+    allow_delegation=True
+)
+
+# 4. Create Tasks & Wire Context
+research_task = Task(config=tasks_config["market_research"], agent=strategist)
+strategy_task = Task(config=tasks_config["campaign_strategy"], agent=strategist, context=[research_task])
+copy_task = Task(config=tasks_config["ad_copy_generation"], agent=copywriter, context=[strategy_task])
+qa_task = Task(
+    config=tasks_config["compliance_qa_review"],
+    agent=qa_agent,
+    context=[copy_task, strategy_task],
+    output_pydantic=FinalCampaignOutput
+)
+
+# 5. Build & Kickoff Crew
+marketing_crew = Crew(
+    agents=[strategist, copywriter, optimizer, qa_agent],
+    tasks=[research_task, strategy_task, copy_task, qa_task],
+    verbose=True,
+    memory=True
+)
+
+if __name__ == "__main__":
+    inputs = {
+        "product_category": "Smart Home Security Cameras",
+        "product_usp": "AI-powered motion detection, 4K resolution, privacy-first cloud storage",
+        "target_markets": "US, UK, Germany, Japan",
+        "budget": "$15,000 USD"
+    }
+
+    print("🚀 Kicking off Marketing Campaign Workflow...")
+    result = marketing_crew.kickoff(inputs=inputs)
+    
+    print("\n✅ FINAL CAMPAIGN OUTPUT:")
+    campaign_data = result.pydantic.dict()
+    print(f"📊 Strategy: {campaign_data['strategy_summary'][:150]}...")
+    print(f"🌍 Compliance: {campaign_data['compliance_status']}")
+    print(f"📝 Launch Checklist: {', '.join(campaign_data['launch_checklist'])}")
+    
+    # Save to JSON for downstream integration
+    import json
+    with open("output/marketing_campaign_result.json", "w") as f:
+        json.dump(campaign_data, f, indent=2)
+    print("💾 Saved to output/marketing_campaign_result.json")
+
+
+
+#Install Dependencies
+
+pip install crewai crewai-tools python-dotenv pydantic pyyaml
+
+#Environment Variables
+
+OPENAI_API_KEY=sk-...
+SERPER_API_KEY=your_serper_key
+OPENAI_MODEL_NAME=gpt-4o-mini
+
+
+# Run
+Bash 
+python crews/marketing_crew.py
+

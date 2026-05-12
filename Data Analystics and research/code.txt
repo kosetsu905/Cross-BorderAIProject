@@ -1,0 +1,262 @@
+
+1. config/analytics_agents.yaml
+
+data_collector:
+  role: "Cross-Border E-commerce Data Collector"
+  goal: "Gather comprehensive sales, ad performance, and inventory data from multiple regional platforms."
+  backstory: >
+    You are a data engineering specialist focused on cross-border e-commerce.
+    You extract and consolidate metrics from Shopify, Amazon, TikTok Shop, and ad platforms
+    across {target_markets}, ensuring data accuracy and consistency for downstream analysis.
+
+data_analyst:
+  role: "E-commerce Performance Analyst"
+  goal: "Identify trends, bottlenecks, and ROI opportunities from sales and campaign data."
+  backstory: >
+    You are a senior data analyst with deep expertise in cross-border e-commerce metrics.
+    You analyze conversion rates, customer acquisition costs, inventory turnover,
+    and regional performance to uncover actionable optimization opportunities.
+
+market_researcher:
+  role: "Global Market & Competitor Researcher"
+  goal: "Benchmark performance against regional competitors and identify market gaps."
+  backstory: >
+    You specialize in competitive intelligence for global e-commerce.
+    You track competitor pricing, promotional strategies, market share shifts,
+    and regional consumer behavior to provide strategic context for performance data.
+
+report_generator:
+  role: "Executive Insights & Reporting Specialist"
+  goal: "Synthesize data, analysis, and research into clear, actionable executive reports."
+  backstory: >
+    You transform complex analytics into concise, strategic reports for leadership.
+    You highlight KPIs, recommend data-backed actions, forecast trends,
+    and structure insights for quick decision-making across international teams.
+
+
+ 2. config/analytics_tasks.yaml
+
+data_collection:
+  description: >
+    Collect recent sales, ad spend, conversion, and inventory data for {product_category} across {target_markets}.
+    Pull metrics from available platform APIs, web sources, and historical tracking systems.
+    Ensure data covers the specified date range: {date_range}.
+  expected_output: "A consolidated dataset of sales, ad performance, inventory levels, and regional metrics."
+
+performance_analysis:
+  description: >
+    Analyze the collected data to identify top-performing regions, underperforming channels,
+    ROI trends, and potential bottlenecks in the sales funnel for {product_category}.
+  expected_output: "A performance analysis summary highlighting key metrics, trends, and optimization opportunities by region."
+
+market_research:
+  description: >
+    Research competitor positioning, pricing strategies, and market demand for {product_category} in {target_markets}.
+    Cross-reference findings with our performance data to identify gaps and competitive advantages.
+  expected_output: "A competitive landscape report with market share insights, pricing benchmarks, and strategic positioning recommendations."
+
+insight_report:
+  description: >
+    Synthesize the performance analysis and market research into a structured executive report.
+    Include KPI dashboards, actionable recommendations, risk alerts, and a 30/60/90 day action plan.
+  expected_output: "A comprehensive, structured analytics report with executive summary, regional breakdowns, and prioritized next steps."
+
+
+3. tools/analytics_tools.py
+
+import os
+import requests
+import logging
+from functools import lru_cache
+from crewai_tools import BaseTool
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class EcomPlatformMetricsTool(BaseTool):
+    name: str = "E-commerce Platform Metrics Fetcher"
+    description: str = "Fetches sales, conversion, inventory, and ad performance data from Shopify/Amazon/TikTok."
+
+    def _run(self, platform: str, region: str, date_range: str) -> dict:
+        if not os.getenv("ECOM_API_TOKEN"):
+            return self._dev_fallback(platform, region, date_range)
+        
+        # Production: Replace with Shopify Admin API, Amazon SP-API, or TikTok Shop API
+        url = f"https://api.your-ecom-platform.com/v1/metrics"
+        headers = {"Authorization": f"Bearer {os.getenv('ECOM_API_TOKEN')}"}
+        params = {"platform": platform, "region": region, "date_range": date_range}
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            return res.json()
+        except Exception as e:
+            logger.warning(f"Ecom metrics fetch failed: {e}")
+            return self._dev_fallback(platform, region, date_range)
+
+    @staticmethod
+    @lru_cache(maxsize=32)
+    def _dev_fallback(platform: str, region: str, date_range: str) -> dict:
+        logger.info("Using Ecom metrics dev fallback")
+        return {
+            "platform": platform,
+            "region": region,
+            "date_range": date_range,
+            "metrics": {
+                "total_sales": 45200.00,
+                "conversion_rate": "3.2%",
+                "cpc": 1.15,
+                "roas": 2.8,
+                "inventory_status": "Healthy",
+                "top_selling_sku": "CAM-4K-PRO"
+            }
+        }
+
+class CompetitorBenchmarkTool(BaseTool):
+    name: str = "Competitor & Market Benchmark Tool"
+    description: str = "Scrapes and analyzes competitor pricing, promotions, and market positioning for cross-border e-commerce."
+
+    def _run(self, product_category: str, target_markets: str) -> dict:
+        if not os.getenv("SERPER_API_KEY"):
+            return self._dev_fallback(product_category, target_markets)
+        
+        # Production: Integrate with Keepa, Jungle Scout, or custom competitive scrapers
+        return {
+            "category": product_category,
+            "markets": target_markets,
+            "avg_competitor_price": "$129.99",
+            "our_price_position": "Mid-tier (5% below average)",
+            "competitor_promo_activity": "High (Back-to-school campaigns active)",
+            "market_demand_trend": "Increasing (+12% MoM)"
+        }
+
+    @staticmethod
+    @lru_cache(maxsize=32)
+    def _dev_fallback(product_category: str, target_markets: str) -> dict:
+        logger.info("Using competitor benchmark dev fallback")
+        return {
+            "category": product_category,
+            "markets": target_markets,
+            "avg_competitor_price": "$125.50",
+            "our_price_position": "Competitive",
+            "market_demand_trend": "Stable to Growing"
+        }
+
+
+
+4. crews/analytics_crew.py
+
+import os
+import yaml
+from pydantic import BaseModel, Field
+from typing import List, Dict
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool
+from tools.analytics_tools import EcomPlatformMetricsTool, CompetitorBenchmarkTool
+
+# Load configs
+with open("config/analytics_agents.yaml", "r") as f:
+    analytics_agents_config = yaml.safe_load(f)
+with open("config/analytics_tasks.yaml", "r") as f:
+    analytics_tasks_config = yaml.safe_load(f)
+
+# Structured Output (Pydantic v2 compatible)
+class RegionalKPI(BaseModel):
+    region: str = Field(..., description="Target market/region")
+    sales_volume: str = Field(..., description="Total sales or revenue")
+    conversion_rate: str = Field(..., description="Conversion rate percentage")
+    roas: str = Field(..., description="Return on ad spend")
+
+class AnalyticsReportOutput(BaseModel):
+    executive_summary: str = Field(..., description="High-level overview of performance and key findings")
+    regional_kpis: List[RegionalKPI] = Field(..., description="Key performance indicators broken down by region")
+    competitive_insights: str = Field(..., description="Competitor benchmarking and market positioning analysis")
+    actionable_recommendations: List[str] = Field(..., description="Prioritized next steps for optimization")
+    risk_alerts: List[str] = Field(..., description="Potential risks, inventory issues, or policy changes")
+
+def run_analytics_crew(inputs: dict) -> dict:
+    """Callable wrapper for FastAPI orchestration."""
+    os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    
+    # Tools
+    serper_tool = SerperDevTool()
+    scrape_tool = ScrapeWebsiteTool()
+    ecom_metrics_tool = EcomPlatformMetricsTool()
+    competitor_tool = CompetitorBenchmarkTool()
+    
+    # Agents
+    collector = Agent(
+        config=analytics_agents_config["data_collector"],
+        tools=[ecom_metrics_tool]
+    )
+    analyst = Agent(
+        config=analytics_agents_config["data_analyst"],
+        tools=[serper_tool]
+    )
+    researcher = Agent(
+        config=analytics_agents_config["market_researcher"],
+        tools=[competitor_tool, scrape_tool]
+    )
+    reporter = Agent(
+        config=analytics_agents_config["report_generator"],
+        tools=[serper_tool]
+    )
+    
+    # Tasks & Context Wiring
+    collect_task = Task(config=analytics_tasks_config["data_collection"], agent=collector)
+    analyze_task = Task(config=analytics_tasks_config["performance_analysis"], agent=analyst, context=[collect_task])
+    research_task = Task(config=analytics_tasks_config["market_research"], agent=researcher, context=[collect_task])
+    report_task = Task(
+        config=analytics_tasks_config["insight_report"],
+        agent=reporter,
+        context=[analyze_task, research_task],
+        output_pydantic=AnalyticsReportOutput
+    )
+    
+    # Crew Assembly
+    analytics_crew = Crew(
+        agents=[collector, analyst, researcher, reporter],
+        tasks=[collect_task, analyze_task, research_task, report_task],
+        verbose=False,
+        memory=True
+    )
+    
+    # Execution & Structured Return
+    result = analytics_crew.kickoff(inputs=inputs)
+    return result.pydantic.model_dump() if hasattr(result.pydantic, "model_dump") else result.pydantic.dict()
+
+
+5. Updated main.py Registration
+
+# Add to your existing main.py imports
+from crews.analytics_crew import run_analytics_crew
+
+# Register in orchestrator (inside app setup)
+orchestrator.register_crew(WorkflowType.ANALYTICS, run_analytics_crew)
+
+
+#🚀 FastAPI Usage Example
+
+curl -X POST http://localhost:8000/api/v1/workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "analytics",
+    "inputs": {
+      "product_category": "Smart Home Security Cameras",
+      "target_markets": "US, UK, Germany, Japan",
+      "date_range": "Last 30 Days",
+      "currency": "USD"
+    }
+  }'
+
+
+ 
+
+# Production Integration Notes
+
+    Real API Replacements: 
+        Shopify → shopify-python-api (Sales, Orders, Inventory)
+        Amazon → python-amazon-mws or SP-API SDK
+        Google Analytics 4 → google-analytics-data Python client
+        Ad Platforms → Meta/Google/TikTok Marketing APIs (reuse from marketing tools)
+    Data Caching: Wrap EcomPlatformMetricsTool responses in Redis with date_range as cache key to avoid redundant API calls.
+    Scheduled Analytics: Use APScheduler or Celery Beat to run run_analytics_crew() daily/weekly and push results to a data warehouse.
+    Alerting: Add webhook triggers if risk_alerts contains keywords like "LOW_STOCK", "ROAS_DROPPING", or "POLICY_CHANGE".

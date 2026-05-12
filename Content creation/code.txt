@@ -1,0 +1,163 @@
+ 1. config/content_agents.yaml
+
+trend_monitor:
+  role: "E-commerce Trend & Competitor Monitor"
+  goal: "Identify trending topics, competitor content gaps, and high-intent search queries in target markets."
+  backstory: >
+    You are a market intelligence expert specializing in cross-border e-commerce.
+    You scan industry news, competitor blogs, and social trends to find content opportunities
+    that align with {product_category} and {target_languages}.
+
+content_strategist:
+  role: "Cross-Border Content Strategist"
+  goal: "Develop a data-driven content blueprint that maximizes engagement and SEO performance across regions."
+  backstory: >
+    You transform trend data into actionable content strategies. You define audience personas,
+    SEO focus, content angles, and platform-specific distribution plans for global e-commerce brands.
+
+multilingual_creator:
+  role: "Multilingual E-commerce Content Creator"
+  goal: "Write compelling, culturally adapted long-form articles and social media posts for multiple platforms and languages."
+  backstory: >
+    You are a seasoned content writer fluent in {target_languages}. You craft SEO-optimized blog posts
+    and platform-specific social content that resonates with local audiences while maintaining consistent brand voice.
+
+qa_specialist:
+  role: "Content Quality & Compliance Auditor"
+  goal: "Review all content for accuracy, brand alignment, SEO optimization, and regional compliance."
+  backstory: >
+    You ensure every piece of content meets high editorial standards. You verify SEO keyword integration,
+    check for cultural appropriateness, enforce brand guidelines, and format outputs for production readiness.
+
+
+ 2. config/content_tasks.yaml
+
+trend_research:
+  description: >
+    Research trending topics, competitor content, and search intent for {product_category} in {target_markets}.
+    Identify high-volume keywords, content gaps, and viral angles across {platforms}.
+  expected_output: "A comprehensive trend report with keywords, competitor analysis, and content opportunity insights."
+
+content_strategy:
+  description: >
+    Using the trend research, develop a content strategy for {product_category} targeting {target_languages}.
+    Define audience persona, core message, SEO focus, content structure, and distribution plan.
+  expected_output: "A detailed content blueprint outlining structure, tone, SEO targets, and platform distribution strategy."
+
+content_creation:
+  description: >
+    Write a full blog/article in markdown format about {subject} based on the content strategy.
+    Then, generate platform-specific social media posts for {platforms} in {target_languages}.
+    Ensure cultural adaptation, proper hashtags, and clear CTAs.
+  expected_output: "A complete markdown article and a list of localized social media posts ready for scheduling."
+
+quality_assurance:
+  description: >
+    Review the article and social posts for SEO optimization, brand voice consistency, cultural accuracy, and compliance.
+    Fix any issues, ensure proper formatting, and validate against {target_markets} regulations.
+  expected_output: "Final polished content package with SEO keywords, compliance notes, and structured social posts."
+
+
+
+ 3. crews/content_crew.py
+
+
+import os
+import yaml
+from pydantic import BaseModel, Field
+from typing import List
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool
+
+# Load configs
+with open("config/content_agents.yaml", "r") as f:
+    content_agents_config = yaml.safe_load(f)
+with open("config/content_tasks.yaml", "r") as f:
+    content_tasks_config = yaml.safe_load(f)
+
+# Structured Output (Pydantic v2 compatible)
+class SocialMediaPost(BaseModel):
+    platform: str = Field(..., description="Target platform (e.g., LinkedIn, Instagram, TikTok, X)")
+    language: str = Field(..., description="Language code (e.g., en, es, de, ja)")
+    content: str = Field(..., description="Optimized post content with hashtags/mentions")
+
+class ContentOutput(BaseModel):
+    article: str = Field(..., description="Full blog/article in markdown format")
+    social_media_posts: List[SocialMediaPost] = Field(..., description="Platform & language specific social posts")
+    seo_keywords: List[str] = Field(..., description="Primary & secondary SEO keywords used")
+    compliance_notes: str = Field(..., description="Quality & compliance review notes")
+
+def run_content_crew(inputs: dict) -> dict:
+    """Callable wrapper for FastAPI orchestration."""
+    os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    
+    # Tools
+    serper_tool = SerperDevTool()
+    scrape_tool = ScrapeWebsiteTool()
+    
+    # Agents
+    trend_monitor = Agent(
+        config=content_agents_config["trend_monitor"],
+        tools=[serper_tool]
+    )
+    content_strategist = Agent(
+        config=content_agents_config["content_strategist"],
+        tools=[serper_tool]
+    )
+    multilingual_creator = Agent(
+        config=content_agents_config["multilingual_creator"],
+        tools=[scrape_tool, serper_tool]
+    )
+    qa_specialist = Agent(
+        config=content_agents_config["qa_specialist"]
+    )
+    
+    # Tasks & Context Wiring
+    research_task = Task(config=content_tasks_config["trend_research"], agent=trend_monitor)
+    strategy_task = Task(config=content_tasks_config["content_strategy"], agent=content_strategist, context=[research_task])
+    creation_task = Task(config=content_tasks_config["content_creation"], agent=multilingual_creator, context=[strategy_task, research_task])
+    qa_task = Task(
+        config=content_tasks_config["quality_assurance"],
+        agent=qa_specialist,
+        context=[creation_task],
+        output_pydantic=ContentOutput
+    )
+    
+    # Crew Assembly
+    content_crew = Crew(
+        agents=[trend_monitor, content_strategist, multilingual_creator, qa_specialist],
+        tasks=[research_task, strategy_task, creation_task, qa_task],
+        verbose=False,
+        memory=True
+    )
+    
+    # Execution & Structured Return
+    result = content_crew.kickoff(inputs=inputs)
+    # Pydantic v2/v1 compatibility
+    return result.pydantic.model_dump() if hasattr(result.pydantic, "model_dump") else result.pydantic.dict()
+
+
+ 4. Updated main.py Registration
+
+
+# Add to your existing main.py imports
+from crews.content_crew import run_content_crew
+
+# Register in orchestrator (inside app setup)
+orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)
+
+
+🚀# FastAPI Usage Test
+
+curl -X POST http://localhost:8000/api/v1/workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "content",
+    "inputs": {
+      "subject": "Sustainable Activewear for Cold Climates",
+      "product_category": "Eco-Friendly Winter Sportswear",
+      "target_markets": "Germany, Japan, Canada",
+      "target_languages": ["de", "ja", "en"],
+      "platforms": ["Instagram", "LinkedIn", "X"]
+    }
+  }'

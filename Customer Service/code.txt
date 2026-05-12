@@ -1,0 +1,125 @@
+
+1. config/support_agents.yaml
+
+senior_support_agent:
+  role: "Senior E-commerce Support Representative"
+  goal: "Provide the most friendly, accurate, and comprehensive support to global customers."
+  backstory: >
+    You are a top-tier support specialist for a cross-border e-commerce brand.
+    You handle inquiries from {customer}, ensuring full, accurate, and culturally appropriate responses.
+    You never make assumptions, always verify policies/shipping/product details, and maintain a helpful tone.
+
+support_qa_specialist:
+  role: "Support Quality Assurance Specialist"
+  goal: "Ensure all support responses meet high-quality standards, accuracy, and brand tone."
+  backstory: >
+    You review support drafts for completeness, factual accuracy, cultural sensitivity, and compliance.
+    You verify that all customer questions are answered, references are valid,
+    and the final response maintains a professional yet friendly cross-border customer service standard.
+
+
+2. config/support_tasks.yaml
+
+inquiry_resolution:
+  description: >
+    {customer} just reached out with an important inquiry: {inquiry}.
+    {person} from {customer} is the contact. Research and provide a complete, accurate response.
+    Use available tools to verify policies, shipping timelines, return procedures, or product specs.
+    Ensure no assumptions are made and cite sources where applicable.
+  expected_output: "A detailed, well-researched draft response addressing all parts of the inquiry, with clear resolution steps and referenced sources."
+
+quality_assurance_review:
+  description: >
+    Review the drafted response for {customer}'s inquiry. Ensure it is comprehensive, accurate,
+    culturally appropriate, and aligned with brand voice. Check that all questions are answered,
+    tone is professional and friendly, and no unsupported claims are made.
+  expected_output: "A final, polished response ready for delivery, including QA notes, compliance checks, and recommended follow-up timing."
+
+ 3. crews/support_crew.py
+
+import os
+import yaml
+from pydantic import BaseModel, Field
+from typing import List
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool, WebsiteSearchTool
+
+# Load configs
+with open("config/support_agents.yaml", "r") as f:
+    support_agents_config = yaml.safe_load(f)
+with open("config/support_tasks.yaml", "r") as f:
+    support_tasks_config = yaml.safe_load(f)
+
+# Structured Output (Pydantic v2 compatible)
+class SupportTicketOutput(BaseModel):
+    ticket_summary: str = Field(..., description="Brief summary of the customer inquiry")
+    resolution_steps: List[str] = Field(..., description="Step-by-step resolution or troubleshooting guide")
+    drafted_response: str = Field(..., description="Final, polished response ready to send to the customer")
+    qa_notes: str = Field(..., description="Quality assurance feedback and compliance checks")
+    recommended_follow_up: str = Field(..., description="Suggested next steps or follow-up timing")
+
+def run_support_crew(inputs: dict) -> dict:
+    """Callable wrapper for FastAPI orchestration."""
+    os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    
+    # Tools
+    serper_tool = SerperDevTool()
+    scrape_tool = ScrapeWebsiteTool()
+    web_search_tool = WebsiteSearchTool()
+    
+    # Agents
+    support_agent = Agent(
+        config=support_agents_config["senior_support_agent"],
+        tools=[serper_tool, scrape_tool, web_search_tool],
+        allow_delegation=True
+    )
+    qa_agent = Agent(
+        config=support_agents_config["support_qa_specialist"],
+        allow_delegation=False
+    )
+    
+    # Tasks & Context Wiring
+    resolution_task = Task(
+        config=support_tasks_config["inquiry_resolution"],
+        agent=support_agent
+    )
+    qa_task = Task(
+        config=support_tasks_config["quality_assurance_review"],
+        agent=qa_agent,
+        context=[resolution_task],
+        output_pydantic=SupportTicketOutput
+    )
+    
+    # Crew Assembly
+    support_crew = Crew(
+        agents=[support_agent, qa_agent],
+        tasks=[resolution_task, qa_task],
+        verbose=False,
+        memory=True
+    )
+    
+    # Execution & Structured Return
+    result = support_crew.kickoff(inputs=inputs)
+    return result.pydantic.model_dump() if hasattr(result.pydantic, "model_dump") else result.pydantic.dict()
+
+
+4. Updated main.py Registration
+
+# Add to your existing main.py imports
+from crews.support_crew import run_support_crew
+
+# Register in orchestrator (inside app setup)
+orchestrator.register_crew(WorkflowType.SUPPORT, run_support_crew)
+
+🚀 FastAPI Usage Example
+
+curl -X POST http://localhost:8000/api/v1/workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "support",
+    "inputs": {
+      "customer": "GlobalTech Solutions",
+      "person": "Maria Chen",
+      "inquiry": "Our bulk order #EU-8842 is delayed. We need it by Friday for a product launch. What are the expedited shipping options and compensation policy?"
+    }
+  }'

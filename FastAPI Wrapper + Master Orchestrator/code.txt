@@ -1,0 +1,237 @@
+
+1. models.py (Shared Pydantic Schemas)
+
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional
+from enum import Enum
+
+class WorkflowType(str, Enum):
+    MARKETING = "marketing"
+    CONTENT = "content"
+    SUPPORT = "support"
+    ANALYTICS = "analytics"
+    BIZDEV = "bizdev"
+    SCHEDULER = "scheduler"
+    SALES_IMPROVEMENT = "sales_improvement"
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class WorkflowRequest(BaseModel):
+    workflow_type: WorkflowType
+    inputs: Dict[str, Any] = Field(..., description="Workflow-specific input parameters")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional tracing/context metadata")
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+
+2. orchestrator.py (Master Orchestrator & Job Manager)
+
+
+import asyncio
+import uuid
+import logging
+from typing import Dict, Any, Callable
+from models import WorkflowType, JobStatus
+
+logger = logging.getLogger(__name__)
+
+class MasterOrchestrator:
+    """Central router and job tracker for all CrewAI workflows."""
+    def __init__(self):
+        self._crews: Dict[WorkflowType, Callable] = {}
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+        logger.info("Master Orchestrator initialized.")
+
+    def register_crew(self, workflow_type: WorkflowType, crew_function: Callable):
+        """Register a workflow kickoff function."""
+        self._crews[workflow_type] = crew_function
+        logger.info(f"✅ Registered crew: {workflow_type}")
+
+    async def submit_job(self, workflow_type: WorkflowType, inputs: Dict[str, Any]) -> str:
+        """Submit a new async job and return job_id."""
+        if workflow_type not in self._crews:
+            raise ValueError(f"❌ Workflow '{workflow_type}' not registered.")
+        
+        job_id = str(uuid.uuid4())
+        self._jobs[job_id] = {
+            "job_id": job_id,
+            "workflow_type": workflow_type.value,
+            "status": JobStatus.PENDING,
+            "inputs": inputs,
+            "result": None,
+            "error": None
+        }
+        asyncio.create_task(self._run_job(job_id, workflow_type, inputs))
+        logger.info(f"📥 Job submitted: {job_id} | Workflow: {workflow_type}")
+        return job_id
+
+    async def _run_job(self, job_id: str, workflow_type: WorkflowType, inputs: Dict[str, Any]):
+        """Execute crew in background thread to avoid blocking FastAPI."""
+        try:
+            self._jobs[job_id]["status"] = JobStatus.RUNNING
+            logger.info(f"⚙️ Running job {job_id}...")
+            
+            crew_func = self._crews[workflow_type]
+            # CrewAI is synchronous; run in thread pool
+            result = await asyncio.to_thread(crew_func, inputs)
+            
+            self._jobs[job_id]["status"] = JobStatus.COMPLETED
+            self._jobs[job_id]["result"] = result if isinstance(result, dict) else {"raw": str(result)}
+            logger.info(f"✅ Job completed: {job_id}")
+        except Exception as e:
+            logger.error(f"❌ Job {job_id} failed: {e}", exc_info=True)
+            self._jobs[job_id]["status"] = JobStatus.FAILED
+            self._jobs[job_id]["error"] = str(e)
+
+    def get_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Retrieve job state."""
+        return self._jobs.get(job_id, {"status": JobStatus.FAILED, "error": "Job not found"})
+
+
+3. crews/marketing_crew.py (Updated Callable Version)
+
+import os
+import yaml
+from pydantic import BaseModel, Field
+from typing import List, Dict
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool
+from tools.cross_platform_ads_tools import GoogleAdsKeywordTool, MetaAdsTool, TikTokAdsTool
+
+# Load configs
+with open("config/agents.yaml", "r") as f: agents_config = yaml.safe_load(f)
+with open("config/tasks.yaml", "r") as f: tasks_config = yaml.safe_load(f)
+
+class CampaignAdVariant(BaseModel):
+    platform: str
+    region: str
+    headline: str
+    body_text: str
+    cta: str
+
+class FinalCampaignOutput(BaseModel):
+    strategy_summary: str
+    ad_variants: List[CampaignAdVariant]
+    compliance_status: Dict[str, str]
+    launch_checklist: List[str]
+
+def run_marketing_crew(inputs: dict) -> dict:
+    """Callable wrapper for FastAPI orchestration."""
+    os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    
+    serper = SerperDevTool()
+    scraper = ScrapeWebsiteTool()
+    google_tool = GoogleAdsKeywordTool()
+    meta_tool = MetaAdsTool()
+    tiktok_tool = TikTokAdsTool()
+
+    strategist = Agent(config=agents_config["campaign_strategist"], tools=[serper, google_tool])
+    copywriter = Agent(config=agents_config["ad_copywriter"], tools=[google_tool])
+    optimizer = Agent(config=agents_config["channel_optimizer"], tools=[meta_tool, tiktok_tool])
+    qa = Agent(config=agents_config["compliance_qa_specialist"], tools=[meta_tool, tiktok_tool], allow_delegation=True)
+
+    t1 = Task(config=tasks_config["market_research"], agent=strategist)
+    t2 = Task(config=tasks_config["campaign_strategy"], agent=strategist, context=[t1])
+    t3 = Task(config=tasks_config["ad_copy_generation"], agent=copywriter, context=[t2])
+    t4 = Task(config=tasks_config["compliance_qa_review"], agent=qa, context=[t3, t2], output_pydantic=FinalCampaignOutput)
+
+    crew = Crew(agents=[strategist, copywriter, optimizer, qa], tasks=[t1, t2, t3, t4], verbose=False, memory=True)
+    
+    result = crew.kickoff(inputs=inputs)
+    # Pydantic v2 compatibility
+    return result.pydantic.model_dump() if hasattr(result.pydantic, "model_dump") else result.pydantic.dict()
+
+
+4. main.py (FastAPI Entry Point)
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import logging
+from models import WorkflowRequest, JobResponse, JobStatus, WorkflowType
+from orchestrator import MasterOrchestrator
+from crews.marketing_crew import run_marketing_crew
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="1.0.0")
+orchestrator = MasterOrchestrator()
+
+# CORS for frontend/dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register workflows
+orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
+# orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)  # Add others here
+
+@app.post("/api/v1/workflow", response_model=JobResponse)
+async def trigger_workflow(req: WorkflowRequest):
+    try:
+        job_id = await orchestrator.submit_job(req.workflow_type, req.inputs)
+        return JobResponse(job_id=job_id, status=JobStatus.PENDING)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/v1/workflow/{job_id}", response_model=JobResponse)
+async def get_workflow_status(job_id: str):
+    job_data = orchestrator.get_job_status(job_id)
+    if job_data.get("status") == JobStatus.FAILED and job_data.get("error"):
+        raise HTTPException(status_code=404, detail=job_data["error"])
+    return JobResponse(**job_data)
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "registered_workflows": len(orchestrator._crews)}
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+#Setup & Run Instructions
+Install Dependencies
+
+pip install fastapi uvicorn crewai crewai-tools pydantic pyyaml python-dotenv
+
+
+#Environment Variables (.env)
+
+OPENAI_API_KEY=sk-...
+SERPER_API_KEY=your_serper_key
+GOOGLE_ADS_ACCESS_TOKEN=...
+META_ACCESS_TOKEN=...
+TIKTOK_ACCESS_TOKEN=...
+
+
+#Test with cURL
+
+# Submit job
+curl -X POST http://localhost:8000/api/v1/workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "marketing",
+    "inputs": {
+      "product_category": "Smart Home Cameras",
+      "product_usp": "AI motion detection, 4K, privacy-first",
+      "target_markets": "US, UK, DE",
+      "budget": "$12000"
+    }
+  }'
+
+# Poll status (replace JOB_ID)
+curl http://localhost:8000/api/v1/workflow/JOB_ID

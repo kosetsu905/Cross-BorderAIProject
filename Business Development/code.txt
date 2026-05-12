@@ -1,0 +1,258 @@
+1. config/bizdev_agents.yaml
+
+lead_prospector:
+  role: "Cross-Border B2B Lead Prospector"
+  goal: "Identify and profile high-value potential partners, distributors, or affiliates in target international markets."
+  backstory: >
+    You are a global business development researcher specializing in cross-border e-commerce ecosystems.
+    You scan industry directories, market reports, and professional networks to identify companies
+    that align with {partnership_type} criteria in {target_markets}. You extract key decision-makers,
+    recent milestones, and strategic fit indicators.
+
+partnership_strategist:
+  role: "Global Partnership Strategist"
+  goal: "Develop tailored value propositions and partnership frameworks that align with regional business cultures and market needs."
+  backstory: >
+    You are an expert in cross-border partnership structuring. You analyze market dynamics,
+    competitor alliance strategies, and regional purchasing behaviors to craft mutually beneficial
+    partnership models. You focus on revenue-sharing, distribution rights, and localized co-marketing opportunities.
+
+outreach_specialist:
+  role: "Multilingual Outreach & Engagement Specialist"
+  goal: "Create culturally adapted, high-converting multi-touch outreach sequences for global decision-makers."
+  backstory: >
+    You specialize in cross-border B2B communication. You draft personalized emails, LinkedIn messages,
+    and follow-up sequences that respect regional business etiquette, language nuances, and compliance standards.
+    You ensure tone matches the target market's professional expectations.
+
+pipeline_manager:
+  role: "CRM & Pipeline Sync Specialist"
+  goal: "Structure partnership leads and outreach data into production-ready CRM payloads and follow-up cadences."
+  backstory: >
+    You bridge AI-generated insights with sales operations. You format lead data, map outreach steps to CRM fields,
+    define follow-up timelines, and add compliance/QA flags to ensure seamless handoff to human BD teams or automated CRM workflows.
+
+
+2. config/bizdev_tasks.yaml
+
+lead_research:
+  description: >
+    Research and identify top {partnership_type} prospects in {target_markets} for {product_category}.
+    Extract company profiles, key decision-makers, recent business developments, and strategic alignment scores.
+  expected_output: "A curated list of high-potential leads with company details, contact roles, market position, and partnership fit rationale."
+
+strategy_mapping:
+  description: >
+    Using the lead research, develop customized partnership value propositions and engagement angles for {target_markets}.
+    Define mutual benefits, revenue models, co-marketing opportunities, and localized positioning strategies.
+  expected_output: "A partnership strategy blueprint with value propositions, engagement frameworks, and region-specific opportunity mappings."
+
+outreach_creation:
+  description: >
+    Craft personalized, multi-touch outreach sequences for {key_decision_maker_roles} in {target_markets}.
+    Generate platform-specific messages (Email, LinkedIn, WhatsApp/WeChat where applicable) in {target_languages}.
+    Ensure cultural appropriateness, clear CTAs, and compliance with regional outreach regulations.
+  expected_output: "A complete multi-channel outreach sequence with localized touchpoints, subject lines, body copy, and follow-up triggers."
+
+pipeline_sync:
+  description: >
+    Format the lead research, partnership strategy, and outreach sequences into a structured CRM-ready payload.
+    Define a 30-day follow-up cadence, add compliance/QA notes, and map data fields to standard CRM schemas.
+  expected_output: "A production-ready JSON payload for CRM import, structured follow-up calendar, and compliance verification notes."
+
+
+
+ 3. tools/bizdev_tools.py
+
+import os
+import logging
+from functools import lru_cache
+from crewai_tools import BaseTool
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class B2BLeadLookupTool(BaseTool):
+    name: str = "Global B2B Lead & Company Profiler"
+    description: str = "Fetches company profiles, decision-maker contacts, and recent business milestones for cross-border BD."
+
+    def _run(self, company_name: str, region: str) -> dict:
+        if not os.getenv("CRUNCHBASE_API_KEY") and not os.getenv("APOLLO_API_KEY"):
+            return self._dev_fallback(company_name, region)
+        # Production: Integrate Apollo.io, Crunchbase, or LinkedIn Sales Navigator APIs
+        return {"status": "prod_ready", "message": "Connect real B2B data provider endpoint"}
+
+    @staticmethod
+    @lru_cache(maxsize=32)
+    def _dev_fallback(company_name: str, region: str) -> dict:
+        logger.info("Using B2B lead lookup dev fallback")
+        return {
+            "company": company_name,
+            "region": region,
+            "decision_makers": [{"name": "Local DM", "title": "Head of Partnerships", "linkedin": "placeholder"}],
+            "recent_milestone": "Expanded regional distribution network",
+            "partnership_fit_score": "High",
+            "status": "dev_mode"
+        }
+
+class OutreachToneValidator(BaseTool):
+    name: str = "Cross-Border Outreach Tone & Compliance Checker"
+    description: str = "Validates outreach copy for cultural tone, spam triggers, and regional B2B compliance (GDPR, CAN-SPAM, CASL)."
+
+    def _run(self, text: str, region: str) -> dict:
+        flags = []
+        if region.upper() in ["EU", "UK", "DE"] and "unsubscribe" not in text.lower():
+            flags.append("EU region requires clear opt-out/unsubscribe language per GDPR/CAN-SPAM equivalents.")
+        if any(word in text.lower() for word in ["urgent", "act now", "limited time only", "guaranteed"]):
+            flags.append("Contains high-pressure B2B outreach language that may trigger spam filters or reduce response rates.")
+        return {
+            "compliant": len(flags) == 0,
+            "flags": flags if flags else ["Tone & compliance validation passed."],
+            "recommendations": "Maintain professional, consultative tone. Add physical address & unsubscribe link for EU/CA."
+        }
+
+class CRMFormatterTool(BaseTool):
+    name: str = "CRM Payload & Pipeline Formatter"
+    description: str = "Structures lead data, outreach steps, and follow-up cadences into standardized CRM JSON payloads."
+
+    def _run(self, lead_data: dict, outreach_sequence: list) -> dict:
+        return {
+            "crm_system": "hubspot_salesforce_pipedrive_compatible",
+            "lead_record": {
+                "company": lead_data.get("company", ""),
+                "industry": lead_data.get("industry", ""),
+                "region": lead_data.get("region", ""),
+                "status": "New Lead",
+                "source": "AI BD Workflow"
+            },
+            "activity_log": [{"touch": i+1, "channel": seq.get("platform", ""), "content_preview": seq.get("subject", "")[:50]} for i, seq in enumerate(outreach_sequence)],
+            "next_action_date": "T+3 days",
+            "status": "formatted"
+        }
+
+
+
+4. crews/bizdev_crew.py (Exact Callback Pattern)
+
+import os
+import yaml
+from pydantic import BaseModel, Field
+from typing import List, Dict
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool
+from tools.bizdev_tools import B2BLeadLookupTool, OutreachToneValidator, CRMFormatterTool
+
+# Load configs
+with open("config/bizdev_agents.yaml", "r") as f:
+    bizdev_agents_config = yaml.safe_load(f)
+with open("config/bizdev_tasks.yaml", "r") as f:
+    bizdev_tasks_config = yaml.safe_load(f)
+
+# Structured Output (Pydantic v2 compatible)
+class LeadProfile(BaseModel):
+    company: str = Field(..., description="Target company name")
+    region: str = Field(..., description="Target market/region")
+    decision_maker_role: str = Field(..., description="Key contact title/role")
+    partnership_fit: str = Field(..., description="Strategic alignment rationale")
+
+class OutreachStep(BaseModel):
+    touch_number: int = Field(..., description="Sequence step number")
+    platform: str = Field(..., description="Channel (Email, LinkedIn, etc.)")
+    subject_line: str = Field(..., description="Message subject or opening line")
+    body: str = Field(..., description="Core outreach copy")
+    cta: str = Field(..., description="Clear call to action")
+
+class BizDevOutput(BaseModel):
+    target_leads: List[LeadProfile] = Field(..., description="Curated list of high-potential partnership leads")
+    value_proposition: str = Field(..., description="Tailored partnership value proposition summary")
+    outreach_sequences: List[OutreachStep] = Field(..., description="Multi-touch, localized outreach sequence")
+    follow_up_cadence: List[str] = Field(..., description="30-day follow-up timeline and triggers")
+    crm_payload: Dict[str, str] = Field(..., description="Structured CRM-ready JSON payload")
+
+def run_bizdev_crew(inputs: dict) -> dict:
+    """Callable wrapper for FastAPI orchestration."""
+    os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    
+    # Tools
+    serper_tool = SerperDevTool()
+    scrape_tool = ScrapeWebsiteTool()
+    lead_tool = B2BLeadLookupTool()
+    tone_tool = OutreachToneValidator()
+    crm_tool = CRMFormatterTool()
+    
+    # Agents
+    prospector = Agent(
+        config=bizdev_agents_config["lead_prospector"],
+        tools=[serper_tool, lead_tool]
+    )
+    strategist = Agent(
+        config=bizdev_agents_config["partnership_strategist"],
+        tools=[serper_tool, scrape_tool]
+    )
+    outreach_agent = Agent(
+        config=bizdev_agents_config["outreach_specialist"],
+        tools=[tone_tool]
+    )
+    pipeline_agent = Agent(
+        config=bizdev_agents_config["pipeline_manager"],
+        tools=[crm_tool]
+    )
+    
+    # Tasks & Context Wiring
+    research_task = Task(config=bizdev_tasks_config["lead_research"], agent=prospector)
+    strategy_task = Task(config=bizdev_tasks_config["strategy_mapping"], agent=strategist, context=[research_task])
+    outreach_task = Task(config=bizdev_tasks_config["outreach_creation"], agent=outreach_agent, context=[strategy_task, research_task])
+    sync_task = Task(
+        config=bizdev_tasks_config["pipeline_sync"],
+        agent=pipeline_agent,
+        context=[outreach_task, research_task],
+        output_pydantic=BizDevOutput
+    )
+    
+    # Crew Assembly
+    bizdev_crew = Crew(
+        agents=[prospector, strategist, outreach_agent, pipeline_agent],
+        tasks=[research_task, strategy_task, outreach_task, sync_task],
+        verbose=False,
+        memory=True
+    )
+    
+    # Execution & Structured Return
+    result = bizdev_crew.kickoff(inputs=inputs)
+    return result.pydantic.model_dump() if hasattr(result.pydantic, "model_dump") else result.pydantic.dict()
+
+
+5. Updated main.py Registration
+
+# Add to your existing main.py imports
+from crews.bizdev_crew import run_bizdev_crew
+
+# Register in orchestrator (inside app setup)
+orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
+
+
+#FastAPI Usage Example
+
+curl -X POST http://localhost:8000/api/v1/workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "bizdev",
+    "inputs": {
+      "product_category": "Smart Home Security Cameras",
+      "partnership_type": "Regional Distributors & Retail Partners",
+      "target_markets": "Germany, Japan, Canada",
+      "target_languages": ["de", "ja", "en"],
+      "key_decision_maker_roles": "Head of Procurement, Channel Manager"
+    }
+  }'
+
+
+
+
+ #Production Integration Notes
+
+    Real B2B Data Sources: Replace B2BLeadLookupTool fallback with Apollo.io API, Crunchbase Pro, or LinkedIn Sales Navigator (via third-party aggregators like PhantomBuster or Expandi for compliant automation).
+    Email/LinkedIn Delivery: Pipe outreach_sequences into SendGrid/HubSpot Sequences or LinkedIn Automation tools with human-in-the-loop approval.
+    Compliance Logging: Store OutreachToneValidator flags in audit trails for GDPR/CCPA outreach compliance reporting.
+    CRM Webhook Sync: POST crm_payload directly to HubSpot /crm/v3/objects/companies or Salesforce REST API for auto-lead creation.
+    Cache Strategy: Cache lead research per {company_name, region} with 72h TTL to reduce API calls & LLM token costs.
