@@ -1,0 +1,26 @@
+funnel_analysis:
+  description: >
+    Analyze recent sales funnel data for {product_category} across {target_markets}.
+    Identify drop-off rates, checkout friction, payment method preferences, and regional performance gaps.
+    Use available CRM and platform data to map the complete customer journey.
+  expected_output: "A detailed funnel analysis report highlighting conversion rates, bottlenecks, and regional performance discrepancies."
+
+cro_recommendations:
+  description: >
+    Based on the funnel analysis, develop specific CRO and A/B testing recommendations.
+    Focus on product pages, checkout flows, trust signals, and localized UX improvements.
+    Prioritize high-impact, low-effort tests with clear success metrics.
+  expected_output: "A structured CRO recommendation matrix with test hypotheses, expected impact, implementation steps, and measurement KPIs."
+
+pricing_optimization:
+  description: >
+    Evaluate current pricing, discount structures, and promotional calendars for {product_category} in {target_markets}.
+    Factor in competitor pricing, regional purchasing power, currency fluctuations, and tax/VAT impacts.
+    Recommend dynamic pricing adjustments and margin-optimized promotional strategies.
+  expected_output: "A pricing optimization report with region-specific pricing recommendations, discount thresholds, and margin impact projections."
+
+playbook_generation:
+  description: >
+    Synthesize the funnel analysis, CRO recommendations, and pricing strategy into a comprehensive sales improvement playbook.
+    Include a 30/60/90 day implementation roadmap, team responsibilities, success metrics, and risk mitigation steps.
+  expected_output: "A structured, actionable sales improvement playbook ready for execution by sales and marketing teams."

@@ -26,6 +26,8 @@ Cross-BorderAIProject/
 |   |   |-- agents.yaml
 |   |   `-- tasks.yaml
 |   `-- sales_improvement/
+|       |-- agents.yaml
+|       `-- tasks.yaml
 |-- tools/
 |   |-- base/
 |   |-- integrations/
@@ -33,6 +35,7 @@ Cross-BorderAIProject/
 |       |-- analytics_tools.py
 |       |-- bizdev_tools.py
 |       |-- marketing_tools.py
+|       |-- sales_tools.py
 |       `-- scheduler_tools.py
 |-- crews/
 |   |-- analytics_crew.py
@@ -40,6 +43,7 @@ Cross-BorderAIProject/
 |   |-- content_crew.py
 |   |-- marketing_crew.py
 |   |-- scheduler_crew.py
+|   |-- sales_improvement_crew.py
 |   `-- support_crew.py
 |-- api/
 |   `-- routes.py
@@ -82,6 +86,7 @@ bizdev
 marketing
 content
 scheduler
+sales_improvement
 support
 ```
 
@@ -109,7 +114,7 @@ CREWAI_MEMORY_ENABLED=false
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\scheduler_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -133,7 +138,7 @@ Expected shape:
 ```json
 {
   "status": "healthy",
-  "registered_workflows": ["analytics", "bizdev", "marketing", "content", "scheduler", "support"]
+  "registered_workflows": ["analytics", "bizdev", "marketing", "content", "scheduler", "sales_improvement", "support"]
 }
 ```
 
@@ -150,6 +155,29 @@ $body = @{
     target_markets = "Germany, Japan, Canada"
     target_languages = @("de", "ja", "en")
     key_decision_maker_roles = "Head of Procurement, Channel Manager"
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+## Run Sales Performance Improvement
+
+This request starts the Sales Performance Improvement CrewAI workflow and may consume OpenAI API tokens.
+
+```powershell
+$body = @{
+  workflow_type = "sales_improvement"
+  inputs = @{
+    product_category = "Smart Home Security Cameras"
+    target_markets = "US, EU, Japan"
+    current_avg_conversion = "2.1%"
+    target_conversion = "3.5%"
+    date_range = "Last 60 Days"
   }
 } | ConvertTo-Json -Depth 5
 
