@@ -1,0 +1,24 @@
+data_collection:
+  description: >
+    Collect recent sales, ad spend, conversion, and inventory data for {product_category} across {target_markets}.
+    Pull metrics from available platform APIs, web sources, and historical tracking systems.
+    Ensure data covers the specified date range: {date_range}.
+  expected_output: "A consolidated dataset of sales, ad performance, inventory levels, and regional metrics."
+
+performance_analysis:
+  description: >
+    Analyze the collected data to identify top-performing regions, underperforming channels,
+    ROI trends, and potential bottlenecks in the sales funnel for {product_category}.
+  expected_output: "A performance analysis summary highlighting key metrics, trends, and optimization opportunities by region."
+
+market_research:
+  description: >
+    Research competitor positioning, pricing strategies, and market demand for {product_category} in {target_markets}.
+    Cross-reference findings with our performance data to identify gaps and competitive advantages.
+  expected_output: "A competitive landscape report with market share insights, pricing benchmarks, and strategic positioning recommendations."
+
+insight_report:
+  description: >
+    Synthesize the performance analysis and market research into a structured executive report.
+    Include KPI dashboards, actionable recommendations, risk alerts, and a 30/60/90 day action plan.
+  expected_output: "A comprehensive, structured analytics report with executive summary, regional breakdowns, and prioritized next steps."

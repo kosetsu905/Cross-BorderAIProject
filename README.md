@@ -20,15 +20,19 @@ Cross-BorderAIProject/
 |   |   |-- agents.yaml
 |   |   `-- tasks.yaml
 |   |-- analytics/
+|   |   |-- agents.yaml
+|   |   `-- tasks.yaml
 |   |-- scheduler/
 |   `-- sales_improvement/
 |-- tools/
 |   |-- base/
 |   |-- integrations/
 |   `-- custom/
+|       |-- analytics_tools.py
 |       |-- bizdev_tools.py
 |       `-- marketing_tools.py
 |-- crews/
+|   |-- analytics_crew.py
 |   |-- bizdev_crew.py
 |   |-- content_crew.py
 |   |-- marketing_crew.py
@@ -69,6 +73,7 @@ docs/design_assets/
 ## Registered Workflows
 
 ```text
+analytics
 bizdev
 marketing
 content
@@ -99,7 +104,7 @@ CREWAI_MEMORY_ENABLED=false
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\support_crew.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -123,15 +128,13 @@ Expected shape:
 ```json
 {
   "status": "healthy",
-  "registered_workflows": ["bizdev", "marketing", "content", "support"]
+  "registered_workflows": ["analytics", "bizdev", "marketing", "content", "support"]
 }
 ```
 
 ## Run Business Development
 
 This request starts the CrewAI workflow and may consume OpenAI API tokens.
-
-PowerShell recommended:
 
 ```powershell
 $body = @{
@@ -152,21 +155,26 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-If you want curl syntax in PowerShell, use `curl.exe`, not `curl`:
+## Run Data Analytics
+
+This request starts the Analytics CrewAI workflow and may consume OpenAI API tokens.
 
 ```powershell
-curl.exe -X POST http://localhost:8000/api/v1/workflow `
-  -H "Content-Type: application/json" `
-  -d '{
-    "workflow_type": "bizdev",
-    "inputs": {
-      "product_category": "Smart Home Security Cameras",
-      "partnership_type": "Regional Distributors & Retail Partners",
-      "target_markets": "Germany, Japan, Canada",
-      "target_languages": ["de", "ja", "en"],
-      "key_decision_maker_roles": "Head of Procurement, Channel Manager"
-    }
-  }'
+$body = @{
+  workflow_type = "analytics"
+  inputs = @{
+    product_category = "Smart Home Security Cameras"
+    target_markets = "US, UK, Germany, Japan"
+    date_range = "Last 30 Days"
+    currency = "USD"
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
 ## Run Customer Support

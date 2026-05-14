@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from api.routes import create_router
+from crews.analytics_crew import run_analytics_crew
 from crews.bizdev_crew import run_bizdev_crew
 from crews.content_crew import run_content_crew
 from crews.marketing_crew import run_marketing_crew
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
 orchestrator = MasterOrchestrator()
+orchestrator.register_crew(WorkflowType.ANALYTICS, run_analytics_crew)
 orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
 orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
 orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)
