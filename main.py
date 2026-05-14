@@ -10,6 +10,7 @@ from crews.analytics_crew import run_analytics_crew
 from crews.bizdev_crew import run_bizdev_crew
 from crews.content_crew import run_content_crew
 from crews.marketing_crew import run_marketing_crew
+from crews.scheduler_crew import run_scheduler_crew
 from crews.support_crew import run_support_crew
 from models import WorkflowType
 from orchestrator import MasterOrchestrator
@@ -25,6 +26,7 @@ orchestrator.register_crew(WorkflowType.ANALYTICS, run_analytics_crew)
 orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
 orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
 orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)
+orchestrator.register_crew(WorkflowType.SCHEDULER, run_scheduler_crew)
 orchestrator.register_crew(WorkflowType.SUPPORT, run_support_crew)
 
 app.add_middleware(

@@ -1,0 +1,26 @@
+timezone_holiday_mapping:
+  description: >
+    Map the target regions ({target_markets}) to their local timezones, upcoming holidays,
+    and peak shopping seasons. Account for daylight saving transitions and regional business hours.
+    Provide a structured calendar baseline for {event_type} planning.
+  expected_output: "A regional calendar matrix with timezones, holidays, peak periods, and optimal local launch windows."
+
+campaign_event_alignment:
+  description: >
+    Align the proposed {event_list} with the regional calendar baseline.
+    Sequence launches to avoid market cannibalization, synchronize with marketing and sales targets,
+    and prioritize high-impact regional windows.
+  expected_output: "A sequenced event calendar with regional prioritization, alignment rationale, and business objective mapping."
+
+conflict_resolution_optimization:
+  description: >
+    Review the sequenced calendar for overlaps, resource bottlenecks, and platform scheduling limits.
+    Resolve conflicts, adjust timings, and output a finalized, conflict-free schedule.
+  expected_output: "An optimized, conflict-free event schedule with resource allocation notes and adjustment rationale."
+
+notification_reminder_setup:
+  description: >
+    Design a multi-channel reminder workflow for the finalized schedule.
+    Include T-7d, T-3d, T-1d, and launch-day notifications across Email, Slack, SMS, and Calendar.
+    Add escalation rules and compliance checks for each region.
+  expected_output: "A structured notification plan with channel routing, timing triggers, escalation paths, and compliance notes."

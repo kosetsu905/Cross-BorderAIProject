@@ -23,6 +23,8 @@ Cross-BorderAIProject/
 |   |   |-- agents.yaml
 |   |   `-- tasks.yaml
 |   |-- scheduler/
+|   |   |-- agents.yaml
+|   |   `-- tasks.yaml
 |   `-- sales_improvement/
 |-- tools/
 |   |-- base/
@@ -30,12 +32,14 @@ Cross-BorderAIProject/
 |   `-- custom/
 |       |-- analytics_tools.py
 |       |-- bizdev_tools.py
-|       `-- marketing_tools.py
+|       |-- marketing_tools.py
+|       `-- scheduler_tools.py
 |-- crews/
 |   |-- analytics_crew.py
 |   |-- bizdev_crew.py
 |   |-- content_crew.py
 |   |-- marketing_crew.py
+|   |-- scheduler_crew.py
 |   `-- support_crew.py
 |-- api/
 |   `-- routes.py
@@ -77,6 +81,7 @@ analytics
 bizdev
 marketing
 content
+scheduler
 support
 ```
 
@@ -104,7 +109,7 @@ CREWAI_MEMORY_ENABLED=false
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\scheduler_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -128,7 +133,7 @@ Expected shape:
 ```json
 {
   "status": "healthy",
-  "registered_workflows": ["analytics", "bizdev", "marketing", "content", "support"]
+  "registered_workflows": ["analytics", "bizdev", "marketing", "content", "scheduler", "support"]
 }
 ```
 
@@ -145,6 +150,28 @@ $body = @{
     target_markets = "Germany, Japan, Canada"
     target_languages = @("de", "ja", "en")
     key_decision_maker_roles = "Head of Procurement, Channel Manager"
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+## Run Event Scheduler
+
+This request starts the Event Scheduler CrewAI workflow and may consume OpenAI API tokens.
+
+```powershell
+$body = @{
+  workflow_type = "scheduler"
+  inputs = @{
+    event_type = "Product Launch & Promotional Campaign"
+    target_markets = "US, UK, Germany, Japan"
+    event_list = "Smart Camera Launch, Early Access Sale, Influencer Drop, Post-Launch Retargeting"
+    preferred_launch_window = "2026-05-15 to 2026-06-15"
   }
 } | ConvertTo-Json -Depth 5
 
