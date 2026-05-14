@@ -14,6 +14,8 @@ Cross-BorderAIProject/
 |   |   |-- agents.yaml
 |   |   `-- tasks.yaml
 |   |-- content/
+|   |   |-- agents.yaml
+|   |   `-- tasks.yaml
 |   |-- support/
 |   |-- analytics/
 |   |-- scheduler/
@@ -26,6 +28,7 @@ Cross-BorderAIProject/
 |       `-- marketing_tools.py
 |-- crews/
 |   |-- bizdev_crew.py
+|   |-- content_crew.py
 |   `-- marketing_crew.py
 |-- api/
 |   `-- routes.py
@@ -60,25 +63,12 @@ docs/CrawAI Enterprise Solution high Level Design Document.docx
 docs/design_assets/
 ```
 
-## Marketing Workflow
-
-The `crews/marketing_crew.py` shown inside the original FastAPI wrapper note was an example of how another workflow would be registered with the master orchestrator. It is not Customer Service code and does not directly depend on the Customer Service workflow.
-
-It is related to `docs/original_code_notes/marketing_campaign_code.txt`: the Marketing Campaign note defines a standalone runnable CrewAI script, while the FastAPI wrapper note rewrites that idea as a callable `run_marketing_crew(inputs)` function so the master orchestrator can run it through `/api/v1/workflow`.
-
-Marketing has now been converted into runnable project code:
-
-```text
-config/marketing/
-tools/custom/marketing_tools.py
-crews/marketing_crew.py
-```
-
-Registered workflow types:
+## Registered Workflows
 
 ```text
 bizdev
 marketing
+content
 ```
 
 ## Setup
@@ -105,7 +95,7 @@ CREWAI_MEMORY_ENABLED=false
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\crews\marketing_crew.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -129,7 +119,7 @@ Expected shape:
 ```json
 {
   "status": "healthy",
-  "registered_workflows": ["bizdev", "marketing"]
+  "registered_workflows": ["bizdev", "marketing", "content"]
 }
 ```
 
@@ -175,10 +165,27 @@ curl.exe -X POST http://localhost:8000/api/v1/workflow `
   }'
 ```
 
-Poll the returned job:
+## Run Content Creation
+
+This request starts the Content Creation CrewAI workflow and may consume OpenAI API tokens.
 
 ```powershell
-curl http://localhost:8000/api/v1/workflow/replace-with-real-job-id
+$body = @{
+  workflow_type = "content"
+  inputs = @{
+    subject = "Sustainable Activewear for Cold Climates"
+    product_category = "Eco-Friendly Winter Sportswear"
+    target_markets = "Germany, Japan, Canada"
+    target_languages = @("de", "ja", "en")
+    platforms = @("Instagram", "LinkedIn", "X")
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
 ## Run Marketing Campaign
@@ -201,4 +208,12 @@ Invoke-RestMethod `
   -Method POST `
   -ContentType "application/json" `
   -Body $body
+```
+
+## Poll A Job
+
+All workflow submit requests return a `job_id`. Poll it with:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/workflow/replace-with-real-job-id"
 ```

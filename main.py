@@ -7,6 +7,7 @@ import uvicorn
 
 from api.routes import create_router
 from crews.bizdev_crew import run_bizdev_crew
+from crews.content_crew import run_content_crew
 from crews.marketing_crew import run_marketing_crew
 from models import WorkflowType
 from orchestrator import MasterOrchestrator
@@ -20,6 +21,7 @@ app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
 orchestrator = MasterOrchestrator()
 orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
 orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
+orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)
 
 app.add_middleware(
     CORSMiddleware,

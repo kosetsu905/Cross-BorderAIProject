@@ -1,0 +1,24 @@
+trend_research:
+  description: >
+    Research trending topics, competitor content, and search intent for {product_category} in {target_markets}.
+    Identify high-volume keywords, content gaps, and viral angles across {platforms}.
+  expected_output: "A comprehensive trend report with keywords, competitor analysis, and content opportunity insights."
+
+content_strategy:
+  description: >
+    Using the trend research, develop a content strategy for {product_category} targeting {target_languages}.
+    Define audience persona, core message, SEO focus, content structure, and distribution plan.
+  expected_output: "A detailed content blueprint outlining structure, tone, SEO targets, and platform distribution strategy."
+
+content_creation:
+  description: >
+    Write a full blog/article in markdown format about {subject} based on the content strategy.
+    Then generate platform-specific social media posts for {platforms} in {target_languages}.
+    Ensure cultural adaptation, proper hashtags, and clear CTAs.
+  expected_output: "A complete markdown article and a list of localized social media posts ready for scheduling."
+
+quality_assurance:
+  description: >
+    Review the article and social posts for SEO optimization, brand voice consistency, cultural accuracy, and compliance.
+    Fix any issues, ensure proper formatting, and validate against {target_markets} regulations.
+  expected_output: "Final polished content package with SEO keywords, compliance notes, and structured social posts."
