@@ -17,6 +17,8 @@ Cross-BorderAIProject/
 |   |   |-- agents.yaml
 |   |   `-- tasks.yaml
 |   |-- support/
+|   |   |-- agents.yaml
+|   |   `-- tasks.yaml
 |   |-- analytics/
 |   |-- scheduler/
 |   `-- sales_improvement/
@@ -29,7 +31,8 @@ Cross-BorderAIProject/
 |-- crews/
 |   |-- bizdev_crew.py
 |   |-- content_crew.py
-|   `-- marketing_crew.py
+|   |-- marketing_crew.py
+|   `-- support_crew.py
 |-- api/
 |   `-- routes.py
 |-- celery_worker/
@@ -69,6 +72,7 @@ docs/design_assets/
 bizdev
 marketing
 content
+support
 ```
 
 ## Setup
@@ -95,7 +99,7 @@ CREWAI_MEMORY_ENABLED=false
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\support_crew.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -119,7 +123,7 @@ Expected shape:
 ```json
 {
   "status": "healthy",
-  "registered_workflows": ["bizdev", "marketing", "content"]
+  "registered_workflows": ["bizdev", "marketing", "content", "support"]
 }
 ```
 
@@ -163,6 +167,27 @@ curl.exe -X POST http://localhost:8000/api/v1/workflow `
       "key_decision_maker_roles": "Head of Procurement, Channel Manager"
     }
   }'
+```
+
+## Run Customer Support
+
+This request starts the Customer Support CrewAI workflow and may consume OpenAI API tokens.
+
+```powershell
+$body = @{
+  workflow_type = "support"
+  inputs = @{
+    customer = "GlobalTech Solutions"
+    person = "Maria Chen"
+    inquiry = "Our bulk order #EU-8842 is delayed. We need it by Friday for a product launch. What are the expedited shipping options and compensation policy?"
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
 ## Run Content Creation

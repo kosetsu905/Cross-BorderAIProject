@@ -1,0 +1,14 @@
+inquiry_resolution:
+  description: >
+    {customer} just reached out with an important inquiry: {inquiry}.
+    {person} from {customer} is the contact. Research and provide a complete, accurate response.
+    Use available tools to verify policies, shipping timelines, return procedures, or product specs.
+    Ensure no assumptions are made and cite sources where applicable.
+  expected_output: "A detailed, well-researched draft response addressing all parts of the inquiry, with clear resolution steps and referenced sources."
+
+quality_assurance_review:
+  description: >
+    Review the drafted response for {customer}'s inquiry. Ensure it is comprehensive, accurate,
+    culturally appropriate, and aligned with brand voice. Check that all questions are answered,
+    tone is professional and friendly, and no unsupported claims are made.
+  expected_output: "A final, polished response ready for delivery, including QA notes, compliance checks, and recommended follow-up timing."
