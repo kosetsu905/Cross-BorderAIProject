@@ -49,6 +49,10 @@ class TimezoneHolidayTool(BaseTool):
                 region: timezone_map.get(region.upper(), "UTC") for region in regions
             },
             "date_range": date_range,
+            "date_constraint": (
+                "All recommended event dates must stay inside this date_range. "
+                "Holiday names are context only and must not override the requested date_range."
+            ),
             "holidays": [
                 "Black Friday",
                 "Cyber Monday",

@@ -36,6 +36,19 @@ class PricingRecommendation(BaseModel):
 class SalesImprovementOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    data_source: str = Field(
+        ...,
+        description=(
+            "Source of the underlying data, such as external_crm_api or "
+            "development_fallback_sample"
+        ),
+    )
+    confidence_level: str = Field(
+        ..., description="Confidence level for the recommendations"
+    )
+    assumptions: list[str] = Field(
+        ..., description="Assumptions and validation caveats for the analysis"
+    )
     funnel_analysis_summary: str = Field(
         ..., description="Executive summary of funnel bottlenecks and regional gaps"
     )

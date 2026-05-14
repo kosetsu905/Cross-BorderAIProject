@@ -1,4 +1,6 @@
 import os
+import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +25,20 @@ class ScheduledEvent(BaseModel):
 
     event_name: str = Field(..., description="Name of the scheduled event or campaign")
     region: str = Field(..., description="Target market or region")
-    start_utc: str = Field(..., description="Start time in UTC, ISO 8601 preferred")
-    end_utc: str = Field(..., description="End time in UTC, ISO 8601 preferred")
+    start_utc: str = Field(
+        ...,
+        description=(
+            "Start time in UTC, ISO 8601 preferred. Must be inside the requested "
+            "preferred_launch_window."
+        ),
+    )
+    end_utc: str = Field(
+        ...,
+        description=(
+            "End time in UTC, ISO 8601 preferred. Must be inside the requested "
+            "preferred_launch_window."
+        ),
+    )
     local_time_note: str = Field(..., description="Optimal local time and timezone context")
     priority: str = Field(..., description="Priority level such as High, Medium, or Low")
 
@@ -96,9 +110,67 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
+def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(inputs)
+    normalized.setdefault("current_date", date.today().isoformat())
+    normalized.setdefault(
+        "date_policy",
+        (
+            "Use only dates inside preferred_launch_window. Do not use historical "
+            "dates or dates copied from generic holiday examples."
+        ),
+    )
+    return normalized
+
+
+def _parse_launch_window(value: str | None) -> tuple[date, date] | None:
+    if not value:
+        return None
+
+    matches = re.findall(r"\d{4}-\d{2}-\d{2}", value)
+    if len(matches) < 2:
+        return None
+
+    start = date.fromisoformat(matches[0])
+    end = date.fromisoformat(matches[1])
+    return (start, end) if start <= end else (end, start)
+
+
+def _parse_event_date(value: str) -> date:
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", value)
+    if not date_match:
+        raise ValueError(f"Unable to parse event date from '{value}'.")
+    return datetime.fromisoformat(date_match.group(0)).date()
+
+
+def _validate_schedule_window(result: dict[str, Any], inputs: dict[str, Any]) -> None:
+    launch_window = _parse_launch_window(str(inputs.get("preferred_launch_window", "")))
+    if launch_window is None:
+        return
+
+    window_start, window_end = launch_window
+    invalid_events: list[str] = []
+    for event in result.get("optimized_schedule", []):
+        event_name = event.get("event_name", "<unnamed event>")
+        start_date = _parse_event_date(str(event.get("start_utc", "")))
+        end_date = _parse_event_date(str(event.get("end_utc", "")))
+        if start_date < window_start or end_date > window_end:
+            invalid_events.append(
+                f"{event_name}: {start_date.isoformat()} to {end_date.isoformat()}"
+            )
+
+    if invalid_events:
+        joined = "; ".join(invalid_events)
+        raise ValueError(
+            "Scheduler output contains dates outside preferred_launch_window "
+            f"{window_start.isoformat()} to {window_end.isoformat()}: {joined}"
+        )
+
+
 def run_scheduler_crew(inputs: dict[str, Any]) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
     os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    normalized_inputs = _normalize_inputs(inputs)
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
@@ -153,4 +225,6 @@ def run_scheduler_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         memory=_memory_enabled(),
     )
 
-    return _serialize_crew_result(scheduler_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(scheduler_crew.kickoff(inputs=normalized_inputs))
+    _validate_schedule_window(result, normalized_inputs)
+    return result

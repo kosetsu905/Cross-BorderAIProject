@@ -26,6 +26,19 @@ class RegionalKPI(BaseModel):
 class AnalyticsReportOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    data_source: str = Field(
+        ...,
+        description=(
+            "Source of the underlying data, such as external_platform_api, "
+            "provider_ready_stub, or development_fallback_sample"
+        ),
+    )
+    confidence_level: str = Field(
+        ..., description="Confidence level for the analytics report"
+    )
+    assumptions: list[str] = Field(
+        ..., description="Assumptions and validation caveats for the analysis"
+    )
     executive_summary: str = Field(
         ..., description="High-level overview of performance and key findings"
     )

@@ -168,6 +168,7 @@ Invoke-RestMethod `
 ## Run Sales Performance Improvement
 
 This request starts the Sales Performance Improvement CrewAI workflow and may consume OpenAI API tokens.
+Without `CRM_API_TOKEN`, the sales tools use development fallback sample data and the output should be treated as illustrative until validated with real CRM/platform analytics.
 
 ```powershell
 $body = @{
@@ -191,6 +192,7 @@ Invoke-RestMethod `
 ## Run Event Scheduler
 
 This request starts the Event Scheduler CrewAI workflow and may consume OpenAI API tokens.
+Scheduler results are validated against `preferred_launch_window`; if the model returns dates outside that window, the job fails instead of returning an invalid completed schedule.
 
 ```powershell
 $body = @{
@@ -213,6 +215,7 @@ Invoke-RestMethod `
 ## Run Data Analytics
 
 This request starts the Analytics CrewAI workflow and may consume OpenAI API tokens.
+Without real platform and competitive data provider credentials such as `ECOM_API_TOKEN`, analytics tools use development fallback sample data and the output should be treated as illustrative.
 
 ```powershell
 $body = @{

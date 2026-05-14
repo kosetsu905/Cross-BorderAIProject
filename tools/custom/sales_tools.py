@@ -26,6 +26,8 @@ class CRMFunnelTool(BaseTool):
             "product": product_category,
             "markets": target_markets,
             "status": "prod_ready",
+            "data_source": "external_crm_api",
+            "confidence_level": "high",
             "message": "Connect a real CRM or e-commerce analytics endpoint.",
         }
 
@@ -36,6 +38,11 @@ class CRMFunnelTool(BaseTool):
         return {
             "product": product_category,
             "markets": target_markets,
+            "data_source": "development_fallback_sample",
+            "confidence_level": "low",
+            "assumption_notice": (
+                "This is sample fallback data, not a factual diagnosis of the user's business."
+            ),
             "overall_conversion_rate": "2.8%",
             "top_drop_off": "Payment Gateway, 34%",
             "regional_gaps": {
@@ -61,6 +68,8 @@ class CROHeuristicsTool(BaseTool):
             "expected_uplift": "8-12%",
             "implementation_effort": "Medium",
             "success_metric": "Checkout completion rate",
+            "data_source": "heuristic_recommendation",
+            "confidence_level": "medium",
             "status": "dev_mode",
         }
 
@@ -76,6 +85,11 @@ class PricingIntelTool(BaseTool):
         return {
             "category": product_category,
             "markets": target_markets,
+            "data_source": "development_fallback_sample",
+            "confidence_level": "low",
+            "assumption_notice": (
+                "This is illustrative fallback pricing guidance, not validated competitor intelligence."
+            ),
             "recommended_adjustments": {
                 "EU": "+5% to offset VAT and shipping",
                 "JP": "Localized payment bundle discount",

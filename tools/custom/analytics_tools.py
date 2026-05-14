@@ -40,11 +40,9 @@ class EcomPlatformMetricsTool(BaseTool):
     @lru_cache(maxsize=32)
     def _dev_fallback(platform: str, region: str, date_range: str) -> dict[str, Any]:
         logger.info("Using e-commerce metrics development fallback")
-        return {
-            "platform": platform,
-            "region": region,
-            "date_range": date_range,
-            "metrics": {
+        region_key = region.strip().upper()
+        sample_metrics = {
+            "US": {
                 "total_sales": 45200.00,
                 "conversion_rate": "3.2%",
                 "cpc": 1.15,
@@ -52,6 +50,52 @@ class EcomPlatformMetricsTool(BaseTool):
                 "inventory_status": "Healthy",
                 "top_selling_sku": "CAM-4K-PRO",
             },
+            "UK": {
+                "total_sales": 31800.00,
+                "conversion_rate": "2.7%",
+                "cpc": 1.34,
+                "roas": 2.3,
+                "inventory_status": "Moderate",
+                "top_selling_sku": "CAM-4K-LITE",
+            },
+            "GERMANY": {
+                "total_sales": 28650.00,
+                "conversion_rate": "2.4%",
+                "cpc": 1.42,
+                "roas": 2.1,
+                "inventory_status": "Healthy",
+                "top_selling_sku": "CAM-4K-PRO",
+            },
+            "JAPAN": {
+                "total_sales": 24400.00,
+                "conversion_rate": "2.1%",
+                "cpc": 1.62,
+                "roas": 1.9,
+                "inventory_status": "Watch",
+                "top_selling_sku": "CAM-MINI-JP",
+            },
+        }
+        metrics = sample_metrics.get(
+            region_key,
+            {
+                "total_sales": 15000.00,
+                "conversion_rate": "2.0%",
+                "cpc": 1.50,
+                "roas": 2.0,
+                "inventory_status": "Unknown",
+                "top_selling_sku": "SAMPLE-SKU",
+            },
+        )
+        return {
+            "platform": platform,
+            "region": region,
+            "date_range": date_range,
+            "data_source": "development_fallback_sample",
+            "confidence_level": "low",
+            "assumption_notice": (
+                "This is sample fallback data, not factual platform performance."
+            ),
+            "metrics": metrics,
             "status": "dev_mode",
         }
 
@@ -74,6 +118,11 @@ class CompetitorBenchmarkTool(BaseTool):
             "our_price_position": "Mid-tier, roughly 5% below average",
             "competitor_promo_activity": "High",
             "market_demand_trend": "Increasing, approximately +12% month over month",
+            "data_source": "provider_ready_stub",
+            "confidence_level": "low",
+            "assumption_notice": (
+                "This is placeholder competitive intelligence until a real provider is connected."
+            ),
             "status": "provider_ready_stub",
         }
 
@@ -84,6 +133,11 @@ class CompetitorBenchmarkTool(BaseTool):
         return {
             "category": product_category,
             "markets": target_markets,
+            "data_source": "development_fallback_sample",
+            "confidence_level": "low",
+            "assumption_notice": (
+                "This is sample fallback benchmark data, not validated market research."
+            ),
             "avg_competitor_price": "$125.50",
             "our_price_position": "Competitive",
             "market_demand_trend": "Stable to growing",
