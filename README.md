@@ -98,23 +98,51 @@ cd D:\Cross-BorderAIProject
 python -m pip install -r requirements.txt
 ```
 
-The project expects a root-level `.env` file:
+The project expects a root-level `.env` file.
+
+Minimum required for running CrewAI workflows:
 
 ```env
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL_NAME=gpt-4o-mini
-SERPER_API_KEY=optional_serper_key
 CREWAI_MEMORY_ENABLED=false
 ```
 
 `CREWAI_MEMORY_ENABLED` defaults to `false`. Turn it on only after your OpenAI account/key can use the embeddings endpoint required by CrewAI memory.
+
+Optional shared services:
+
+```env
+SERPER_API_KEY=optional_serper_key
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+```
+
+Optional workflow data providers:
+
+```env
+# Business Development lead enrichment. Without these, BizDev uses development fallback lead data.
+CRUNCHBASE_API_KEY=optional_crunchbase_key
+APOLLO_API_KEY=optional_apollo_key
+
+# Analytics platform metrics. Without this, Analytics uses development fallback sample metrics.
+ECOM_API_TOKEN=optional_ecommerce_platform_token
+
+# Sales funnel data. Without this, Sales Improvement uses development fallback sample funnel data.
+CRM_API_TOKEN=optional_crm_or_platform_token
+
+# Scheduler holiday/timezone provider. Without this, Scheduler uses development fallback calendar data.
+HOLIDAY_API_KEY=optional_holiday_provider_key
+```
+
+Current runnable code does not use the Google Ads, Meta, TikTok, Shopify, Amazon, or calendar-provider tokens mentioned in archived notes yet. Those belong to future integration work unless a corresponding tool is implemented under `tools/`.
 
 ## No-Token Checks
 
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -145,6 +173,7 @@ Expected shape:
 ## Run Business Development
 
 This request starts the CrewAI workflow and may consume OpenAI API tokens.
+Without `CRUNCHBASE_API_KEY` or `APOLLO_API_KEY`, the BizDev lead enrichment tool uses development fallback lead data and the output should be treated as illustrative until validated with real B2B provider data.
 
 ```powershell
 $body = @{
@@ -192,6 +221,7 @@ Invoke-RestMethod `
 ## Run Event Scheduler
 
 This request starts the Event Scheduler CrewAI workflow and may consume OpenAI API tokens.
+Without `HOLIDAY_API_KEY`, the scheduler uses development fallback calendar context and the output should be treated as illustrative until validated with a real holiday/timezone provider.
 Scheduler results are validated against `preferred_launch_window`; if the model returns dates outside that window, the job fails instead of returning an invalid completed schedule.
 
 ```powershell

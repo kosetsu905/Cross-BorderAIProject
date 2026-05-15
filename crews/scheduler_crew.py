@@ -55,6 +55,20 @@ class ReminderTrigger(BaseModel):
 class SchedulerOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    data_source: str = Field(
+        ...,
+        description=(
+            "Provider status for timezone/holiday context, such as "
+            "development_fallback, mixed, or live_provider."
+        ),
+    )
+    confidence_level: str = Field(
+        ...,
+        description="Confidence level based on whether real holiday/timezone provider data was available",
+    )
+    assumptions: list[str] = Field(
+        ..., description="Important caveats about fallback calendar data or inferred holiday context"
+    )
     optimized_schedule: list[ScheduledEvent] = Field(
         ..., description="Final conflict-free event schedule"
     )

@@ -21,4 +21,7 @@ pipeline_sync:
   description: >
     Format the lead research, partnership strategy, and outreach sequences into a structured CRM-ready payload.
     Define a 30-day follow-up cadence, add compliance/QA notes, and map data fields to standard CRM schemas.
-  expected_output: "A production-ready JSON payload for CRM import, structured follow-up calendar, and compliance verification notes."
+    If lead enrichment tools return development fallback data, explicitly mark data_source as development_fallback,
+    set confidence_level to Low or Illustrative, and add assumptions explaining that contacts, milestones, and fit scores
+    are placeholders until CRUNCHBASE_API_KEY/APOLLO_API_KEY-backed provider data is connected.
+  expected_output: "A CRM-ready JSON payload, structured follow-up calendar, compliance verification notes, and explicit data-source caveats when fallback lead data is used."

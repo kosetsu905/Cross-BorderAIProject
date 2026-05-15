@@ -70,6 +70,20 @@ class CRMPayload(BaseModel):
 class BizDevOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    data_source: str = Field(
+        ...,
+        description=(
+            "Provider status for lead enrichment, such as development_fallback, "
+            "mixed, or live_provider."
+        ),
+    )
+    confidence_level: str = Field(
+        ...,
+        description="Confidence level based on whether real B2B provider data was available",
+    )
+    assumptions: list[str] = Field(
+        ..., description="Important caveats about fallback data, inferred leads, or placeholders"
+    )
     target_leads: list[LeadProfile] = Field(
         ..., description="Curated list of high-potential partnership leads"
     )

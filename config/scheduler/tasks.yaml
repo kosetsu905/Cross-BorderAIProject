@@ -28,4 +28,7 @@ notification_reminder_setup:
     Add escalation rules and compliance checks for each region.
     Final optimized_schedule start_utc and end_utc values must be ISO-like UTC timestamps inside {preferred_launch_window}.
     Do not infer dates from generic holiday names unless those dates fall within the requested window.
-  expected_output: "A structured notification plan with channel routing, timing triggers, escalation paths, compliance notes, and a final schedule constrained to the requested launch window."
+    If timezone/holiday tools return development fallback data, explicitly mark data_source as development_fallback,
+    set confidence_level to Low or Illustrative, and add assumptions explaining that holiday and timezone context should
+    be verified with a live provider before production scheduling.
+  expected_output: "A structured notification plan with channel routing, timing triggers, escalation paths, compliance notes, data-source caveats, and a final schedule constrained to the requested launch window."
