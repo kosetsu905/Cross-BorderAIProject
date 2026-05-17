@@ -1,10 +1,9 @@
 from fastapi import APIRouter, HTTPException
 
 from models import JobResponse, JobStatus, WorkflowRequest
-from orchestrator import MasterOrchestrator
 
 
-def create_router(orchestrator: MasterOrchestrator) -> APIRouter:
+def create_router(orchestrator: object) -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/v1/workflow", response_model=JobResponse)
@@ -26,6 +25,7 @@ def create_router(orchestrator: MasterOrchestrator) -> APIRouter:
     async def health_check() -> dict[str, object]:
         return {
             "status": "healthy",
+            "workflow_backend": orchestrator.__class__.__name__,
             "registered_workflows": [
                 workflow.value for workflow in orchestrator.registered_workflows
             ],

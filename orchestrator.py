@@ -4,6 +4,9 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from celery.result import AsyncResult
+
+from celery_worker.celery_app import celery_app
 from models import JobStatus, WorkflowType
 
 logger = logging.getLogger(__name__)
@@ -69,3 +72,74 @@ class MasterOrchestrator:
                 "error": "Job not found",
             },
         )
+
+
+class CeleryOrchestrator:
+    """Celery-backed workflow router for Redis/message-broker deployments."""
+
+    TASK_MAP: dict[WorkflowType, str] = {
+        WorkflowType.MARKETING: "workflow.marketing",
+        WorkflowType.CONTENT: "workflow.content",
+        WorkflowType.SUPPORT: "workflow.support",
+        WorkflowType.ANALYTICS: "workflow.analytics",
+        WorkflowType.SALES_IMPROVEMENT: "workflow.sales_improvement",
+        WorkflowType.BIZDEV: "workflow.bizdev",
+        WorkflowType.SCHEDULER: "workflow.scheduler",
+    }
+
+    @property
+    def registered_workflows(self) -> list[WorkflowType]:
+        return list(self.TASK_MAP.keys())
+
+    async def submit_job(self, workflow_type: WorkflowType, inputs: dict[str, Any]) -> str:
+        task_name = self.TASK_MAP.get(workflow_type)
+        if task_name is None:
+            raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
+
+        task = celery_app.send_task(task_name, args=[inputs])
+        logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)
+        return str(task.id)
+
+    def get_job_status(self, job_id: str) -> dict[str, Any]:
+        result = AsyncResult(job_id, app=celery_app)
+
+        if result.state == "PENDING":
+            return {
+                "job_id": job_id,
+                "status": JobStatus.PENDING,
+                "result": None,
+                "error": None,
+            }
+
+        if result.state in {"STARTED", "PROGRESS", "RETRY"}:
+            progress = result.info if isinstance(result.info, dict) else None
+            return {
+                "job_id": job_id,
+                "status": JobStatus.RUNNING,
+                "result": progress,
+                "error": None,
+            }
+
+        if result.state == "SUCCESS":
+            task_result = result.result
+            return {
+                "job_id": job_id,
+                "status": JobStatus.COMPLETED,
+                "result": task_result if isinstance(task_result, dict) else {"raw": str(task_result)},
+                "error": None,
+            }
+
+        if result.state == "FAILURE":
+            return {
+                "job_id": job_id,
+                "status": JobStatus.FAILED,
+                "result": None,
+                "error": str(result.result),
+            }
+
+        return {
+            "job_id": job_id,
+            "status": JobStatus.RUNNING,
+            "result": {"celery_state": result.state},
+            "error": None,
+        }

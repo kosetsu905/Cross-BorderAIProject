@@ -54,6 +54,8 @@ Cross-BorderAIProject/
 |-- docs/
 |   |-- design_assets/
 |   `-- original_code_notes/
+|-- Dockerfile
+|-- docker-compose.yml
 |-- models.py
 |-- orchestrator.py
 |-- main.py
@@ -115,9 +117,12 @@ Optional shared services:
 
 ```env
 SERPER_API_KEY=optional_serper_key
+WORKFLOW_BACKEND=local
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
 ```
+
+`WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
 
 Optional workflow data providers:
 
@@ -156,6 +161,55 @@ These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
+```
+
+## Queue Manager / Message Broker
+
+The queue manager code is the background execution layer for long-running workflows. FastAPI receives the request, Redis acts as the message broker, and Celery workers execute the CrewAI workflow outside the web server process.
+
+Use the default local backend for simple development:
+
+```env
+WORKFLOW_BACKEND=local
+```
+
+Use Celery when you want production-style queueing, retries, worker concurrency, and job results that survive outside a single FastAPI process:
+
+```env
+WORKFLOW_BACKEND=celery
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+```
+
+Start Redis separately, then run these in two terminals:
+
+```powershell
+python .\main.py
+```
+
+```powershell
+celery -A celery_worker.celery_app worker --loglevel=info --pool=solo
+```
+
+On Windows, `--pool=solo` is the safest local Celery worker mode. For Docker/Linux workers, the compose file uses normal worker concurrency.
+
+Docker stack:
+
+```powershell
+docker compose up -d --build
+```
+
+Flower monitoring is exposed at:
+
+```text
+http://localhost:5555
+```
+
+The HTTP API endpoints stay the same in both modes:
+
+```text
+POST /api/v1/workflow
+GET  /api/v1/workflow/{job_id}
 ```
 
 ## Run API Server

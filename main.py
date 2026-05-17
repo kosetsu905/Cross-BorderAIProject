@@ -1,4 +1,5 @@
 import logging
+import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -14,7 +15,7 @@ from crews.scheduler_crew import run_scheduler_crew
 from crews.sales_improvement_crew import run_sales_improvement_crew
 from crews.support_crew import run_support_crew
 from models import WorkflowType
-from orchestrator import MasterOrchestrator
+from orchestrator import CeleryOrchestrator, MasterOrchestrator
 
 load_dotenv()
 
@@ -22,14 +23,20 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
-orchestrator = MasterOrchestrator()
-orchestrator.register_crew(WorkflowType.ANALYTICS, run_analytics_crew)
-orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
-orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
-orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)
-orchestrator.register_crew(WorkflowType.SCHEDULER, run_scheduler_crew)
-orchestrator.register_crew(WorkflowType.SALES_IMPROVEMENT, run_sales_improvement_crew)
-orchestrator.register_crew(WorkflowType.SUPPORT, run_support_crew)
+
+if os.getenv("WORKFLOW_BACKEND", "local").lower() == "celery":
+    orchestrator = CeleryOrchestrator()
+    logger.info("Using Celery workflow backend.")
+else:
+    orchestrator = MasterOrchestrator()
+    orchestrator.register_crew(WorkflowType.ANALYTICS, run_analytics_crew)
+    orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
+    orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
+    orchestrator.register_crew(WorkflowType.CONTENT, run_content_crew)
+    orchestrator.register_crew(WorkflowType.SCHEDULER, run_scheduler_crew)
+    orchestrator.register_crew(WorkflowType.SALES_IMPROVEMENT, run_sales_improvement_crew)
+    orchestrator.register_crew(WorkflowType.SUPPORT, run_support_crew)
+    logger.info("Using local in-memory workflow backend.")
 
 app.add_middleware(
     CORSMiddleware,
