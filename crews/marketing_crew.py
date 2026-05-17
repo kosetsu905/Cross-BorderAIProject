@@ -12,6 +12,11 @@ from tools.custom.marketing_tools import (
     KeywordResearchTool,
     PlatformAdSpecsTool,
 )
+from tools.integrations.cross_platform_ads_tools import (
+    GoogleAdsKeywordTool,
+    MetaAdsTool,
+    TikTokAdsTool,
+)
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "marketing"
@@ -40,6 +45,20 @@ class ComplianceStatus(BaseModel):
 class FinalCampaignOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    data_source: str = Field(
+        ...,
+        description=(
+            "Provider status for ad platform integrations, such as "
+            "development_fallback, mixed, or live_provider."
+        ),
+    )
+    confidence_level: str = Field(
+        ...,
+        description="Confidence level based on whether live ad platform data was available",
+    )
+    assumptions: list[str] = Field(
+        ..., description="Important caveats about fallback ad platform data or inferred benchmarks"
+    )
     strategy_summary: str = Field(..., description="Concise campaign strategy overview")
     ad_variants: list[CampaignAdVariant] = Field(
         ..., description="Platform and region specific ad copy variants"
@@ -59,7 +78,7 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 
 
 def _build_research_tools() -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool()]
+    tools: list[Any] = [ScrapeWebsiteTool(), GoogleAdsKeywordTool()]
     if os.getenv("SERPER_API_KEY"):
         tools.insert(0, SerperDevTool())
     return tools
@@ -104,15 +123,15 @@ def run_marketing_crew(inputs: dict[str, Any]) -> dict[str, Any]:
     )
     copywriter = Agent(
         config=agents_config["ad_copywriter"],
-        tools=[KeywordResearchTool()],
+        tools=[KeywordResearchTool(), GoogleAdsKeywordTool()],
     )
     optimizer = Agent(
         config=agents_config["channel_optimizer"],
-        tools=[PlatformAdSpecsTool()],
+        tools=[PlatformAdSpecsTool(), MetaAdsTool(), TikTokAdsTool()],
     )
     qa_agent = Agent(
         config=agents_config["compliance_qa_specialist"],
-        tools=[ComplianceCheckerTool()],
+        tools=[ComplianceCheckerTool(), MetaAdsTool(), TikTokAdsTool()],
         allow_delegation=True,
     )
 

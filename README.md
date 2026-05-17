@@ -31,6 +31,7 @@ Cross-BorderAIProject/
 |-- tools/
 |   |-- base/
 |   |-- integrations/
+|   |   `-- cross_platform_ads_tools.py
 |   `-- custom/
 |       |-- analytics_tools.py
 |       |-- bizdev_tools.py
@@ -133,16 +134,26 @@ CRM_API_TOKEN=optional_crm_or_platform_token
 
 # Scheduler holiday/timezone provider. Without this, Scheduler uses development fallback calendar data.
 HOLIDAY_API_KEY=optional_holiday_provider_key
+
+# Marketing ad platform integrations. Without these, Marketing uses development fallback platform data.
+GOOGLE_ADS_DEVELOPER_TOKEN=optional_google_ads_developer_token
+GOOGLE_ADS_ACCESS_TOKEN=optional_google_ads_access_token
+GOOGLE_ADS_CUSTOMER_ID=optional_google_ads_customer_id
+META_ACCESS_TOKEN=optional_meta_access_token
+META_AD_ACCOUNT_ID=optional_meta_ad_account_id
+META_PAGE_ID=optional_meta_page_id
+TIKTOK_ACCESS_TOKEN=optional_tiktok_access_token
+TIKTOK_ADVERTISER_ID=optional_tiktok_advertiser_id
 ```
 
-Current runnable code does not use the Google Ads, Meta, TikTok, Shopify, Amazon, or calendar-provider tokens mentioned in archived notes yet. Those belong to future integration work unless a corresponding tool is implemented under `tools/`.
+Current runnable code does not use Shopify, Amazon, or calendar-provider tokens mentioned in archived notes yet. Those belong to future integration work unless a corresponding tool is implemented under `tools/`.
 
 ## No-Token Checks
 
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py
+python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -312,6 +323,7 @@ Invoke-RestMethod `
 ## Run Marketing Campaign
 
 This request starts the Marketing CrewAI workflow and may consume OpenAI API tokens.
+The integration tools under `tools/integrations/` connect Marketing to external ad platforms. Without Google Ads, Meta, or TikTok credentials, these tools use development fallback data and the output should be treated as illustrative until validated with live platform APIs.
 
 ```powershell
 $body = @{

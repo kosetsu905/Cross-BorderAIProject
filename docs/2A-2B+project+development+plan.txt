@@ -1,0 +1,240 @@
+Here are the specific code improvements and architectural adjustments required for the next stage (Stage-2A) of development.
+
+1. Critical: Move from In-Memory to Persistent State
+Current Issue:
+In orchestrator.py, self._   jobs is a Python dictionary. If your FastAPI server restarts (which happens in deployment), you lose all job history and running job statuses.
+Improvement:
+You must decouple the job state from the application memory.
+
+Short-term fix: Use Redis.
+Long-term fix: Use PostgreSQL (which you already have in your architecture diagram)-preferred way
+
+Refactor "orchestrator.py":
+
+New code
+
+
+# Instead of self._jobs = {}
+# Use a Redis connection or a SQLAlchemy Session
+class MasterOrchestrator:
+    def __init__(self, db_session):
+        self.db = db_session 
+
+    async def submit_job(self, workflow_type, inputs):
+        # 1. Save to DB: Job(PENDING)
+        # 2. Dispatch task (e.g., via Celery/RQ)
+        pass
+
+    async def _run_job(self, job_id, ...):
+        # 1. Update DB: Job(RUNNING)
+        # 2. Run Crew
+        # 3. Update DB: Job(COMPLETED, result=...)
+        pass
+
+
+
+2. Security: Centralize Configuration & Secrets
+
+Current Issue:
+In your crews (e.g., marketing_crew.py), you have hardcoded environment variable settings:
+os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+
+This is dangerous because it mixes configuration with logic. If you need to switch models per user (e.g., Premium users get GPT-4o, Free users get 3.5-turbo), your current architecture blocks this.
+
+Improvement:
+Pass the configuration from the Orchestrator down to the Crew.
+Refactor crews/marketing_"crew.py":
+
+#New code
+
+def run_marketing_crew(inputs: dict, config_context: dict) -> dict:
+    """
+    config_context contains API keys and Model settings specific to the user/tenant.
+    """
+    # Use config_context['model_name'] instead of os.environ
+    # Use config_context['openai_key'] securely
+
+
+#tonny, Please also check other crew setting
+
+3. Robustness: Strict Input Validation
+Current Issue:
+In models.py, WorkflowRequest accepts inputs: Dict[str, Any]. This is too loose.
+If a user triggers the support workflow but sends inputs meant for the marketing workflow, the AI will fail or hallucinate, wasting tokens.
+Improvement:
+Implement Polymorphic Validation. Define specific input schemas for each crew and validate them in the Orchestrator before dispatching.
+
+
+Refactor "models.py":
+# New code
+
+class MarketingInputs(BaseModel):
+    product_category: str
+    target_markets: List[str]
+    budget: str
+
+class SupportInputs(BaseModel):
+    customer: str
+    inquiry: str
+
+class WorkflowRequest(BaseModel):
+    workflow_type: WorkflowType
+    inputs: dict
+    
+    # Custom validator to check schema based on type
+    @field_validator('inputs')
+    def validate_inputs(cls, v, info):
+        workflow_type = info.data.get('workflow_type')
+        if workflow_type == WorkflowType.MARKETING:
+            MarketingInputs(**v) # Will raise error if fields missing
+        # ... check others
+        return v
+
+
+
+4. Production: Replace asyncio.create_task with a Task Queue
+Current Issue:
+asyncio.create_task(self._run_job(...)) runs the job inside the FastAPI worker. If a CrewAI job takes 5 minutes (which they often do), it ties up that worker. If you get 10 requests simultaneously, your server might crash or time out.
+Improvement:
+Use Celery or RQ (Redis Queue).
+FastAPI pushes the job to Redis.
+A separate "Worker" process picks up the job and runs the Crew.
+This separates your "API Latency" from "AI Processing Time."
+
+5. Integration Prep: The "Usage Tracker" Hook
+Current Issue:
+Your architecture diagram mentions a Usage Tracker (Token/API Cost), but the code doesn't calculate costs. As you run these crews, you are burning money.
+Improvement:
+Add a callback or interceptor in orchestrator.py to track costs.
+Since CrewAI uses OpenAI/Llama, you can use a callback handler to sum up completion_tokens and prompt_tokens.
+Push this cost data to the Billing Module (which you will building next).
+
+
+6. Smart Retries in celery_worker/tasks.py
+
+Current Issue:
+You are using self.retry(exc=e, countdown=60) inside a try/except block that catches all exceptions.
+
+#Existing code
+
+except Exception as e:
+    logger.warning(f"Marketing task retrying... Error: {e}")
+    raise self.retry(exc=e, countdown=60)
+
+
+Risk: If a task fails because of a logic error (e.g., invalid JSON input, CrewAI hallucination loop, or missing environment variable), Celery will retry it 3 times, wasting tokens and money, before finally failing.
+
+Improvement:
+Distinguish between Transient Errors (Network/Rate Limit) and Fatal Errors (Logic/Validation).
+
+#New code 
+
+from celery.exceptions import Retry
+
+try:
+    return run_marketing_crew(inputs)
+except Exception as e:
+    # Check if it's a retryable API error
+    if "RateLimitError" in str(e) or "APIConnectionError" in str(e):
+        raise self.retry(exc=e, countdown=60)
+    else:
+        # Fail immediately if it's a logic error to save tokens
+        logger.error(f"Task failed fatally: {e}")
+        raise e 
+
+
+
+7. Multi-Tenancy future support in tools/Integration/cross_platform_ads_tools.py
+Current Issue:
+Your tools read API keys from the global environment:
+os.getenv("GOOGLE_ADS_ACCESS_TOKEN")
+Risk:
+If you have multiple users (merchants), this tool will run your ad account, not the user's. You cannot build a SaaS product this way.
+Improvement:
+Pass credentials dynamically through the inputs dictionary or a config_context argument.
+
+#   new code
+
+class GoogleAdsKeywordTool(BaseTool):
+    # Remove os.getenv from inside _run
+    def _run(self, product_category: str, region: str, budget_usd: float, api_config: dict) -> dict:
+        token = api_config.get("google_ads_token")
+        if not token:
+             return self._dev_fallback(...)
+        
+        # Use the passed token
+        headers = {"Authorization": f"Bearer {token}", ...}
+
+
+8. Cost Tracking Hook (The "Billing" Prep)
+
+Current Issue:
+Your Celery task returns the result, but it doesn't return the cost.
+You cannot implement future Billing Module if you don't know how much each job_id cost.
+Improvement:
+Use CrewAI's usage_metrics (if available in your version) or intercept the LLM calls.
+In celery_worker/tasks.py, you should return a structured dict:
+
+#new code
+
+def run_marketing_task(self, inputs: dict) -> dict:
+    result = run_marketing_crew(inputs)
+    
+    # Extract cost (pseudo-code, depends on your CrewAI version)
+    # cost = result.usage_metrics.total_cost 
+    
+    return {
+        "data": result,
+        "meta": {
+            "cost_usd": 0.45,
+            "tokens_used": 1200,
+            "duration_seconds": 45
+        }
+    }
+
+
+
+
+
+Other to-do Checklist for Stage 2-1a Development
+
+a. Refactor Orchestrator: Connect MasterOrchestrator to a Database (Postgres) so job states persist across restarts.
+b. Add Authentication: Add Bearer Token validation in main.py so random people can't trigger your expensive AI workflows.
+c. Implement Strict Inputs: Create Pydantic models for MarketingInputs, ContentInputs, etc., and validate them upon request.
+d. Isolate Secrets: Remove os.environ calls from crews; pass keys securely from the Orchestrator.
+e. Add Observability: Log the "Thought Process" (LLM traces) to help you debug why an Agent might be failing (essential for the "Config UI" you plan to build).
+Verdict:
+f. Implement "Usage Tracking"  by Modifying the Celery tasks to log job_id, status, and cost to PostgreSQL( if PostgreSQL is ready).
+This fulfills the Usage Tracker requirement in your architecture diagram.
+
+
+
+
+
+
+# Here are the specific code improvements and architectural adjustments required for the next stage (Stage-2A) of development.
+
+development Roadmap for Stage 2-1B 
+
+
+a. Build the "Admin Dashboard" (The "Lite" Option C)
+Since you have task.update_state(state="PROGRESS"), you are ready for a UI.
+Build a simple Streamlit app (Python) that:
+Allows you to trigger a workflow.
+Polls GET /api/v1/workflow/{job_id}.
+Displays the progress bar and final JSON result.
+Why? This allows you to test the "Brain" visually without writing a full React app yet.
+
+b. Harden the "Brain" 
+Tool Integration:  CRMFunnelTool and EcomPlatformMetricsTool are currently returning _dev_fallback data.
+You must replace these with real API calls to Shopify/Amazon APIs, or the AI is just hallucinating data.
+
+c. RAG: Implement the Vector DB (from your diagram). The Support Agent should search your Vector DB for "Return Policy" rather than always using ScrapeWebsiteTool.
+
+
+Other to-do Checklist
+a. Refactor tasks.py: Add logic to fail fast on non-retryable errors.
+b. Refactor tools: Accept API keys as arguments (Multi-tenancy).
+c. Refactor main.py: Add Authorization header validation (Security).
+d. Add Cost Logging: Ensure every Celery task logs its token cost to the DB.
+e. Build Streamlit UI: Create a simple dashboard to visualize the Celery task progress.

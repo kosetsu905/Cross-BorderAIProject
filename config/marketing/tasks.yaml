@@ -23,4 +23,7 @@ compliance_qa_review:
     Review the generated ad copy and campaign strategy for compliance with regional advertising laws such as GDPR and CCPA,
     local e-commerce regulations, platform policies, and brand guidelines. Flag policy risks, suggest corrections, and provide
     final approval status per market.
-  expected_output: "A compliance audit report with approval status, flagged issues, recommended edits, and a final ready-to-launch campaign package."
+    If Google Ads, Meta, or TikTok tools return development fallback data, explicitly mark data_source as development_fallback
+    or mixed, set confidence_level to Low or Illustrative, and add assumptions explaining which platform credentials were
+    missing and which benchmarks, audience estimates, or compliance checks are sample values.
+  expected_output: "A compliance audit report with approval status, flagged issues, recommended edits, platform data-source caveats, and a final ready-to-launch campaign package."
