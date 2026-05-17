@@ -185,6 +185,7 @@ Expected shape:
 
 This request starts the CrewAI workflow and may consume OpenAI API tokens.
 Without `CRUNCHBASE_API_KEY` or `APOLLO_API_KEY`, the BizDev lead enrichment tool uses development fallback lead data and the output should be treated as illustrative until validated with real B2B provider data.
+The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell
 $body = @{
@@ -209,6 +210,7 @@ Invoke-RestMethod `
 
 This request starts the Sales Performance Improvement CrewAI workflow and may consume OpenAI API tokens.
 Without `CRM_API_TOKEN`, the sales tools use development fallback sample data and the output should be treated as illustrative until validated with real CRM/platform analytics.
+The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell
 $body = @{
@@ -234,6 +236,7 @@ Invoke-RestMethod `
 This request starts the Event Scheduler CrewAI workflow and may consume OpenAI API tokens.
 Without `HOLIDAY_API_KEY`, the scheduler uses development fallback calendar context and the output should be treated as illustrative until validated with a real holiday/timezone provider.
 Scheduler results are validated against `preferred_launch_window`; if the model returns dates outside that window, the job fails instead of returning an invalid completed schedule.
+The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell
 $body = @{
@@ -257,6 +260,7 @@ Invoke-RestMethod `
 
 This request starts the Analytics CrewAI workflow and may consume OpenAI API tokens.
 Without real platform and competitive data provider credentials such as `ECOM_API_TOKEN`, analytics tools use development fallback sample data and the output should be treated as illustrative.
+The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell
 $body = @{
@@ -323,7 +327,7 @@ Invoke-RestMethod `
 ## Run Marketing Campaign
 
 This request starts the Marketing CrewAI workflow and may consume OpenAI API tokens.
-The integration tools under `tools/integrations/` connect Marketing to external ad platforms. Without Google Ads, Meta, or TikTok credentials, these tools use development fallback data and the output should be treated as illustrative until validated with live platform APIs.
+The integration tools under `tools/integrations/` connect Marketing to external ad platforms. Without Google Ads, Meta, or TikTok credentials, these tools use development fallback data and the output should be treated as illustrative until validated with live platform APIs. The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback tools were used.
 
 ```powershell
 $body = @{

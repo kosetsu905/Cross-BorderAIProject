@@ -88,6 +88,77 @@ def _memory_enabled() -> bool:
     return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 
+def _has_all_env(names: tuple[str, ...]) -> bool:
+    return all(bool(os.getenv(name)) for name in names)
+
+
+def _platform_provider_status() -> dict[str, Any]:
+    provider_groups = {
+        "Google Ads": (
+            "GOOGLE_ADS_ACCESS_TOKEN",
+            "GOOGLE_ADS_CUSTOMER_ID",
+            "GOOGLE_ADS_DEVELOPER_TOKEN",
+        ),
+        "Meta Ads": (
+            "META_ACCESS_TOKEN",
+            "META_AD_ACCOUNT_ID",
+        ),
+        "TikTok Ads": (
+            "TIKTOK_ACCESS_TOKEN",
+            "TIKTOK_ADVERTISER_ID",
+        ),
+    }
+    live_platforms = [
+        platform
+        for platform, required_env in provider_groups.items()
+        if _has_all_env(required_env)
+    ]
+    fallback_platforms = [
+        platform
+        for platform, required_env in provider_groups.items()
+        if not _has_all_env(required_env)
+    ]
+
+    if fallback_platforms and live_platforms:
+        data_source = "mixed"
+        confidence_level = "Medium"
+    elif fallback_platforms:
+        data_source = "development_fallback"
+        confidence_level = "Illustrative"
+    else:
+        data_source = "live_provider"
+        confidence_level = "High"
+
+    assumptions: list[str] = []
+    if fallback_platforms:
+        assumptions.append(
+            "The following ad platform integrations used development fallback data "
+            f"because credentials are missing or incomplete: {', '.join(fallback_platforms)}."
+        )
+        assumptions.append(
+            "Keyword ideas, CPC estimates, audience estimates, trend benchmarks, and "
+            "platform compliance checks should be validated with live ad platform APIs "
+            "before production launch."
+        )
+
+    assumptions.append(
+        "Amazon Ads is not connected to a live integration in this project yet; any "
+        "Amazon-specific recommendations are generated from static specs or model inference."
+    )
+
+    return {
+        "data_source": data_source,
+        "confidence_level": confidence_level,
+        "assumptions": assumptions,
+    }
+
+
+def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.update(_platform_provider_status())
+    return normalized
+
+
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     pydantic_result = getattr(result, "pydantic", None)
     if pydantic_result is not None:
@@ -160,4 +231,5 @@ def run_marketing_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         memory=_memory_enabled(),
     )
 
-    return _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
+    return _apply_provider_status(result)

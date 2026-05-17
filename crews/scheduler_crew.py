@@ -102,6 +102,33 @@ def _memory_enabled() -> bool:
     return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 
+def _provider_status() -> dict[str, Any]:
+    if not os.getenv("HOLIDAY_API_KEY"):
+        return {
+            "data_source": "development_fallback",
+            "confidence_level": "Illustrative",
+            "assumptions": [
+                "Event Scheduler used development fallback holiday/timezone context because HOLIDAY_API_KEY is not configured.",
+                "Holiday names, business-hour notes, and scheduling context should be verified with a live holiday/timezone provider before production scheduling.",
+            ],
+        }
+
+    return {
+        "data_source": "provider_ready_stub",
+        "confidence_level": "Low",
+        "assumptions": [
+            "HOLIDAY_API_KEY is configured, but the current timezone/holiday tool still uses a provider-ready placeholder endpoint.",
+            "Conflict checking and notification routing are local validation/formatting helpers, not live calendar-provider checks.",
+        ],
+    }
+
+
+def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.update(_provider_status())
+    return normalized
+
+
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     pydantic_result = getattr(result, "pydantic", None)
     if pydantic_result is not None:
@@ -239,6 +266,8 @@ def run_scheduler_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         memory=_memory_enabled(),
     )
 
-    result = _serialize_crew_result(scheduler_crew.kickoff(inputs=normalized_inputs))
+    result = _apply_provider_status(
+        _serialize_crew_result(scheduler_crew.kickoff(inputs=normalized_inputs))
+    )
     _validate_schedule_window(result, normalized_inputs)
     return result

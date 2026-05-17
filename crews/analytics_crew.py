@@ -80,6 +80,47 @@ def _memory_enabled() -> bool:
     return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 
+def _provider_status() -> dict[str, Any]:
+    has_ecom_token = bool(os.getenv("ECOM_API_TOKEN"))
+    has_serper_token = bool(os.getenv("SERPER_API_KEY"))
+
+    if not has_ecom_token and not has_serper_token:
+        return {
+            "data_source": "development_fallback",
+            "confidence_level": "Illustrative",
+            "assumptions": [
+                "Analytics used development fallback metrics because ECOM_API_TOKEN is not configured.",
+                "Competitive benchmarking also used fallback data because SERPER_API_KEY is not configured.",
+                "Sales, conversion, ROAS, market, and competitor insights are sample values until validated with live platform data.",
+            ],
+        }
+
+    if not has_ecom_token:
+        return {
+            "data_source": "mixed",
+            "confidence_level": "Low",
+            "assumptions": [
+                "Analytics platform metrics used development fallback data because ECOM_API_TOKEN is not configured.",
+                "Some market research tools may use configured search data, but regional KPIs remain illustrative until connected to a live commerce platform.",
+            ],
+        }
+
+    return {
+        "data_source": "provider_ready_stub",
+        "confidence_level": "Low",
+        "assumptions": [
+            "ECOM_API_TOKEN is configured, but the current e-commerce metrics tool uses a placeholder provider endpoint and falls back if that endpoint is unavailable.",
+            "Competitor intelligence is not connected to a dedicated market-data provider; validate market claims before using them operationally.",
+        ],
+    }
+
+
+def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.update(_provider_status())
+    return normalized
+
+
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     pydantic_result = getattr(result, "pydantic", None)
     if pydantic_result is not None:
@@ -151,4 +192,5 @@ def run_analytics_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         memory=_memory_enabled(),
     )
 
-    return _serialize_crew_result(analytics_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(analytics_crew.kickoff(inputs=inputs))
+    return _apply_provider_status(result)

@@ -125,6 +125,34 @@ def _memory_enabled() -> bool:
     return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 
+def _provider_status() -> dict[str, Any]:
+    has_b2b_provider_key = bool(os.getenv("CRUNCHBASE_API_KEY") or os.getenv("APOLLO_API_KEY"))
+    if not has_b2b_provider_key:
+        return {
+            "data_source": "development_fallback",
+            "confidence_level": "Illustrative",
+            "assumptions": [
+                "Business Development lead enrichment used development fallback data because CRUNCHBASE_API_KEY and APOLLO_API_KEY are not configured.",
+                "Company contacts, milestones, and partnership fit scores are placeholders until validated with a live B2B data provider.",
+            ],
+        }
+
+    return {
+        "data_source": "provider_ready_stub",
+        "confidence_level": "Low",
+        "assumptions": [
+            "A B2B provider key is configured, but the current B2B lead lookup tool still uses a provider-ready placeholder endpoint.",
+            "Lead records should be validated after connecting a real Apollo, Crunchbase, or compliant B2B data provider implementation.",
+        ],
+    }
+
+
+def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.update(_provider_status())
+    return normalized
+
+
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     pydantic_result = getattr(result, "pydantic", None)
     if pydantic_result is not None:
@@ -196,4 +224,5 @@ def run_bizdev_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         memory=_memory_enabled(),
     )
 
-    return _serialize_crew_result(bizdev_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(bizdev_crew.kickoff(inputs=inputs))
+    return _apply_provider_status(result)

@@ -83,6 +83,33 @@ def _memory_enabled() -> bool:
     return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 
+def _provider_status() -> dict[str, Any]:
+    if not os.getenv("CRM_API_TOKEN"):
+        return {
+            "data_source": "development_fallback",
+            "confidence_level": "Illustrative",
+            "assumptions": [
+                "Sales Improvement used development fallback funnel data because CRM_API_TOKEN is not configured.",
+                "Funnel bottlenecks, regional gaps, pricing guidance, and expected uplifts are illustrative until validated with real CRM or commerce analytics.",
+            ],
+        }
+
+    return {
+        "data_source": "provider_ready_stub",
+        "confidence_level": "Low",
+        "assumptions": [
+            "CRM_API_TOKEN is configured, but the current CRM funnel tool still uses a provider-ready placeholder endpoint.",
+            "CRO and pricing tools include heuristic or fallback guidance and should be validated against real funnel, margin, and competitor data before execution.",
+        ],
+    }
+
+
+def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.update(_provider_status())
+    return normalized
+
+
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     pydantic_result = getattr(result, "pydantic", None)
     if pydantic_result is not None:
@@ -153,4 +180,5 @@ def run_sales_improvement_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         memory=_memory_enabled(),
     )
 
-    return _serialize_crew_result(sales_improvement_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(sales_improvement_crew.kickoff(inputs=inputs))
+    return _apply_provider_status(result)
