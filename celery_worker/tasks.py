@@ -10,6 +10,7 @@ from database import SessionLocal
 from job_store import PostgresJobStore
 from models import JobStatus
 from runtime_config import apply_runtime_environment, load_runtime_config
+from utils.retry_policy import is_retryable_exception, retry_countdown_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 
 
@@ -28,8 +29,8 @@ def _run_with_job_state(
     apply_runtime_environment(config_context)
     self.update_state(state="PROGRESS", meta={"status": progress})
     job_store.update_job(job_id, status=JobStatus.RUNNING, result={"status": progress}, error=None)
+    started_at = monotonic_time()
     try:
-        started_at = monotonic_time()
         result = crew_function(inputs, config_context)
         clean_result, usage_metrics = pop_usage_metrics(result)
         normalized_result = clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)}
@@ -47,7 +48,35 @@ def _run_with_job_state(
         )
         return normalized_result
     except Exception as exc:
-        job_store.update_job(job_id, status=JobStatus.FAILED, result=None, error=str(exc))
+        request = getattr(self, "request", None)
+        retries = int(getattr(request, "retries", 0) or 0)
+        max_retries = int(getattr(self, "max_retries", 3) or 3)
+
+        if is_retryable_exception(exc) and retries < max_retries:
+            countdown = retry_countdown_seconds(retries)
+            retry_meta = {
+                "status": "Retrying after transient provider or network error",
+                "retry_count": retries + 1,
+                "max_retries": max_retries,
+                "next_retry_seconds": countdown,
+                "error": str(exc),
+            }
+            job_store.update_job(
+                job_id,
+                status=JobStatus.RUNNING,
+                result=retry_meta,
+                error=str(exc),
+                duration_seconds=monotonic_time() - started_at,
+            )
+            raise self.retry(exc=exc, countdown=countdown)
+
+        job_store.update_job(
+            job_id,
+            status=JobStatus.FAILED,
+            result=None,
+            error=str(exc),
+            duration_seconds=monotonic_time() - started_at,
+        )
         raise
 
 

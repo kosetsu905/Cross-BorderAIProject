@@ -124,6 +124,8 @@ WORKFLOW_BACKEND=local
 DATABASE_URL=postgresql+psycopg://crossborder:crossborder@localhost:5432/crossborder_ai
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
+CELERY_RETRY_BASE_DELAY_SECONDS=30
+CELERY_RETRY_MAX_DELAY_SECONDS=300
 ```
 
 `WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
@@ -256,6 +258,8 @@ celery -A celery_worker.celery_app worker --loglevel=info --pool=solo
 ```
 
 On Windows, `--pool=solo` is the safest local Celery worker mode. For Docker/Linux workers, the compose file uses normal worker concurrency.
+
+Celery workers retry only transient provider or network failures, such as rate limits, timeouts, connection errors, and retryable 5xx/429 HTTP responses. Deterministic failures such as validation errors, bad request schemas, missing configuration, authentication failures, and programming errors fail immediately so they do not waste additional API calls.
 
 Docker stack:
 
