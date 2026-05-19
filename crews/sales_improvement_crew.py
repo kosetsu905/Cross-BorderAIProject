@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +10,6 @@ from tools.custom.sales_tools import CRMFunnelTool, CROHeuristicsTool, PricingIn
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "sales_improvement"
-DEFAULT_MODEL = "gpt-4o-mini"
-
 
 class CROTestItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -72,19 +69,19 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_research_tools() -> list[Any]:
+def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = [ScrapeWebsiteTool()]
-    if os.getenv("SERPER_API_KEY"):
+    if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
-def _provider_status() -> dict[str, Any]:
-    if not os.getenv("CRM_API_TOKEN"):
+def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
+    if not config_context.get("crm_api_token"):
         return {
             "data_source": "development_fallback",
             "confidence_level": "Illustrative",
@@ -104,9 +101,9 @@ def _provider_status() -> dict[str, Any]:
     }
 
 
-def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
-    normalized.update(_provider_status())
+    normalized.update(_provider_status(config_context))
     return normalized
 
 
@@ -132,20 +129,20 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def run_sales_improvement_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
 
     funnel_analyst = Agent(
         config=agents_config["funnel_analyst"],
-        tools=[CRMFunnelTool()],
+        tools=[CRMFunnelTool(crm_api_token=config_context.get("crm_api_token"))],
     )
     cro_specialist = Agent(
         config=agents_config["cro_specialist"],
-        tools=[CROHeuristicsTool(), *_build_research_tools()],
+        tools=[CROHeuristicsTool(), *_build_research_tools(config_context)],
     )
     pricing_strategist = Agent(
         config=agents_config["pricing_strategist"],
@@ -177,8 +174,8 @@ def run_sales_improvement_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         agents=[funnel_analyst, cro_specialist, pricing_strategist, playbook_coach],
         tasks=[funnel_task, cro_task, pricing_task, playbook_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     result = _serialize_crew_result(sales_improvement_crew.kickoff(inputs=inputs))
-    return _apply_provider_status(result)
+    return _apply_provider_status(result, config_context)

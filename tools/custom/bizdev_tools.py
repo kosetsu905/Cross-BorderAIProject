@@ -1,5 +1,4 @@
 import logging
-import os
 from functools import lru_cache
 from typing import Any
 
@@ -17,9 +16,15 @@ class B2BLeadLookupTool(BaseTool):
         "Fetches company profiles, decision-maker contacts, and recent business "
         "milestones for cross-border business development."
     )
+    crunchbase_api_key: str | None = None
+    apollo_api_key: str | None = None
 
     def _run(self, company_name: str, region: str) -> dict[str, Any]:
-        if not os.getenv("CRUNCHBASE_API_KEY") and not os.getenv("APOLLO_API_KEY"):
+        has_provider_key = bool(
+            self.crunchbase_api_key
+            or self.apollo_api_key
+        )
+        if not has_provider_key:
             return self._dev_fallback(company_name, region)
 
         # Production placeholder: integrate Apollo.io, Crunchbase, or a compliant

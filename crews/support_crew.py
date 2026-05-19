@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
-DEFAULT_MODEL = "gpt-4o-mini"
 
 
 class SupportTicketOutput(BaseModel):
@@ -34,15 +32,15 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_support_tools() -> list[Any]:
+def _build_support_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = [ScrapeWebsiteTool()]
-    if os.getenv("SERPER_API_KEY"):
+    if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
@@ -67,16 +65,16 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def run_support_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
 
     support_agent = Agent(
         config=agents_config["senior_support_agent"],
-        tools=_build_support_tools(),
+        tools=_build_support_tools(config_context),
         allow_delegation=True,
     )
     qa_agent = Agent(
@@ -99,7 +97,7 @@ def run_support_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         agents=[support_agent, qa_agent],
         tasks=[resolution_task, qa_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     return _serialize_crew_result(support_crew.kickoff(inputs=inputs))

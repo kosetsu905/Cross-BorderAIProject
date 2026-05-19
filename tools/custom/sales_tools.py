@@ -1,5 +1,4 @@
 import logging
-import os
 from functools import lru_cache
 from typing import Any
 
@@ -17,9 +16,10 @@ class CRMFunnelTool(BaseTool):
         "Extracts funnel metrics, drop-off rates, and regional conversion data "
         "from CRM or e-commerce platforms."
     )
+    crm_api_token: str | None = None
 
     def _run(self, product_category: str, target_markets: str) -> dict[str, Any]:
-        if not os.getenv("CRM_API_TOKEN"):
+        if not self.crm_api_token:
             return self._dev_fallback(product_category, target_markets)
 
         return {

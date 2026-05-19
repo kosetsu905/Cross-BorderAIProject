@@ -1,5 +1,4 @@
 import logging
-import os
 from functools import lru_cache
 from typing import Any
 
@@ -17,10 +16,11 @@ class TimezoneHolidayTool(BaseTool):
         "Fetches timezone offsets, daylight saving rules, and regional holidays "
         "for cross-border scheduling."
     )
+    holiday_api_key: str | None = None
 
     def _run(self, regions: list[str], date_range: str) -> dict[str, Any]:
         normalized_regions = tuple(regions)
-        if not os.getenv("HOLIDAY_API_KEY"):
+        if not self.holiday_api_key:
             return self._dev_fallback(normalized_regions, date_range)
 
         return {

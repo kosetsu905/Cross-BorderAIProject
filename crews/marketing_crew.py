@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,6 @@ from tools.integrations.cross_platform_ads_tools import (
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "marketing"
-DEFAULT_MODEL = "gpt-4o-mini"
 
 
 class CampaignAdVariant(BaseModel):
@@ -77,46 +75,69 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_research_tools() -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool(), GoogleAdsKeywordTool()]
-    if os.getenv("SERPER_API_KEY"):
+def _google_ads_tool(config_context: dict[str, Any]) -> GoogleAdsKeywordTool:
+    return GoogleAdsKeywordTool(
+        google_ads_access_token=config_context.get("google_ads_access_token"),
+        google_ads_customer_id=config_context.get("google_ads_customer_id"),
+        google_ads_developer_token=config_context.get("google_ads_developer_token"),
+    )
+
+
+def _meta_ads_tool(config_context: dict[str, Any]) -> MetaAdsTool:
+    return MetaAdsTool(
+        meta_access_token=config_context.get("meta_access_token"),
+        meta_ad_account_id=config_context.get("meta_ad_account_id"),
+        meta_page_id=config_context.get("meta_page_id"),
+    )
+
+
+def _tiktok_ads_tool(config_context: dict[str, Any]) -> TikTokAdsTool:
+    return TikTokAdsTool(
+        tiktok_access_token=config_context.get("tiktok_access_token"),
+        tiktok_advertiser_id=config_context.get("tiktok_advertiser_id"),
+    )
+
+
+def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
+    tools: list[Any] = [ScrapeWebsiteTool(), _google_ads_tool(config_context)]
+    if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
-def _has_all_env(names: tuple[str, ...]) -> bool:
-    return all(bool(os.getenv(name)) for name in names)
+def _has_all_config(config_context: dict[str, Any], names: tuple[str, ...]) -> bool:
+    return all(bool(config_context.get(name)) for name in names)
 
 
-def _platform_provider_status() -> dict[str, Any]:
+def _platform_provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
     provider_groups = {
         "Google Ads": (
-            "GOOGLE_ADS_ACCESS_TOKEN",
-            "GOOGLE_ADS_CUSTOMER_ID",
-            "GOOGLE_ADS_DEVELOPER_TOKEN",
+            "google_ads_access_token",
+            "google_ads_customer_id",
+            "google_ads_developer_token",
         ),
         "Meta Ads": (
-            "META_ACCESS_TOKEN",
-            "META_AD_ACCOUNT_ID",
+            "meta_access_token",
+            "meta_ad_account_id",
         ),
         "TikTok Ads": (
-            "TIKTOK_ACCESS_TOKEN",
-            "TIKTOK_ADVERTISER_ID",
+            "tiktok_access_token",
+            "tiktok_advertiser_id",
         ),
     }
     live_platforms = [
         platform
         for platform, required_env in provider_groups.items()
-        if _has_all_env(required_env)
+        if _has_all_config(config_context, required_env)
     ]
     fallback_platforms = [
         platform
         for platform, required_env in provider_groups.items()
-        if not _has_all_env(required_env)
+        if not _has_all_config(config_context, required_env)
     ]
 
     if fallback_platforms and live_platforms:
@@ -153,9 +174,9 @@ def _platform_provider_status() -> dict[str, Any]:
     }
 
 
-def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
-    normalized.update(_platform_provider_status())
+    normalized.update(_platform_provider_status(config_context))
     return normalized
 
 
@@ -181,28 +202,28 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def run_marketing_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_marketing_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
 
     strategist = Agent(
         config=agents_config["campaign_strategist"],
-        tools=_build_research_tools(),
+        tools=_build_research_tools(config_context),
     )
     copywriter = Agent(
         config=agents_config["ad_copywriter"],
-        tools=[KeywordResearchTool(), GoogleAdsKeywordTool()],
+        tools=[KeywordResearchTool(), _google_ads_tool(config_context)],
     )
     optimizer = Agent(
         config=agents_config["channel_optimizer"],
-        tools=[PlatformAdSpecsTool(), MetaAdsTool(), TikTokAdsTool()],
+        tools=[PlatformAdSpecsTool(), _meta_ads_tool(config_context), _tiktok_ads_tool(config_context)],
     )
     qa_agent = Agent(
         config=agents_config["compliance_qa_specialist"],
-        tools=[ComplianceCheckerTool(), MetaAdsTool(), TikTokAdsTool()],
+        tools=[ComplianceCheckerTool(), _meta_ads_tool(config_context), _tiktok_ads_tool(config_context)],
         allow_delegation=True,
     )
 
@@ -228,8 +249,8 @@ def run_marketing_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         agents=[strategist, copywriter, optimizer, qa_agent],
         tasks=[research_task, strategy_task, copy_task, qa_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     result = _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
-    return _apply_provider_status(result)
+    return _apply_provider_status(result, config_context)

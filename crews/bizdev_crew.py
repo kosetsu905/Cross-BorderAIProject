@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "business_development"
-DEFAULT_MODEL = "gpt-4o-mini"
-
 from tools.custom.bizdev_tools import (
     B2BLeadLookupTool,
     CRMFormatterTool,
@@ -107,26 +104,33 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_research_tools() -> list[Any]:
-    tools: list[Any] = [B2BLeadLookupTool()]
-    if os.getenv("SERPER_API_KEY"):
+def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
+    tools: list[Any] = [
+        B2BLeadLookupTool(
+            crunchbase_api_key=config_context.get("crunchbase_api_key"),
+            apollo_api_key=config_context.get("apollo_api_key"),
+        )
+    ]
+    if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools
 
 
-def _build_strategy_tools() -> list[Any]:
+def _build_strategy_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = [ScrapeWebsiteTool()]
-    if os.getenv("SERPER_API_KEY"):
+    if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
-def _provider_status() -> dict[str, Any]:
-    has_b2b_provider_key = bool(os.getenv("CRUNCHBASE_API_KEY") or os.getenv("APOLLO_API_KEY"))
+def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
+    has_b2b_provider_key = bool(
+        config_context.get("crunchbase_api_key") or config_context.get("apollo_api_key")
+    )
     if not has_b2b_provider_key:
         return {
             "data_source": "development_fallback",
@@ -147,9 +151,9 @@ def _provider_status() -> dict[str, Any]:
     }
 
 
-def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
-    normalized.update(_provider_status())
+    normalized.update(_provider_status(config_context))
     return normalized
 
 
@@ -175,20 +179,20 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def run_bizdev_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_bizdev_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
 
     prospector = Agent(
         config=agents_config["lead_prospector"],
-        tools=_build_research_tools(),
+        tools=_build_research_tools(config_context),
     )
     strategist = Agent(
         config=agents_config["partnership_strategist"],
-        tools=_build_strategy_tools(),
+        tools=_build_strategy_tools(config_context),
     )
     outreach_agent = Agent(
         config=agents_config["outreach_specialist"],
@@ -221,8 +225,8 @@ def run_bizdev_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         agents=[prospector, strategist, outreach_agent, pipeline_agent],
         tasks=[research_task, strategy_task, outreach_task, sync_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     result = _serialize_crew_result(bizdev_crew.kickoff(inputs=inputs))
-    return _apply_provider_status(result)
+    return _apply_provider_status(result, config_context)

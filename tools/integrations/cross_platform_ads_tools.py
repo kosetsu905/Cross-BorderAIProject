@@ -1,5 +1,4 @@
 import logging
-import os
 import time
 from functools import lru_cache
 from typing import Any
@@ -58,21 +57,21 @@ class GoogleAdsKeywordTool(BaseTool):
         "Fetches keyword ideas, search-volume context, CPC estimates, and budget "
         "pacing recommendations via Google Ads API when credentials are configured."
     )
+    google_ads_access_token: str | None = None
+    google_ads_customer_id: str | None = None
+    google_ads_developer_token: str | None = None
 
     def _run(self, product_category: str, region: str, budget_usd: float = 0) -> dict[str, Any]:
-        required_env = (
-            "GOOGLE_ADS_ACCESS_TOKEN",
-            "GOOGLE_ADS_CUSTOMER_ID",
-            "GOOGLE_ADS_DEVELOPER_TOKEN",
-        )
-        if not all(os.getenv(name) for name in required_env):
+        access_token = self.google_ads_access_token
+        customer_id = self.google_ads_customer_id
+        developer_token = self.google_ads_developer_token
+        if not all([access_token, customer_id, developer_token]):
             return self._dev_fallback(product_category, region, float(budget_usd or 0))
 
-        customer_id = os.getenv("GOOGLE_ADS_CUSTOMER_ID", "")
         url = f"https://googleads.googleapis.com/v14/customers/{customer_id}:generateKeywordIdeas"
         headers = {
-            "Authorization": f"Bearer {os.getenv('GOOGLE_ADS_ACCESS_TOKEN')}",
-            "developer-token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN", ""),
+            "Authorization": f"Bearer {access_token}",
+            "developer-token": developer_token,
             "Content-Type": "application/json",
         }
         geo_map = {"US": "2840", "UK": "2826", "DE": "2276", "GERMANY": "2276", "JP": "2392", "JAPAN": "2392"}
@@ -118,18 +117,23 @@ class MetaAdsTool(BaseTool):
         "Validates ad creative against Meta specs, estimates audience context, and "
         "checks launch readiness via Meta Marketing API when credentials are configured."
     )
+    meta_access_token: str | None = None
+    meta_ad_account_id: str | None = None
+    meta_page_id: str | None = None
 
     def _run(self, platform: str, region: str, ad_copy: str) -> dict[str, Any]:
-        if not os.getenv("META_ACCESS_TOKEN") or not os.getenv("META_AD_ACCOUNT_ID"):
+        access_token = self.meta_access_token
+        ad_account = self.meta_ad_account_id
+        page_id = self.meta_page_id or "dummy"
+        if not access_token or not ad_account:
             return self._dev_fallback(platform, region, ad_copy)
 
-        ad_account = os.getenv("META_AD_ACCOUNT_ID", "")
         url = f"https://graph.facebook.com/v18.0/{ad_account}/adcreatives"
-        headers = {"Authorization": f"Bearer {os.getenv('META_ACCESS_TOKEN')}"}
+        headers = {"Authorization": f"Bearer {access_token}"}
         payload = {
             "object_story_spec": {
                 "link_data": {"message": ad_copy},
-                "page_id": os.getenv("META_PAGE_ID", "dummy"),
+                "page_id": page_id,
             },
             "name": "Validation_Check",
             "format": "SINGLE_IMAGE",
@@ -163,15 +167,19 @@ class TikTokAdsTool(BaseTool):
         "Validates TikTok ad specs, trend alignment, and performance benchmark "
         "context via TikTok Marketing API when credentials are configured."
     )
+    tiktok_access_token: str | None = None
+    tiktok_advertiser_id: str | None = None
 
     def _run(self, region: str, product_category: str) -> dict[str, Any]:
-        if not os.getenv("TIKTOK_ACCESS_TOKEN") or not os.getenv("TIKTOK_ADVERTISER_ID"):
+        access_token = self.tiktok_access_token
+        advertiser_id = self.tiktok_advertiser_id
+        if not access_token or not advertiser_id:
             return self._dev_fallback(region, product_category)
 
         url = "https://business-api.tiktok.com/open_api/v1.3/advertiser/campaigns/get/"
-        headers = {"Access-Token": os.getenv("TIKTOK_ACCESS_TOKEN", "")}
+        headers = {"Access-Token": access_token}
         params = {
-            "advertiser_id": os.getenv("TIKTOK_ADVERTISER_ID"),
+            "advertiser_id": advertiser_id,
             "page": 1,
             "page_size": 10,
         }

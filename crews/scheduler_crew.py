@@ -1,4 +1,3 @@
-import os
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -17,8 +16,6 @@ from tools.custom.scheduler_tools import (
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "scheduler"
-DEFAULT_MODEL = "gpt-4o-mini"
-
 
 class ScheduledEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -92,18 +89,18 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_campaign_tools() -> list[Any]:
-    if os.getenv("SERPER_API_KEY"):
+def _build_campaign_tools(config_context: dict[str, Any]) -> list[Any]:
+    if config_context.get("serper_api_key"):
         return [SerperDevTool()]
     return []
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
-def _provider_status() -> dict[str, Any]:
-    if not os.getenv("HOLIDAY_API_KEY"):
+def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
+    if not config_context.get("holiday_api_key"):
         return {
             "data_source": "development_fallback",
             "confidence_level": "Illustrative",
@@ -123,9 +120,9 @@ def _provider_status() -> dict[str, Any]:
     }
 
 
-def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
-    normalized.update(_provider_status())
+    normalized.update(_provider_status(config_context))
     return normalized
 
 
@@ -208,9 +205,9 @@ def _validate_schedule_window(result: dict[str, Any], inputs: dict[str, Any]) ->
         )
 
 
-def run_scheduler_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_scheduler_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
     normalized_inputs = _normalize_inputs(inputs)
 
     agents_config = _load_yaml_config("agents.yaml")
@@ -218,11 +215,11 @@ def run_scheduler_crew(inputs: dict[str, Any]) -> dict[str, Any]:
 
     calendar_manager = Agent(
         config=agents_config["global_calendar_manager"],
-        tools=[TimezoneHolidayTool()],
+        tools=[TimezoneHolidayTool(holiday_api_key=config_context.get("holiday_api_key"))],
     )
     campaign_planner = Agent(
         config=agents_config["campaign_alignment_planner"],
-        tools=_build_campaign_tools(),
+        tools=_build_campaign_tools(config_context),
     )
     conflict_resolver = Agent(
         config=agents_config["conflict_resolution_optimizer"],
@@ -263,11 +260,12 @@ def run_scheduler_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         ],
         tasks=[timezone_task, alignment_task, conflict_task, notification_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     result = _apply_provider_status(
-        _serialize_crew_result(scheduler_crew.kickoff(inputs=normalized_inputs))
+        _serialize_crew_result(scheduler_crew.kickoff(inputs=normalized_inputs)),
+        config_context,
     )
     _validate_schedule_window(result, normalized_inputs)
     return result

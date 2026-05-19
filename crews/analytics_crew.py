@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +10,6 @@ from tools.custom.analytics_tools import CompetitorBenchmarkTool, EcomPlatformMe
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "analytics"
-DEFAULT_MODEL = "gpt-4o-mini"
-
 
 class RegionalKPI(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -62,27 +59,30 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_analysis_tools() -> list[Any]:
+def _build_analysis_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = []
-    if os.getenv("SERPER_API_KEY"):
+    if config_context.get("serper_api_key"):
         tools.append(SerperDevTool())
     return tools
 
 
-def _build_research_tools() -> list[Any]:
-    tools: list[Any] = [CompetitorBenchmarkTool(), ScrapeWebsiteTool()]
-    if os.getenv("SERPER_API_KEY"):
+def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
+    tools: list[Any] = [
+        CompetitorBenchmarkTool(serper_api_key=config_context.get("serper_api_key")),
+        ScrapeWebsiteTool(),
+    ]
+    if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
-def _provider_status() -> dict[str, Any]:
-    has_ecom_token = bool(os.getenv("ECOM_API_TOKEN"))
-    has_serper_token = bool(os.getenv("SERPER_API_KEY"))
+def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
+    has_ecom_token = bool(config_context.get("ecom_api_token"))
+    has_serper_token = bool(config_context.get("serper_api_key"))
 
     if not has_ecom_token and not has_serper_token:
         return {
@@ -115,9 +115,9 @@ def _provider_status() -> dict[str, Any]:
     }
 
 
-def _apply_provider_status(result: dict[str, Any]) -> dict[str, Any]:
+def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
-    normalized.update(_provider_status())
+    normalized.update(_provider_status(config_context))
     return normalized
 
 
@@ -143,28 +143,28 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def run_analytics_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
 
     collector = Agent(
         config=agents_config["data_collector"],
-        tools=[EcomPlatformMetricsTool()],
+        tools=[EcomPlatformMetricsTool(ecom_api_token=config_context.get("ecom_api_token"))],
     )
     analyst = Agent(
         config=agents_config["data_analyst"],
-        tools=_build_analysis_tools(),
+        tools=_build_analysis_tools(config_context),
     )
     researcher = Agent(
         config=agents_config["market_researcher"],
-        tools=_build_research_tools(),
+        tools=_build_research_tools(config_context),
     )
     reporter = Agent(
         config=agents_config["report_generator"],
-        tools=_build_analysis_tools(),
+        tools=_build_analysis_tools(config_context),
     )
 
     collect_task = Task(config=tasks_config["data_collection"], agent=collector)
@@ -189,8 +189,8 @@ def run_analytics_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         agents=[collector, analyst, researcher, reporter],
         tasks=[collect_task, analyze_task, research_task, report_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     result = _serialize_crew_result(analytics_crew.kickoff(inputs=inputs))
-    return _apply_provider_status(result)
+    return _apply_provider_status(result, config_context)

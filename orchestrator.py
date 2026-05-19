@@ -9,18 +9,24 @@ from celery.result import AsyncResult
 from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowType
+from runtime_config import RuntimeConfig, apply_runtime_environment
 
 logger = logging.getLogger(__name__)
 
-CrewFunction = Callable[[dict[str, Any]], dict[str, Any]]
+CrewFunction = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
 
 class MasterOrchestrator:
     """Central router for local CrewAI execution with persistent job state."""
 
-    def __init__(self, job_store: JobStore | None = None) -> None:
+    def __init__(
+        self,
+        job_store: JobStore | None = None,
+        runtime_config: RuntimeConfig | None = None,
+    ) -> None:
         self._crews: dict[WorkflowType, CrewFunction] = {}
         self._job_store = job_store or InMemoryJobStore()
+        self._runtime_config = runtime_config or RuntimeConfig()
         logger.info("Master orchestrator initialized with %s job store.", self.job_store_name)
 
     @property
@@ -54,7 +60,9 @@ class MasterOrchestrator:
         try:
             self._job_store.update_job(job_id, status=JobStatus.RUNNING)
             crew_function = self._crews[workflow_type]
-            result = await asyncio.to_thread(crew_function, inputs)
+            config_context = self._runtime_config.as_context()
+            apply_runtime_environment(config_context)
+            result = await asyncio.to_thread(crew_function, inputs, config_context)
             self._job_store.update_job(
                 job_id,
                 status=JobStatus.COMPLETED,
@@ -92,8 +100,9 @@ class CeleryOrchestrator:
         WorkflowType.SCHEDULER: "workflow.scheduler",
     }
 
-    def __init__(self, job_store: JobStore) -> None:
+    def __init__(self, job_store: JobStore, runtime_config: RuntimeConfig | None = None) -> None:
         self._job_store = job_store
+        self._runtime_config = runtime_config or RuntimeConfig()
         logger.info("Celery orchestrator initialized with %s job store.", self.job_store_name)
 
     @property
@@ -111,7 +120,12 @@ class CeleryOrchestrator:
 
         job_id = str(uuid.uuid4())
         self._job_store.create_job(job_id, workflow_type, inputs)
-        task = celery_app.send_task(task_name, args=[inputs], task_id=job_id)
+        task = celery_app.send_task(
+            task_name,
+            args=[inputs],
+            kwargs={"config_context": self._runtime_config.as_context()},
+            task_id=job_id,
+        )
         logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)
         return job_id
 

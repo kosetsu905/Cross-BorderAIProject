@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "content"
-DEFAULT_MODEL = "gpt-4o-mini"
 
 
 class SocialMediaPost(BaseModel):
@@ -39,22 +37,22 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def _build_search_tools() -> list[Any]:
+def _build_search_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = []
-    if os.getenv("SERPER_API_KEY"):
+    if config_context.get("serper_api_key"):
         tools.append(SerperDevTool())
     return tools
 
 
-def _build_creation_tools() -> list[Any]:
+def _build_creation_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = [ScrapeWebsiteTool()]
-    if os.getenv("SERPER_API_KEY"):
+    if config_context.get("serper_api_key"):
         tools.append(SerperDevTool())
     return tools
 
 
-def _memory_enabled() -> bool:
-    return os.getenv("CREWAI_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes"}
+def _memory_enabled(config_context: dict[str, Any]) -> bool:
+    return bool(config_context.get("crewai_memory_enabled"))
 
 
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
@@ -79,24 +77,24 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def run_content_crew(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
-    os.environ.setdefault("OPENAI_MODEL_NAME", DEFAULT_MODEL)
+    config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
 
     trend_monitor = Agent(
         config=agents_config["trend_monitor"],
-        tools=_build_search_tools(),
+        tools=_build_search_tools(config_context),
     )
     content_strategist = Agent(
         config=agents_config["content_strategist"],
-        tools=_build_search_tools(),
+        tools=_build_search_tools(config_context),
     )
     multilingual_creator = Agent(
         config=agents_config["multilingual_creator"],
-        tools=_build_creation_tools(),
+        tools=_build_creation_tools(config_context),
     )
     qa_specialist = Agent(
         config=agents_config["qa_specialist"],
@@ -124,7 +122,7 @@ def run_content_crew(inputs: dict[str, Any]) -> dict[str, Any]:
         agents=[trend_monitor, content_strategist, multilingual_creator, qa_specialist],
         tasks=[research_task, strategy_task, creation_task, qa_task],
         verbose=False,
-        memory=_memory_enabled(),
+        memory=_memory_enabled(config_context),
     )
 
     return _serialize_crew_result(content_crew.kickoff(inputs=inputs))

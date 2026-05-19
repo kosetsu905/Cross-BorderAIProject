@@ -1,5 +1,4 @@
 import logging
-import os
 from functools import lru_cache
 from typing import Any
 
@@ -19,9 +18,10 @@ class EcomPlatformMetricsTool(BaseTool):
         "Fetches sales, conversion, inventory, and ad performance data from "
         "Shopify, Amazon, TikTok Shop, or other commerce platforms."
     )
+    ecom_api_token: str | None = None
 
     def _run(self, platform: str, region: str, date_range: str) -> dict[str, Any]:
-        token = os.getenv("ECOM_API_TOKEN")
+        token = self.ecom_api_token
         if not token:
             return self._dev_fallback(platform, region, date_range)
 
@@ -106,9 +106,10 @@ class CompetitorBenchmarkTool(BaseTool):
         "Analyzes competitor pricing, promotions, and market positioning for "
         "cross-border e-commerce."
     )
+    serper_api_key: str | None = None
 
     def _run(self, product_category: str, target_markets: str) -> dict[str, Any]:
-        if not os.getenv("SERPER_API_KEY"):
+        if not self.serper_api_key:
             return self._dev_fallback(product_category, target_markets)
 
         return {
