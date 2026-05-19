@@ -113,4 +113,10 @@ class JobResponse(BaseModel):
     job_id: str
     status: JobStatus
     result: dict[str, Any] | None = None
+    usage_metrics: dict[str, Any] | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    duration_seconds: float | None = None
     error: str | None = None

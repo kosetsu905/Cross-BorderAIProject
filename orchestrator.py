@@ -10,6 +10,7 @@ from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowType
 from runtime_config import RuntimeConfig, apply_runtime_environment
+from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +63,19 @@ class MasterOrchestrator:
             crew_function = self._crews[workflow_type]
             config_context = self._runtime_config.as_context()
             apply_runtime_environment(config_context)
+            started_at = monotonic_time()
             result = await asyncio.to_thread(crew_function, inputs, config_context)
+            clean_result, usage_metrics = pop_usage_metrics(result)
+            usage_summary = build_usage_summary(
+                usage_metrics,
+                monotonic_time() - started_at,
+                config_context,
+            )
             self._job_store.update_job(
                 job_id,
                 status=JobStatus.COMPLETED,
-                result=result if isinstance(result, dict) else {"raw": str(result)},
+                result=clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)},
+                **usage_summary,
                 error=None,
             )
         except Exception as exc:
@@ -75,6 +84,7 @@ class MasterOrchestrator:
                 job_id,
                 status=JobStatus.FAILED,
                 result=None,
+                duration_seconds=None,
                 error=str(exc),
             )
 

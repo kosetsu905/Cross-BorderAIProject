@@ -109,9 +109,12 @@ Minimum required for running CrewAI workflows:
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL_NAME=gpt-4o-mini
 CREWAI_MEMORY_ENABLED=false
+OPENAI_INPUT_COST_PER_1M_TOKENS=0
+OPENAI_OUTPUT_COST_PER_1M_TOKENS=0
 ```
 
 `CREWAI_MEMORY_ENABLED` defaults to `false`. Turn it on only after your OpenAI account/key can use the embeddings endpoint required by CrewAI memory.
+`OPENAI_INPUT_COST_PER_1M_TOKENS` and `OPENAI_OUTPUT_COST_PER_1M_TOKENS` are optional cost-estimation rates. Leave them at `0` to track tokens and duration without estimating dollars.
 
 Optional shared services:
 
@@ -180,6 +183,29 @@ analytics: product_category, target_markets, date_range, currency
 bizdev: product_category, partnership_type, target_markets, target_languages, key_decision_maker_roles
 scheduler: event_type, target_markets, event_list, preferred_launch_window
 sales_improvement: product_category, target_markets, current_avg_conversion, target_conversion, date_range
+```
+
+## Usage Tracking
+
+Stage 2A records usage metadata for completed jobs. When CrewAI exposes token usage in its result object, the app stores it in PostgreSQL and includes it in `GET /api/v1/workflow/{job_id}`.
+
+Tracked fields:
+
+```text
+usage_metrics
+prompt_tokens
+completion_tokens
+total_tokens
+cost_usd
+duration_seconds
+```
+
+`duration_seconds` is always measured by the orchestrator/worker. Token fields depend on whether the current CrewAI result exposes usage metrics. `cost_usd` is calculated only from the optional per-million-token rates in `.env`; otherwise it remains `0`.
+
+You can inspect recent usage directly in PostgreSQL:
+
+```powershell
+docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT job_id, workflow_type, status, total_tokens, cost_usd, duration_seconds FROM workflow_jobs ORDER BY created_at DESC LIMIT 20;"
 ```
 
 ## Persistent Job State

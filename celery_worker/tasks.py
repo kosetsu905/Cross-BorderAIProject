@@ -10,6 +10,7 @@ from database import SessionLocal
 from job_store import PostgresJobStore
 from models import JobStatus
 from runtime_config import apply_runtime_environment, load_runtime_config
+from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 
 
 job_store = PostgresJobStore(SessionLocal)
@@ -28,12 +29,20 @@ def _run_with_job_state(
     self.update_state(state="PROGRESS", meta={"status": progress})
     job_store.update_job(job_id, status=JobStatus.RUNNING, result={"status": progress}, error=None)
     try:
+        started_at = monotonic_time()
         result = crew_function(inputs, config_context)
-        normalized_result = result if isinstance(result, dict) else {"raw": str(result)}
+        clean_result, usage_metrics = pop_usage_metrics(result)
+        normalized_result = clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)}
+        usage_summary = build_usage_summary(
+            usage_metrics,
+            monotonic_time() - started_at,
+            config_context,
+        )
         job_store.update_job(
             job_id,
             status=JobStatus.COMPLETED,
             result=normalized_result,
+            **usage_summary,
             error=None,
         )
         return normalized_result

@@ -5,6 +5,7 @@ import yaml
 from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
+from utils.crew_result import serialize_crew_result
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
@@ -44,25 +45,7 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
 
 
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
-    pydantic_result = getattr(result, "pydantic", None)
-    if pydantic_result is not None:
-        if hasattr(pydantic_result, "model_dump"):
-            return pydantic_result.model_dump()
-        if hasattr(pydantic_result, "dict"):
-            return pydantic_result.dict()
-
-    json_dict = getattr(result, "json_dict", None)
-    if isinstance(json_dict, dict):
-        return json_dict
-
-    raw = getattr(result, "raw", None)
-    if raw is not None:
-        return {"raw": raw}
-
-    if isinstance(result, dict):
-        return result
-
-    return {"raw": str(result)}
+    return serialize_crew_result(result)
 
 
 def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:

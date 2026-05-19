@@ -51,6 +51,12 @@ class InMemoryJobStore:
             "status": JobStatus.PENDING,
             "inputs": inputs,
             "result": None,
+            "usage_metrics": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "cost_usd": None,
+            "duration_seconds": None,
             "error": None,
         }
 
@@ -63,6 +69,12 @@ class InMemoryJobStore:
                 "status": JobStatus.PENDING,
                 "inputs": None,
                 "result": None,
+                "usage_metrics": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "cost_usd": None,
+                "duration_seconds": None,
                 "error": None,
             },
         )
@@ -92,6 +104,12 @@ class PostgresJobStore:
                     status=JobStatus.PENDING.value,
                     inputs=_json_safe(inputs),
                     result=None,
+                    usage_metrics=None,
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    total_tokens=None,
+                    cost_usd=None,
+                    duration_seconds=None,
                     error=None,
                 )
             )
@@ -112,6 +130,18 @@ class PostgresJobStore:
                 record.status = _status_value(fields["status"])
             if "result" in fields:
                 record.result = _json_safe(fields["result"])
+            if "usage_metrics" in fields:
+                record.usage_metrics = _json_safe(fields["usage_metrics"])
+            if "prompt_tokens" in fields:
+                record.prompt_tokens = fields["prompt_tokens"]
+            if "completion_tokens" in fields:
+                record.completion_tokens = fields["completion_tokens"]
+            if "total_tokens" in fields:
+                record.total_tokens = fields["total_tokens"]
+            if "cost_usd" in fields:
+                record.cost_usd = fields["cost_usd"]
+            if "duration_seconds" in fields:
+                record.duration_seconds = fields["duration_seconds"]
             if "error" in fields:
                 record.error = fields["error"]
             if "inputs" in fields:
@@ -134,5 +164,11 @@ class PostgresJobStore:
                 "job_id": record.job_id,
                 "status": JobStatus(record.status),
                 "result": record.result,
+                "usage_metrics": record.usage_metrics,
+                "prompt_tokens": record.prompt_tokens,
+                "completion_tokens": record.completion_tokens,
+                "total_tokens": record.total_tokens,
+                "cost_usd": record.cost_usd,
+                "duration_seconds": record.duration_seconds,
                 "error": record.error,
             }

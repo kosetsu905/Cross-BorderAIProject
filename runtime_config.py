@@ -22,6 +22,8 @@ class RuntimeConfig:
     meta_page_id: str | None = None
     tiktok_access_token: str | None = None
     tiktok_advertiser_id: str | None = None
+    openai_input_cost_per_1m_tokens: float = 0.0
+    openai_output_cost_per_1m_tokens: float = 0.0
 
     def as_context(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,7 +55,16 @@ def load_runtime_config() -> RuntimeConfig:
         meta_page_id=os.getenv("META_PAGE_ID"),
         tiktok_access_token=os.getenv("TIKTOK_ACCESS_TOKEN"),
         tiktok_advertiser_id=os.getenv("TIKTOK_ADVERTISER_ID"),
+        openai_input_cost_per_1m_tokens=_float_env("OPENAI_INPUT_COST_PER_1M_TOKENS"),
+        openai_output_cost_per_1m_tokens=_float_env("OPENAI_OUTPUT_COST_PER_1M_TOKENS"),
     )
+
+
+def _float_env(name: str) -> float:
+    try:
+        return float(os.getenv(name, "0") or 0)
+    except ValueError:
+        return 0.0
 
 
 def apply_runtime_environment(config: RuntimeConfig | dict[str, Any]) -> None:
