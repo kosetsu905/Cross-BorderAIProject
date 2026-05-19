@@ -231,6 +231,25 @@ duration_seconds
 
 `duration_seconds` is always measured by the orchestrator/worker. Token fields depend on whether the current CrewAI result exposes usage metrics. `cost_usd` is calculated only from the optional per-million-token rates in `.env`; otherwise it remains `0`.
 
+When `WORKFLOW_BACKEND=celery`, each Celery task also returns a structured result to the Redis result backend:
+
+```json
+{
+  "data": {
+    "workflow_output": "..."
+  },
+  "meta": {
+    "prompt_tokens": 1000,
+    "completion_tokens": 500,
+    "total_tokens": 1500,
+    "cost_usd": 0.001,
+    "duration_seconds": 12.3
+  }
+}
+```
+
+The HTTP API keeps the same response shape as before: `GET /api/v1/workflow/{job_id}` returns the workflow output in `result` and exposes usage/cost fields at the top level.
+
 You can inspect recent usage directly in PostgreSQL:
 
 ```powershell

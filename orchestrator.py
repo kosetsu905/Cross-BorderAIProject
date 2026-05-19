@@ -17,6 +17,33 @@ logger = logging.getLogger(__name__)
 CrewFunction = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
 
+USAGE_FIELD_NAMES = {
+    "usage_metrics",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cost_usd",
+    "duration_seconds",
+}
+
+
+def _split_task_result(task_result: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    if (
+        isinstance(task_result, dict)
+        and isinstance(task_result.get("data"), dict)
+        and isinstance(task_result.get("meta"), dict)
+    ):
+        usage_fields = {
+            key: value
+            for key, value in task_result["meta"].items()
+            if key in USAGE_FIELD_NAMES
+        }
+        return task_result["data"], usage_fields
+
+    result_payload = task_result if isinstance(task_result, dict) else {"raw": str(task_result)}
+    return result_payload, {}
+
+
 class MasterOrchestrator:
     """Central router for local CrewAI execution with persistent job state."""
 
@@ -179,16 +206,19 @@ class CeleryOrchestrator:
 
         if result.state == "SUCCESS":
             task_result = result.result
+            result_payload, usage_fields = _split_task_result(task_result)
             self._job_store.update_job(
                 job_id,
                 status=JobStatus.COMPLETED,
-                result=task_result if isinstance(task_result, dict) else {"raw": str(task_result)},
+                result=result_payload,
+                **usage_fields,
                 error=None,
             )
             return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.COMPLETED,
-                "result": task_result if isinstance(task_result, dict) else {"raw": str(task_result)},
+                "result": result_payload,
+                **usage_fields,
                 "error": None,
             }
 

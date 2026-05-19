@@ -46,7 +46,10 @@ def _run_with_job_state(
             **usage_summary,
             error=None,
         )
-        return normalized_result
+        return {
+            "data": normalized_result,
+            "meta": usage_summary,
+        }
     except Exception as exc:
         request = getattr(self, "request", None)
         retries = int(getattr(request, "retries", 0) or 0)
