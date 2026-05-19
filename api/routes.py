@@ -9,7 +9,16 @@ def create_router(orchestrator: object) -> APIRouter:
     @router.post("/api/v1/workflow", response_model=JobResponse)
     async def trigger_workflow(req: WorkflowRequest) -> JobResponse:
         try:
-            job_id = await orchestrator.submit_job(req.workflow_type, req.inputs)
+            provider_credentials = (
+                req.provider_credentials.model_dump(exclude_none=True)
+                if req.provider_credentials
+                else None
+            )
+            job_id = await orchestrator.submit_job(
+                req.workflow_type,
+                req.inputs,
+                provider_credentials=provider_credentials,
+            )
             return JobResponse(job_id=job_id, status=JobStatus.PENDING)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

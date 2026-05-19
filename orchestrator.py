@@ -9,7 +9,7 @@ from celery.result import AsyncResult
 from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowType
-from runtime_config import RuntimeConfig, apply_runtime_environment
+from runtime_config import RuntimeConfig, apply_runtime_environment, merge_runtime_context
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 
 logger = logging.getLogger(__name__)
@@ -42,13 +42,19 @@ class MasterOrchestrator:
         self._crews[workflow_type] = crew_function
         logger.info("Registered crew: %s", workflow_type.value)
 
-    async def submit_job(self, workflow_type: WorkflowType, inputs: dict[str, Any]) -> str:
+    async def submit_job(
+        self,
+        workflow_type: WorkflowType,
+        inputs: dict[str, Any],
+        provider_credentials: dict[str, Any] | None = None,
+    ) -> str:
         if workflow_type not in self._crews:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
         job_id = str(uuid.uuid4())
         self._job_store.create_job(job_id, workflow_type, inputs)
-        asyncio.create_task(self._run_job(job_id, workflow_type, inputs))
+        config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        asyncio.create_task(self._run_job(job_id, workflow_type, inputs, config_context))
         logger.info("Submitted job %s for workflow %s", job_id, workflow_type.value)
         return job_id
 
@@ -57,11 +63,11 @@ class MasterOrchestrator:
         job_id: str,
         workflow_type: WorkflowType,
         inputs: dict[str, Any],
+        config_context: dict[str, Any],
     ) -> None:
         try:
             self._job_store.update_job(job_id, status=JobStatus.RUNNING)
             crew_function = self._crews[workflow_type]
-            config_context = self._runtime_config.as_context()
             apply_runtime_environment(config_context)
             started_at = monotonic_time()
             result = await asyncio.to_thread(crew_function, inputs, config_context)
@@ -123,17 +129,23 @@ class CeleryOrchestrator:
     def registered_workflows(self) -> list[WorkflowType]:
         return list(self.TASK_MAP.keys())
 
-    async def submit_job(self, workflow_type: WorkflowType, inputs: dict[str, Any]) -> str:
+    async def submit_job(
+        self,
+        workflow_type: WorkflowType,
+        inputs: dict[str, Any],
+        provider_credentials: dict[str, Any] | None = None,
+    ) -> str:
         task_name = self.TASK_MAP.get(workflow_type)
         if task_name is None:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
         job_id = str(uuid.uuid4())
         self._job_store.create_job(job_id, workflow_type, inputs)
+        config_context = merge_runtime_context(self._runtime_config, provider_credentials)
         task = celery_app.send_task(
             task_name,
             args=[inputs],
-            kwargs={"config_context": self._runtime_config.as_context()},
+            kwargs={"config_context": config_context},
             task_id=job_id,
         )
         logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)

@@ -76,6 +76,18 @@ class SalesImprovementInputs(StrictInputModel):
     date_range: str = Field(..., min_length=1)
 
 
+class ProviderCredentials(StrictInputModel):
+    serper_api_key: str | None = None
+    google_ads_developer_token: str | None = None
+    google_ads_access_token: str | None = None
+    google_ads_customer_id: str | None = None
+    meta_access_token: str | None = None
+    meta_ad_account_id: str | None = None
+    meta_page_id: str | None = None
+    tiktok_access_token: str | None = None
+    tiktok_advertiser_id: str | None = None
+
+
 WORKFLOW_INPUT_MODELS: dict[WorkflowType, type[StrictInputModel]] = {
     WorkflowType.MARKETING: MarketingInputs,
     WorkflowType.CONTENT: ContentInputs,
@@ -90,6 +102,13 @@ WORKFLOW_INPUT_MODELS: dict[WorkflowType, type[StrictInputModel]] = {
 class WorkflowRequest(BaseModel):
     workflow_type: WorkflowType
     inputs: dict[str, Any] = Field(..., description="Workflow-specific input parameters")
+    provider_credentials: ProviderCredentials | None = Field(
+        None,
+        description=(
+            "Optional request-scoped provider credentials. These are passed to the worker "
+            "for this job and are not stored in the job input history."
+        ),
+    )
     metadata: dict[str, Any] | None = Field(
         None,
         description="Optional tracing or request context metadata",

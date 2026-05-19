@@ -3,6 +3,29 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+RUNTIME_CONFIG_KEYS = {
+    "openai_api_key",
+    "openai_model_name",
+    "crewai_memory_enabled",
+    "serper_api_key",
+    "crunchbase_api_key",
+    "apollo_api_key",
+    "ecom_api_token",
+    "crm_api_token",
+    "holiday_api_key",
+    "google_ads_developer_token",
+    "google_ads_access_token",
+    "google_ads_customer_id",
+    "meta_access_token",
+    "meta_ad_account_id",
+    "meta_page_id",
+    "tiktok_access_token",
+    "tiktok_advertiser_id",
+    "openai_input_cost_per_1m_tokens",
+    "openai_output_cost_per_1m_tokens",
+}
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     openai_api_key: str | None = None
@@ -77,3 +100,14 @@ def apply_runtime_environment(config: RuntimeConfig | dict[str, Any]) -> None:
     for env_name, value in env_map.items():
         if value:
             os.environ[env_name] = str(value)
+
+
+def merge_runtime_context(
+    base_context: RuntimeConfig | dict[str, Any],
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = base_context.as_context() if isinstance(base_context, RuntimeConfig) else dict(base_context)
+    for key, value in (overrides or {}).items():
+        if key in RUNTIME_CONFIG_KEYS and value not in (None, ""):
+            context[key] = value
+    return context

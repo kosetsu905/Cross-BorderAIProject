@@ -13,6 +13,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _config_value(
+    api_config: dict[str, Any] | None,
+    key: str,
+    instance_value: str | None,
+) -> str | None:
+    if api_config and api_config.get(key):
+        return str(api_config[key])
+    return instance_value
+
+
 def _retry_request(
     url: str,
     method: str = "GET",
@@ -61,10 +71,16 @@ class GoogleAdsKeywordTool(BaseTool):
     google_ads_customer_id: str | None = None
     google_ads_developer_token: str | None = None
 
-    def _run(self, product_category: str, region: str, budget_usd: float = 0) -> dict[str, Any]:
-        access_token = self.google_ads_access_token
-        customer_id = self.google_ads_customer_id
-        developer_token = self.google_ads_developer_token
+    def _run(
+        self,
+        product_category: str,
+        region: str,
+        budget_usd: float = 0,
+        api_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        access_token = _config_value(api_config, "google_ads_access_token", self.google_ads_access_token)
+        customer_id = _config_value(api_config, "google_ads_customer_id", self.google_ads_customer_id)
+        developer_token = _config_value(api_config, "google_ads_developer_token", self.google_ads_developer_token)
         if not all([access_token, customer_id, developer_token]):
             return self._dev_fallback(product_category, region, float(budget_usd or 0))
 
@@ -121,10 +137,16 @@ class MetaAdsTool(BaseTool):
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None
 
-    def _run(self, platform: str, region: str, ad_copy: str) -> dict[str, Any]:
-        access_token = self.meta_access_token
-        ad_account = self.meta_ad_account_id
-        page_id = self.meta_page_id or "dummy"
+    def _run(
+        self,
+        platform: str,
+        region: str,
+        ad_copy: str,
+        api_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        access_token = _config_value(api_config, "meta_access_token", self.meta_access_token)
+        ad_account = _config_value(api_config, "meta_ad_account_id", self.meta_ad_account_id)
+        page_id = _config_value(api_config, "meta_page_id", self.meta_page_id) or "dummy"
         if not access_token or not ad_account:
             return self._dev_fallback(platform, region, ad_copy)
 
@@ -170,9 +192,14 @@ class TikTokAdsTool(BaseTool):
     tiktok_access_token: str | None = None
     tiktok_advertiser_id: str | None = None
 
-    def _run(self, region: str, product_category: str) -> dict[str, Any]:
-        access_token = self.tiktok_access_token
-        advertiser_id = self.tiktok_advertiser_id
+    def _run(
+        self,
+        region: str,
+        product_category: str,
+        api_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        access_token = _config_value(api_config, "tiktok_access_token", self.tiktok_access_token)
+        advertiser_id = _config_value(api_config, "tiktok_advertiser_id", self.tiktok_advertiser_id)
         if not access_token or not advertiser_id:
             return self._dev_fallback(region, product_category)
 

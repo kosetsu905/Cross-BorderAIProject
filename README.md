@@ -161,6 +161,33 @@ TIKTOK_ADVERTISER_ID=optional_tiktok_advertiser_id
 
 Current runnable code does not use Shopify, Amazon, or calendar-provider tokens mentioned in archived notes yet. Those belong to future integration work unless a corresponding tool is implemented under `tools/`.
 
+For future multi-tenant usage, provider credentials can also be supplied per request with `provider_credentials` instead of using the server-wide `.env` values. These request-scoped credentials are merged into the workflow runtime context and are not stored in the job `inputs` history.
+
+Example shape:
+
+```json
+{
+  "workflow_type": "marketing",
+  "inputs": {
+    "product_category": "Smart Home Security Cameras",
+    "product_usp": "AI-powered motion detection, 4K resolution, privacy-first cloud storage",
+    "target_markets": "US, UK, Germany, Japan",
+    "budget": "$15,000 USD"
+  },
+  "provider_credentials": {
+    "google_ads_developer_token": "request_scoped_google_developer_token",
+    "google_ads_access_token": "request_scoped_google_access_token",
+    "google_ads_customer_id": "request_scoped_customer_id",
+    "meta_access_token": "request_scoped_meta_token",
+    "meta_ad_account_id": "request_scoped_meta_account_id",
+    "tiktok_access_token": "request_scoped_tiktok_token",
+    "tiktok_advertiser_id": "request_scoped_tiktok_advertiser_id"
+  }
+}
+```
+
+For a production SaaS implementation, prefer passing a `tenant_id` and loading encrypted provider credentials from a secrets vault. Passing credentials directly in the API request is useful for local development and integration testing, but the Celery broker still receives the task payload.
+
 ## No-Token Checks
 
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
