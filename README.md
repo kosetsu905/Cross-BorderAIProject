@@ -119,6 +119,7 @@ OPENAI_OUTPUT_COST_PER_1M_TOKENS=0
 Optional shared services:
 
 ```env
+API_BEARER_TOKEN=optional_local_api_token
 SERPER_API_KEY=optional_serper_key
 WORKFLOW_BACKEND=local
 DATABASE_URL=postgresql+psycopg://crossborder:crossborder@localhost:5432/crossborder_ai
@@ -131,6 +132,7 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 `WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
 PostgreSQL is used for persistent local-backend job state. The app creates the `workflow_jobs` table on startup.
 Runtime configuration and secrets are centralized in `runtime_config.py`. FastAPI/Celery load `.env` once, pass a `config_context` into the orchestrator and crews, and provider tools receive credentials through constructors instead of reading global environment variables directly.
+If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
 
 Optional workflow data providers:
 
@@ -371,6 +373,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -396,6 +399,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -421,6 +425,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -445,6 +450,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -466,6 +472,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -489,6 +496,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -512,6 +520,7 @@ Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `
   -Method POST `
   -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
 ```
 
@@ -520,5 +529,7 @@ Invoke-RestMethod `
 All workflow submit requests return a `job_id`. Poll it with:
 
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/workflow/replace-with-real-job-id"
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow/replace-with-real-job-id" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" }
 ```

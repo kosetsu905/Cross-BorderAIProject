@@ -1,13 +1,18 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from api.auth import verify_bearer_token
 from models import JobResponse, JobStatus, WorkflowRequest
+
+AuthDependency = Annotated[None, Depends(verify_bearer_token)]
 
 
 def create_router(orchestrator: object) -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/v1/workflow", response_model=JobResponse)
-    async def trigger_workflow(req: WorkflowRequest) -> JobResponse:
+    async def trigger_workflow(req: WorkflowRequest, _: AuthDependency) -> JobResponse:
         try:
             provider_credentials = (
                 req.provider_credentials.model_dump(exclude_none=True)
@@ -24,7 +29,7 @@ def create_router(orchestrator: object) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/api/v1/workflow/{job_id}", response_model=JobResponse)
-    async def get_workflow_status(job_id: str) -> JobResponse:
+    async def get_workflow_status(job_id: str, _: AuthDependency) -> JobResponse:
         job_data = orchestrator.get_job_status(job_id)
         if job_data.get("status") == JobStatus.FAILED and job_data.get("error"):
             raise HTTPException(status_code=404, detail=job_data["error"])
