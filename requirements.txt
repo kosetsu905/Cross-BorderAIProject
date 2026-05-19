@@ -8,3 +8,5 @@ PyYAML
 redis
 celery
 httpx
+sqlalchemy
+psycopg[binary]

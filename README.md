@@ -118,11 +118,13 @@ Optional shared services:
 ```env
 SERPER_API_KEY=optional_serper_key
 WORKFLOW_BACKEND=local
+DATABASE_URL=postgresql+psycopg://crossborder:crossborder@localhost:5432/crossborder_ai
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
 ```
 
 `WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
+PostgreSQL is used for persistent local-backend job state. The app creates the `workflow_jobs` table on startup.
 
 Optional workflow data providers:
 
@@ -158,10 +160,28 @@ Current runnable code does not use Shopify, Amazon, or calendar-provider tokens 
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\integrations\cross_platform_ads_tools.py
+python -m py_compile .\main.py .\models.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
+
+## Persistent Job State
+
+Stage 2A uses PostgreSQL for local-backend job state. `MasterOrchestrator` writes submitted, running, completed, and failed jobs to the `workflow_jobs` table instead of keeping job history only in a Python dictionary.
+
+For local PowerShell runs, PostgreSQL must be running and reachable through:
+
+```env
+DATABASE_URL=postgresql+psycopg://crossborder:crossborder@localhost:5432/crossborder_ai
+```
+
+For Docker Compose, the included `postgres` service provides the database and the FastAPI container uses:
+
+```env
+DATABASE_URL=postgresql+psycopg://crossborder:crossborder@postgres:5432/crossborder_ai
+```
+
+This persists job records across FastAPI restarts. If you use `WORKFLOW_BACKEND=local`, an in-progress job still stops when the FastAPI process stops; use `WORKFLOW_BACKEND=celery` for worker-based execution outside the web process.
 
 ## Queue Manager / Message Broker
 
@@ -171,6 +191,7 @@ Use the default local backend for simple development:
 
 ```env
 WORKFLOW_BACKEND=local
+DATABASE_URL=postgresql+psycopg://crossborder:crossborder@localhost:5432/crossborder_ai
 ```
 
 Use Celery when you want production-style queueing, retries, worker concurrency, and job results that survive outside a single FastAPI process:

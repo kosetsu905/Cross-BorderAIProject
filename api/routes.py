@@ -23,12 +23,16 @@ def create_router(orchestrator: object) -> APIRouter:
 
     @router.get("/health")
     async def health_check() -> dict[str, object]:
-        return {
+        health: dict[str, object] = {
             "status": "healthy",
             "workflow_backend": orchestrator.__class__.__name__,
             "registered_workflows": [
                 workflow.value for workflow in orchestrator.registered_workflows
             ],
         }
+        job_store_name = getattr(orchestrator, "job_store_name", None)
+        if job_store_name:
+            health["job_store"] = job_store_name
+        return health
 
     return router

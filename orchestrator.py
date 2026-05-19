@@ -7,6 +7,7 @@ from typing import Any
 from celery.result import AsyncResult
 
 from celery_worker.celery_app import celery_app
+from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowType
 
 logger = logging.getLogger(__name__)
@@ -15,12 +16,16 @@ CrewFunction = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class MasterOrchestrator:
-    """Central router and in-memory job tracker for CrewAI workflows."""
+    """Central router for local CrewAI execution with persistent job state."""
 
-    def __init__(self) -> None:
+    def __init__(self, job_store: JobStore | None = None) -> None:
         self._crews: dict[WorkflowType, CrewFunction] = {}
-        self._jobs: dict[str, dict[str, Any]] = {}
-        logger.info("Master orchestrator initialized.")
+        self._job_store = job_store or InMemoryJobStore()
+        logger.info("Master orchestrator initialized with %s job store.", self.job_store_name)
+
+    @property
+    def job_store_name(self) -> str:
+        return self._job_store.name
 
     @property
     def registered_workflows(self) -> list[WorkflowType]:
@@ -35,12 +40,7 @@ class MasterOrchestrator:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
         job_id = str(uuid.uuid4())
-        self._jobs[job_id] = {
-            "job_id": job_id,
-            "status": JobStatus.PENDING,
-            "result": None,
-            "error": None,
-        }
+        self._job_store.create_job(job_id, workflow_type, inputs)
         asyncio.create_task(self._run_job(job_id, workflow_type, inputs))
         logger.info("Submitted job %s for workflow %s", job_id, workflow_type.value)
         return job_id
@@ -52,26 +52,31 @@ class MasterOrchestrator:
         inputs: dict[str, Any],
     ) -> None:
         try:
-            self._jobs[job_id]["status"] = JobStatus.RUNNING
+            self._job_store.update_job(job_id, status=JobStatus.RUNNING)
             crew_function = self._crews[workflow_type]
             result = await asyncio.to_thread(crew_function, inputs)
-            self._jobs[job_id]["status"] = JobStatus.COMPLETED
-            self._jobs[job_id]["result"] = result if isinstance(result, dict) else {"raw": str(result)}
+            self._job_store.update_job(
+                job_id,
+                status=JobStatus.COMPLETED,
+                result=result if isinstance(result, dict) else {"raw": str(result)},
+                error=None,
+            )
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
-            self._jobs[job_id]["status"] = JobStatus.FAILED
-            self._jobs[job_id]["error"] = str(exc)
+            self._job_store.update_job(
+                job_id,
+                status=JobStatus.FAILED,
+                result=None,
+                error=str(exc),
+            )
 
     def get_job_status(self, job_id: str) -> dict[str, Any]:
-        return self._jobs.get(
-            job_id,
-            {
-                "job_id": job_id,
-                "status": JobStatus.FAILED,
-                "result": None,
-                "error": "Job not found",
-            },
-        )
+        return self._job_store.get_job(job_id) or {
+            "job_id": job_id,
+            "status": JobStatus.FAILED,
+            "result": None,
+            "error": "Job not found",
+        }
 
 
 class CeleryOrchestrator:
@@ -87,6 +92,14 @@ class CeleryOrchestrator:
         WorkflowType.SCHEDULER: "workflow.scheduler",
     }
 
+    def __init__(self, job_store: JobStore) -> None:
+        self._job_store = job_store
+        logger.info("Celery orchestrator initialized with %s job store.", self.job_store_name)
+
+    @property
+    def job_store_name(self) -> str:
+        return self._job_store.name
+
     @property
     def registered_workflows(self) -> list[WorkflowType]:
         return list(self.TASK_MAP.keys())
@@ -96,15 +109,17 @@ class CeleryOrchestrator:
         if task_name is None:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        task = celery_app.send_task(task_name, args=[inputs])
+        job_id = str(uuid.uuid4())
+        self._job_store.create_job(job_id, workflow_type, inputs)
+        task = celery_app.send_task(task_name, args=[inputs], task_id=job_id)
         logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)
-        return str(task.id)
+        return job_id
 
     def get_job_status(self, job_id: str) -> dict[str, Any]:
         result = AsyncResult(job_id, app=celery_app)
 
         if result.state == "PENDING":
-            return {
+            return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.PENDING,
                 "result": None,
@@ -113,7 +128,13 @@ class CeleryOrchestrator:
 
         if result.state in {"STARTED", "PROGRESS", "RETRY"}:
             progress = result.info if isinstance(result.info, dict) else None
-            return {
+            self._job_store.update_job(
+                job_id,
+                status=JobStatus.RUNNING,
+                result=progress,
+                error=None,
+            )
+            return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.RUNNING,
                 "result": progress,
@@ -122,7 +143,13 @@ class CeleryOrchestrator:
 
         if result.state == "SUCCESS":
             task_result = result.result
-            return {
+            self._job_store.update_job(
+                job_id,
+                status=JobStatus.COMPLETED,
+                result=task_result if isinstance(task_result, dict) else {"raw": str(task_result)},
+                error=None,
+            )
+            return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.COMPLETED,
                 "result": task_result if isinstance(task_result, dict) else {"raw": str(task_result)},
@@ -130,13 +157,25 @@ class CeleryOrchestrator:
             }
 
         if result.state == "FAILURE":
-            return {
+            self._job_store.update_job(
+                job_id,
+                status=JobStatus.FAILED,
+                result=None,
+                error=str(result.result),
+            )
+            return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.FAILED,
                 "result": None,
                 "error": str(result.result),
             }
 
+        self._job_store.update_job(
+            job_id,
+            status=JobStatus.RUNNING,
+            result={"celery_state": result.state},
+            error=None,
+        )
         return {
             "job_id": job_id,
             "status": JobStatus.RUNNING,

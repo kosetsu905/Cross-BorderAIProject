@@ -14,6 +14,8 @@ from crews.marketing_crew import run_marketing_crew
 from crews.scheduler_crew import run_scheduler_crew
 from crews.sales_improvement_crew import run_sales_improvement_crew
 from crews.support_crew import run_support_crew
+from database import SessionLocal, init_db
+from job_store import PostgresJobStore
 from models import WorkflowType
 from orchestrator import CeleryOrchestrator, MasterOrchestrator
 
@@ -23,12 +25,14 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
+init_db()
+job_store = PostgresJobStore(SessionLocal)
 
 if os.getenv("WORKFLOW_BACKEND", "local").lower() == "celery":
-    orchestrator = CeleryOrchestrator()
+    orchestrator = CeleryOrchestrator(job_store=job_store)
     logger.info("Using Celery workflow backend.")
 else:
-    orchestrator = MasterOrchestrator()
+    orchestrator = MasterOrchestrator(job_store=job_store)
     orchestrator.register_crew(WorkflowType.ANALYTICS, run_analytics_crew)
     orchestrator.register_crew(WorkflowType.BIZDEV, run_bizdev_crew)
     orchestrator.register_crew(WorkflowType.MARKETING, run_marketing_crew)
@@ -36,7 +40,7 @@ else:
     orchestrator.register_crew(WorkflowType.SCHEDULER, run_scheduler_crew)
     orchestrator.register_crew(WorkflowType.SALES_IMPROVEMENT, run_sales_improvement_crew)
     orchestrator.register_crew(WorkflowType.SUPPORT, run_support_crew)
-    logger.info("Using local in-memory workflow backend.")
+    logger.info("Using local workflow backend with PostgreSQL job store.")
 
 app.add_middleware(
     CORSMiddleware,
