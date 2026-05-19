@@ -166,6 +166,22 @@ python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
 
+## Strict Input Validation
+
+Workflow requests are validated before a job is submitted. Each `workflow_type` has its own required input schema in `models.py`; missing fields, empty strings, wrong list types, or unexpected extra fields return a FastAPI validation error before any CrewAI workflow can consume tokens.
+
+Required `inputs` by workflow:
+
+```text
+marketing: product_category, product_usp, target_markets, budget
+content: subject, product_category, target_markets, target_languages, platforms
+support: customer, person, inquiry
+analytics: product_category, target_markets, date_range, currency
+bizdev: product_category, partnership_type, target_markets, target_languages, key_decision_maker_roles
+scheduler: event_type, target_markets, event_list, preferred_launch_window
+sales_improvement: product_category, target_markets, current_avg_conversion, target_conversion, date_range
+```
+
 ## Persistent Job State
 
 Stage 2A uses PostgreSQL for local-backend job state. `MasterOrchestrator` writes submitted, running, completed, and failed jobs to the `workflow_jobs` table instead of keeping job history only in a Python dictionary.
