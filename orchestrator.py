@@ -81,6 +81,12 @@ class MasterOrchestrator:
         job_id = str(uuid.uuid4())
         self._job_store.create_job(job_id, workflow_type, inputs)
         config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        self._job_store.log_event(
+            job_id,
+            "queued",
+            "Local background execution scheduled.",
+            {"workflow_type": workflow_type.value, "backend": "local"},
+        )
         asyncio.create_task(self._run_job(job_id, workflow_type, inputs, config_context))
         logger.info("Submitted job %s for workflow %s", job_id, workflow_type.value)
         return job_id
@@ -94,6 +100,12 @@ class MasterOrchestrator:
     ) -> None:
         try:
             self._job_store.update_job(job_id, status=JobStatus.RUNNING)
+            self._job_store.log_event(
+                job_id,
+                "running",
+                "Workflow execution started.",
+                {"workflow_type": workflow_type.value, "backend": "local"},
+            )
             crew_function = self._crews[workflow_type]
             apply_runtime_environment(config_context)
             started_at = monotonic_time()
@@ -111,6 +123,18 @@ class MasterOrchestrator:
                 **usage_summary,
                 error=None,
             )
+            self._job_store.log_event(
+                job_id,
+                "completed",
+                "Workflow execution completed.",
+                {
+                    "workflow_type": workflow_type.value,
+                    "backend": "local",
+                    "total_tokens": usage_summary.get("total_tokens"),
+                    "cost_usd": usage_summary.get("cost_usd"),
+                    "duration_seconds": usage_summary.get("duration_seconds"),
+                },
+            )
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._job_store.update_job(
@@ -120,6 +144,12 @@ class MasterOrchestrator:
                 duration_seconds=None,
                 error=str(exc),
             )
+            self._job_store.log_event(
+                job_id,
+                "failed",
+                "Workflow execution failed.",
+                {"workflow_type": workflow_type.value, "backend": "local", "error": str(exc)},
+            )
 
     def get_job_status(self, job_id: str) -> dict[str, Any]:
         return self._job_store.get_job(job_id) or {
@@ -128,6 +158,9 @@ class MasterOrchestrator:
             "result": None,
             "error": "Job not found",
         }
+
+    def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
+        return self._job_store.get_job_events(job_id)
 
 
 class CeleryOrchestrator:
@@ -169,6 +202,12 @@ class CeleryOrchestrator:
         job_id = str(uuid.uuid4())
         self._job_store.create_job(job_id, workflow_type, inputs)
         config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        self._job_store.log_event(
+            job_id,
+            "queued",
+            "Celery task queued.",
+            {"workflow_type": workflow_type.value, "backend": "celery", "task_name": task_name},
+        )
         task = celery_app.send_task(
             task_name,
             args=[inputs],
@@ -177,6 +216,9 @@ class CeleryOrchestrator:
         )
         logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)
         return job_id
+
+    def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
+        return self._job_store.get_job_events(job_id)
 
     def get_job_status(self, job_id: str) -> dict[str, Any]:
         result = AsyncResult(job_id, app=celery_app)

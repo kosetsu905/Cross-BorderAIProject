@@ -29,6 +29,12 @@ def _run_with_job_state(
     apply_runtime_environment(config_context)
     self.update_state(state="PROGRESS", meta={"status": progress})
     job_store.update_job(job_id, status=JobStatus.RUNNING, result={"status": progress}, error=None)
+    job_store.log_event(
+        job_id,
+        "running",
+        progress,
+        {"backend": "celery", "task_name": getattr(self, "name", None)},
+    )
     started_at = monotonic_time()
     try:
         result = crew_function(inputs, config_context)
@@ -45,6 +51,18 @@ def _run_with_job_state(
             result=normalized_result,
             **usage_summary,
             error=None,
+        )
+        job_store.log_event(
+            job_id,
+            "completed",
+            "Workflow execution completed.",
+            {
+                "backend": "celery",
+                "task_name": getattr(self, "name", None),
+                "total_tokens": usage_summary.get("total_tokens"),
+                "cost_usd": usage_summary.get("cost_usd"),
+                "duration_seconds": usage_summary.get("duration_seconds"),
+            },
         )
         return {
             "data": normalized_result,
@@ -71,6 +89,12 @@ def _run_with_job_state(
                 error=str(exc),
                 duration_seconds=monotonic_time() - started_at,
             )
+            job_store.log_event(
+                job_id,
+                "retrying",
+                "Retrying transient provider or network error.",
+                retry_meta,
+            )
             raise self.retry(exc=exc, countdown=countdown)
 
         job_store.update_job(
@@ -79,6 +103,16 @@ def _run_with_job_state(
             result=None,
             error=str(exc),
             duration_seconds=monotonic_time() - started_at,
+        )
+        job_store.log_event(
+            job_id,
+            "failed",
+            "Workflow execution failed.",
+            {
+                "backend": "celery",
+                "task_name": getattr(self, "name", None),
+                "error": str(exc),
+            },
         )
         raise
 

@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import verify_bearer_token
-from models import JobResponse, JobStatus, WorkflowRequest
+from models import JobEventResponse, JobResponse, JobStatus, WorkflowRequest
 
 AuthDependency = Annotated[None, Depends(verify_bearer_token)]
 
@@ -34,6 +34,13 @@ def create_router(orchestrator: object) -> APIRouter:
         if job_data.get("status") == JobStatus.FAILED and job_data.get("error"):
             raise HTTPException(status_code=404, detail=job_data["error"])
         return JobResponse(**job_data)
+
+    @router.get("/api/v1/workflow/{job_id}/events", response_model=list[JobEventResponse])
+    async def get_workflow_events(job_id: str, _: AuthDependency) -> list[JobEventResponse]:
+        return [
+            JobEventResponse(**event)
+            for event in orchestrator.get_job_events(job_id)
+        ]
 
     @router.get("/health")
     async def health_check() -> dict[str, object]:

@@ -258,6 +258,26 @@ You can inspect recent usage directly in PostgreSQL:
 docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT job_id, workflow_type, status, total_tokens, cost_usd, duration_seconds FROM workflow_jobs ORDER BY created_at DESC LIMIT 20;"
 ```
 
+## Observability
+
+Stage 2A stores workflow execution events in PostgreSQL for debugging and future admin UI work. The app records submitted, queued, running, retrying, completed, and failed events in `workflow_job_events`.
+
+These events are operational traces, not hidden model reasoning. They are intended to answer questions such as when a job started, which backend handled it, whether it retried, how long it ran, and where it failed.
+
+Poll a job's event timeline:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow/replace-with-real-job-id/events" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" }
+```
+
+Inspect recent events directly in PostgreSQL:
+
+```powershell
+docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT event_id, job_id, event_type, message, created_at FROM workflow_job_events ORDER BY event_id DESC LIMIT 30;"
+```
+
 ## Persistent Job State
 
 Stage 2A uses PostgreSQL for local-backend job state. `MasterOrchestrator` writes submitted, running, completed, and failed jobs to the `workflow_jobs` table instead of keeping job history only in a Python dictionary.

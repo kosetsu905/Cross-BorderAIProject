@@ -1,4 +1,5 @@
 from enum import Enum
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -139,3 +140,12 @@ class JobResponse(BaseModel):
     cost_usd: float | None = None
     duration_seconds: float | None = None
     error: str | None = None
+
+
+class JobEventResponse(BaseModel):
+    event_id: int
+    job_id: str
+    event_type: str
+    message: str
+    payload: dict[str, Any] | None = None
+    created_at: datetime | None = None

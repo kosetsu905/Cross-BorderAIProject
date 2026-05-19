@@ -3,7 +3,7 @@ from typing import Any, Protocol
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from db_models import JobRecord
+from db_models import JobEventRecord, JobRecord
 from models import JobStatus, WorkflowType
 
 
@@ -22,6 +22,18 @@ class JobStore(Protocol):
         ...
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
+        ...
+
+    def log_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        ...
+
+    def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
         ...
 
 
@@ -58,6 +70,16 @@ class InMemoryJobStore:
             "cost_usd": None,
             "duration_seconds": None,
             "error": None,
+            "events": [
+                {
+                    "event_id": 1,
+                    "job_id": job_id,
+                    "event_type": "submitted",
+                    "message": f"Workflow job submitted: {workflow_type.value}",
+                    "payload": {"workflow_type": workflow_type.value},
+                    "created_at": None,
+                }
+            ],
         }
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -82,6 +104,30 @@ class InMemoryJobStore:
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         return self._jobs.get(job_id)
+
+    def log_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        job = self._jobs.setdefault(job_id, {"job_id": job_id, "events": []})
+        events = job.setdefault("events", [])
+        events.append(
+            {
+                "event_id": len(events) + 1,
+                "job_id": job_id,
+                "event_type": event_type,
+                "message": message,
+                "payload": _json_safe(payload),
+                "created_at": None,
+            }
+        )
+
+    def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
+        job = self._jobs.get(job_id) or {}
+        return list(job.get("events", []))
 
 
 class PostgresJobStore:
@@ -114,6 +160,13 @@ class PostgresJobStore:
                 )
             )
             session.commit()
+
+        self.log_event(
+            job_id,
+            "submitted",
+            f"Workflow job submitted: {workflow_type.value}",
+            {"workflow_type": workflow_type.value},
+        )
 
     def update_job(self, job_id: str, **fields: Any) -> None:
         with self._session_factory() as session:
@@ -154,6 +207,24 @@ class PostgresJobStore:
 
             session.commit()
 
+    def log_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with self._session_factory() as session:
+            session.add(
+                JobEventRecord(
+                    job_id=job_id,
+                    event_type=event_type,
+                    message=message,
+                    payload=_json_safe(payload),
+                )
+            )
+            session.commit()
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._session_factory() as session:
             record = session.get(JobRecord, job_id)
@@ -172,3 +243,23 @@ class PostgresJobStore:
                 "duration_seconds": record.duration_seconds,
                 "error": record.error,
             }
+
+    def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            records = (
+                session.query(JobEventRecord)
+                .filter(JobEventRecord.job_id == job_id)
+                .order_by(JobEventRecord.event_id.asc())
+                .all()
+            )
+            return [
+                {
+                    "event_id": record.event_id,
+                    "job_id": record.job_id,
+                    "event_type": record.event_type,
+                    "message": record.message,
+                    "payload": record.payload,
+                    "created_at": record.created_at,
+                }
+                for record in records
+            ]
