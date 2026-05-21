@@ -18,6 +18,7 @@ RUNTIME_CONFIG_KEYS = {
     "amazon_sp_api_endpoint",
     "amazon_sp_api_access_token",
     "amazon_marketplace_ids",
+    "support_knowledge_dir",
     "holiday_api_key",
     "google_ads_developer_token",
     "google_ads_access_token",
@@ -48,6 +49,7 @@ class RuntimeConfig:
     amazon_sp_api_endpoint: str | None = None
     amazon_sp_api_access_token: str | None = None
     amazon_marketplace_ids: str | None = None
+    support_knowledge_dir: str | None = None
     holiday_api_key: str | None = None
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
@@ -87,6 +89,7 @@ def load_runtime_config() -> RuntimeConfig:
         amazon_sp_api_endpoint=os.getenv("AMAZON_SP_API_ENDPOINT"),
         amazon_sp_api_access_token=os.getenv("AMAZON_SP_API_ACCESS_TOKEN"),
         amazon_marketplace_ids=os.getenv("AMAZON_MARKETPLACE_IDS"),
+        support_knowledge_dir=os.getenv("SUPPORT_KNOWLEDGE_DIR"),
         holiday_api_key=os.getenv("HOLIDAY_API_KEY"),
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
         google_ads_access_token=os.getenv("GOOGLE_ADS_ACCESS_TOKEN"),

@@ -2,7 +2,9 @@ inquiry_resolution:
   description: >
     {customer} just reached out with an important inquiry: {inquiry}.
     {person} from {customer} is the contact. Research and provide a complete, accurate response.
-    Use available tools to verify policies, shipping timelines, return procedures, or product specs.
+    First search the internal Support Knowledge Base for policies, shipping timelines, return procedures,
+    compensation guidance, escalation rules, or product specs. Use web/search tools only when the internal
+    knowledge base does not contain enough information.
     Ensure no assumptions are made and cite sources where applicable.
   expected_output: "A detailed, well-researched draft response addressing all parts of the inquiry, with clear resolution steps and referenced sources."
 

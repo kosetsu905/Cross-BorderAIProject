@@ -5,6 +5,8 @@ import yaml
 from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
+
+from tools.custom.support_rag_tools import SupportKnowledgeSearchTool
 from utils.crew_result import serialize_crew_result
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -34,7 +36,13 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 
 
 def _build_support_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool()]
+    tools: list[Any] = [
+        SupportKnowledgeSearchTool(
+            knowledge_dir=config_context.get("support_knowledge_dir")
+            or str(BASE_DIR / "docs" / "knowledge_base")
+        ),
+        ScrapeWebsiteTool(),
+    ]
     if config_context.get("serper_api_key"):
         tools.insert(0, SerperDevTool())
     return tools

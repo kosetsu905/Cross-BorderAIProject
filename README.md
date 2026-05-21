@@ -163,6 +163,9 @@ AMAZON_MARKETPLACE_IDS=ATVPDKIKX0DER
 # Scheduler holiday/timezone provider. Without this, Scheduler uses development fallback calendar data.
 HOLIDAY_API_KEY=optional_holiday_provider_key
 
+# Support RAG knowledge base. Defaults to docs/knowledge_base.
+SUPPORT_KNOWLEDGE_DIR=docs/knowledge_base
+
 # Marketing ad platform integrations. Without these, Marketing uses development fallback platform data.
 GOOGLE_ADS_DEVELOPER_TOKEN=optional_google_ads_developer_token
 GOOGLE_ADS_ACCESS_TOKEN=optional_google_ads_access_token
@@ -296,6 +299,16 @@ Inspect recent events directly in PostgreSQL:
 ```powershell
 docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT event_id, job_id, event_type, message, created_at FROM workflow_job_events ORDER BY event_id DESC LIMIT 30;"
 ```
+
+## Support RAG Knowledge Base
+
+The Support workflow searches the local knowledge base before using web tools. Policy documents live in:
+
+```text
+docs/knowledge_base/
+```
+
+The built-in `SupportKnowledgeSearchTool` chunks markdown files, creates deterministic local vector embeddings, and retrieves the closest policy passages for questions about returns, refunds, shipping, compensation, exchanges, and escalation. This local retrieval does not call OpenAI or external vector services.
 
 ## Persistent Job State
 
