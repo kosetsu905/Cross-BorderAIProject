@@ -2,12 +2,12 @@ import logging
 from functools import lru_cache
 from typing import Any
 
-import httpx
-
 try:
     from crewai.tools import BaseTool
 except ImportError:
     from crewai_tools import BaseTool
+
+from tools.custom.commerce_api import CommerceApiConfig, fetch_commerce_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -19,22 +19,37 @@ class EcomPlatformMetricsTool(BaseTool):
         "Shopify, Amazon, TikTok Shop, or other commerce platforms."
     )
     ecom_api_token: str | None = None
+    shopify_store_domain: str | None = None
+    shopify_admin_access_token: str | None = None
+    shopify_api_version: str = "2025-07"
+    amazon_sp_api_endpoint: str | None = None
+    amazon_sp_api_access_token: str | None = None
+    amazon_marketplace_ids: str | None = None
 
     def _run(self, platform: str, region: str, date_range: str) -> dict[str, Any]:
-        token = self.ecom_api_token
-        if not token:
+        config = CommerceApiConfig(
+            shopify_store_domain=self.shopify_store_domain,
+            shopify_admin_access_token=self.shopify_admin_access_token or self.ecom_api_token,
+            shopify_api_version=self.shopify_api_version,
+            amazon_sp_api_endpoint=self.amazon_sp_api_endpoint,
+            amazon_sp_api_access_token=self.amazon_sp_api_access_token or self.ecom_api_token,
+            amazon_marketplace_ids=self.amazon_marketplace_ids,
+        )
+        if not any(
+            [
+                config.shopify_admin_access_token and config.shopify_store_domain,
+                config.amazon_sp_api_access_token and config.amazon_sp_api_endpoint,
+            ]
+        ):
             return self._dev_fallback(platform, region, date_range)
 
-        url = "https://api.your-ecom-platform.com/v1/metrics"
-        headers = {"Authorization": f"Bearer {token}"}
-        params = {"platform": platform, "region": region, "date_range": date_range}
         try:
-            response = httpx.get(url, headers=headers, params=params, timeout=10)
-            response.raise_for_status()
-            return response.json()
+            return fetch_commerce_metrics(config, platform, region, date_range)
         except Exception as exc:
             logger.warning("E-commerce metrics fetch failed: %s", exc)
-            return self._dev_fallback(platform, region, date_range)
+            fallback = self._dev_fallback(platform, region, date_range)
+            fallback["provider_error"] = str(exc)
+            return fallback
 
     @staticmethod
     @lru_cache(maxsize=32)

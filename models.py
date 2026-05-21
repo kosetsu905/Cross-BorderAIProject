@@ -79,6 +79,12 @@ class SalesImprovementInputs(StrictInputModel):
 
 class ProviderCredentials(StrictInputModel):
     serper_api_key: str | None = None
+    shopify_store_domain: str | None = None
+    shopify_admin_access_token: str | None = None
+    shopify_api_version: str | None = None
+    amazon_sp_api_endpoint: str | None = None
+    amazon_sp_api_access_token: str | None = None
+    amazon_marketplace_ids: str | None = None
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
     google_ads_customer_id: str | None = None

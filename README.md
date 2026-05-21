@@ -142,11 +142,23 @@ Optional workflow data providers:
 CRUNCHBASE_API_KEY=optional_crunchbase_key
 APOLLO_API_KEY=optional_apollo_key
 
-# Analytics platform metrics. Without this, Analytics uses development fallback sample metrics.
+# Legacy generic platform token. Prefer the explicit Shopify/Amazon settings below.
 ECOM_API_TOKEN=optional_ecommerce_platform_token
 
-# Sales funnel data. Without this, Sales Improvement uses development fallback sample funnel data.
+# Legacy generic CRM/platform token. Prefer the explicit Shopify/Amazon settings below.
 CRM_API_TOKEN=optional_crm_or_platform_token
+
+# Commerce order data for Analytics and Sales Improvement.
+# Shopify uses the Admin Orders API. The token needs read_orders scope.
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+SHOPIFY_ADMIN_ACCESS_TOKEN=optional_shopify_admin_access_token
+SHOPIFY_API_VERSION=2025-07
+
+# Amazon uses an SP-API Orders-compatible endpoint.
+# Direct SP-API calls normally require AWS SigV4 signing, so this can point to a signed proxy/client endpoint.
+AMAZON_SP_API_ENDPOINT=https://sellingpartnerapi-na.amazon.com
+AMAZON_SP_API_ACCESS_TOKEN=optional_amazon_sp_api_access_token
+AMAZON_MARKETPLACE_IDS=ATVPDKIKX0DER
 
 # Scheduler holiday/timezone provider. Without this, Scheduler uses development fallback calendar data.
 HOLIDAY_API_KEY=optional_holiday_provider_key
@@ -162,7 +174,8 @@ TIKTOK_ACCESS_TOKEN=optional_tiktok_access_token
 TIKTOK_ADVERTISER_ID=optional_tiktok_advertiser_id
 ```
 
-Current runnable code does not use Shopify, Amazon, or calendar-provider tokens mentioned in archived notes yet. Those belong to future integration work unless a corresponding tool is implemented under `tools/`.
+Analytics and Sales Improvement can fetch order-derived metrics from Shopify Admin API or an Amazon SP-API Orders-compatible endpoint. If these provider settings are missing or a provider call fails, the workflow falls back to clearly marked development sample data.
+Current runnable code does not use calendar-provider tokens mentioned in archived notes yet. Those belong to future integration work unless a corresponding tool is implemented under `tools/`.
 
 For future multi-tenant usage, provider credentials can also be supplied per request with `provider_credentials` instead of using the server-wide `.env` values. These request-scoped credentials are merged into the workflow runtime context and are not stored in the job `inputs` history.
 
@@ -181,6 +194,11 @@ Example shape:
     "google_ads_developer_token": "request_scoped_google_developer_token",
     "google_ads_access_token": "request_scoped_google_access_token",
     "google_ads_customer_id": "request_scoped_customer_id",
+    "shopify_store_domain": "request-scoped-store.myshopify.com",
+    "shopify_admin_access_token": "request_scoped_shopify_token",
+    "amazon_sp_api_endpoint": "https://sellingpartnerapi-na.amazon.com",
+    "amazon_sp_api_access_token": "request_scoped_amazon_access_token",
+    "amazon_marketplace_ids": "ATVPDKIKX0DER",
     "meta_access_token": "request_scoped_meta_token",
     "meta_ad_account_id": "request_scoped_meta_account_id",
     "tiktok_access_token": "request_scoped_tiktok_token",
@@ -403,7 +421,7 @@ Invoke-RestMethod `
 ## Run Sales Performance Improvement
 
 This request starts the Sales Performance Improvement CrewAI workflow and may consume OpenAI API tokens.
-Without `CRM_API_TOKEN`, the sales tools use development fallback sample data and the output should be treated as illustrative until validated with real CRM/platform analytics.
+Without Shopify or Amazon order API credentials, the sales tools use development fallback sample data and the output should be treated as illustrative until validated with real commerce or CRM analytics.
 The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell
@@ -455,7 +473,7 @@ Invoke-RestMethod `
 ## Run Data Analytics
 
 This request starts the Analytics CrewAI workflow and may consume OpenAI API tokens.
-Without real platform and competitive data provider credentials such as `ECOM_API_TOKEN`, analytics tools use development fallback sample data and the output should be treated as illustrative.
+Without real platform and competitive data provider credentials such as Shopify or Amazon order API settings, analytics tools use development fallback sample data and the output should be treated as illustrative.
 The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell

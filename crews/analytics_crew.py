@@ -82,7 +82,16 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
 
 
 def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
-    has_ecom_token = bool(config_context.get("ecom_api_token"))
+    has_shopify = bool(
+        config_context.get("shopify_store_domain")
+        and (config_context.get("shopify_admin_access_token") or config_context.get("ecom_api_token"))
+    )
+    has_amazon = bool(
+        config_context.get("amazon_sp_api_endpoint")
+        and (config_context.get("amazon_sp_api_access_token") or config_context.get("ecom_api_token"))
+        and config_context.get("amazon_marketplace_ids")
+    )
+    has_ecom_token = has_shopify or has_amazon
     has_serper_token = bool(config_context.get("serper_api_key"))
 
     if not has_ecom_token and not has_serper_token:
@@ -107,10 +116,11 @@ def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
         }
 
     return {
-        "data_source": "provider_ready_stub",
-        "confidence_level": "Low",
+        "data_source": "external_commerce_api",
+        "confidence_level": "Medium",
         "assumptions": [
-            "ECOM_API_TOKEN is configured, but the current e-commerce metrics tool uses a placeholder provider endpoint and falls back if that endpoint is unavailable.",
+            "E-commerce metrics are fetched from configured Shopify Admin API or Amazon SP-API order endpoints when available.",
+            "Order APIs do not provide full-funnel conversion, CPC, ROAS, or inventory health without additional analytics, ad, and inventory integrations.",
             "Competitor intelligence is not connected to a dedicated market-data provider; validate market claims before using them operationally.",
         ],
     }
@@ -135,7 +145,17 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
 
     collector = Agent(
         config=agents_config["data_collector"],
-        tools=[EcomPlatformMetricsTool(ecom_api_token=config_context.get("ecom_api_token"))],
+        tools=[
+            EcomPlatformMetricsTool(
+                ecom_api_token=config_context.get("ecom_api_token"),
+                shopify_store_domain=config_context.get("shopify_store_domain"),
+                shopify_admin_access_token=config_context.get("shopify_admin_access_token"),
+                shopify_api_version=config_context.get("shopify_api_version") or "2025-07",
+                amazon_sp_api_endpoint=config_context.get("amazon_sp_api_endpoint"),
+                amazon_sp_api_access_token=config_context.get("amazon_sp_api_access_token"),
+                amazon_marketplace_ids=config_context.get("amazon_marketplace_ids"),
+            )
+        ],
     )
     analyst = Agent(
         config=agents_config["data_analyst"],

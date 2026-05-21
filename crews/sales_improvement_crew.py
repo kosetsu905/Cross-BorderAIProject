@@ -82,21 +82,31 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
 
 
 def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
-    if not config_context.get("crm_api_token"):
+    has_shopify = bool(
+        config_context.get("shopify_store_domain")
+        and (config_context.get("shopify_admin_access_token") or config_context.get("crm_api_token"))
+    )
+    has_amazon = bool(
+        config_context.get("amazon_sp_api_endpoint")
+        and (config_context.get("amazon_sp_api_access_token") or config_context.get("crm_api_token"))
+        and config_context.get("amazon_marketplace_ids")
+    )
+    if not (has_shopify or has_amazon):
         return {
             "data_source": "development_fallback",
             "confidence_level": "Illustrative",
             "assumptions": [
-                "Sales Improvement used development fallback funnel data because CRM_API_TOKEN is not configured.",
+                "Sales Improvement used development fallback funnel data because Shopify or Amazon commerce API credentials are not configured.",
                 "Funnel bottlenecks, regional gaps, pricing guidance, and expected uplifts are illustrative until validated with real CRM or commerce analytics.",
             ],
         }
 
     return {
-        "data_source": "provider_ready_stub",
-        "confidence_level": "Low",
+        "data_source": "external_commerce_api",
+        "confidence_level": "Medium",
         "assumptions": [
-            "CRM_API_TOKEN is configured, but the current CRM funnel tool still uses a provider-ready placeholder endpoint.",
+            "Funnel analysis uses configured Shopify Admin API or Amazon SP-API order data when available.",
+            "Orders data can show revenue, order volume, cancellations, and regional gaps, but full product-page/cart/payment-step funnel analysis still requires analytics or CRM event data.",
             "CRO and pricing tools include heuristic or fallback guidance and should be validated against real funnel, margin, and competitor data before execution.",
         ],
     }
@@ -121,7 +131,17 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
 
     funnel_analyst = Agent(
         config=agents_config["funnel_analyst"],
-        tools=[CRMFunnelTool(crm_api_token=config_context.get("crm_api_token"))],
+        tools=[
+            CRMFunnelTool(
+                crm_api_token=config_context.get("crm_api_token"),
+                shopify_store_domain=config_context.get("shopify_store_domain"),
+                shopify_admin_access_token=config_context.get("shopify_admin_access_token"),
+                shopify_api_version=config_context.get("shopify_api_version") or "2025-07",
+                amazon_sp_api_endpoint=config_context.get("amazon_sp_api_endpoint"),
+                amazon_sp_api_access_token=config_context.get("amazon_sp_api_access_token"),
+                amazon_marketplace_ids=config_context.get("amazon_marketplace_ids"),
+            )
+        ],
     )
     cro_specialist = Agent(
         config=agents_config["cro_specialist"],

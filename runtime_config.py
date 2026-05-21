@@ -12,6 +12,12 @@ RUNTIME_CONFIG_KEYS = {
     "apollo_api_key",
     "ecom_api_token",
     "crm_api_token",
+    "shopify_store_domain",
+    "shopify_admin_access_token",
+    "shopify_api_version",
+    "amazon_sp_api_endpoint",
+    "amazon_sp_api_access_token",
+    "amazon_marketplace_ids",
     "holiday_api_key",
     "google_ads_developer_token",
     "google_ads_access_token",
@@ -36,6 +42,12 @@ class RuntimeConfig:
     apollo_api_key: str | None = None
     ecom_api_token: str | None = None
     crm_api_token: str | None = None
+    shopify_store_domain: str | None = None
+    shopify_admin_access_token: str | None = None
+    shopify_api_version: str = "2025-07"
+    amazon_sp_api_endpoint: str | None = None
+    amazon_sp_api_access_token: str | None = None
+    amazon_marketplace_ids: str | None = None
     holiday_api_key: str | None = None
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
@@ -69,6 +81,12 @@ def load_runtime_config() -> RuntimeConfig:
         apollo_api_key=os.getenv("APOLLO_API_KEY"),
         ecom_api_token=os.getenv("ECOM_API_TOKEN"),
         crm_api_token=os.getenv("CRM_API_TOKEN"),
+        shopify_store_domain=os.getenv("SHOPIFY_STORE_DOMAIN"),
+        shopify_admin_access_token=os.getenv("SHOPIFY_ADMIN_ACCESS_TOKEN"),
+        shopify_api_version=os.getenv("SHOPIFY_API_VERSION", "2025-07"),
+        amazon_sp_api_endpoint=os.getenv("AMAZON_SP_API_ENDPOINT"),
+        amazon_sp_api_access_token=os.getenv("AMAZON_SP_API_ACCESS_TOKEN"),
+        amazon_marketplace_ids=os.getenv("AMAZON_MARKETPLACE_IDS"),
         holiday_api_key=os.getenv("HOLIDAY_API_KEY"),
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
         google_ads_access_token=os.getenv("GOOGLE_ADS_ACCESS_TOKEN"),

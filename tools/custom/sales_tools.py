@@ -7,6 +7,8 @@ try:
 except ImportError:
     from crewai_tools import BaseTool
 
+from tools.custom.commerce_api import CommerceApiConfig, fetch_commerce_metrics
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,18 +19,78 @@ class CRMFunnelTool(BaseTool):
         "from CRM or e-commerce platforms."
     )
     crm_api_token: str | None = None
+    shopify_store_domain: str | None = None
+    shopify_admin_access_token: str | None = None
+    shopify_api_version: str = "2025-07"
+    amazon_sp_api_endpoint: str | None = None
+    amazon_sp_api_access_token: str | None = None
+    amazon_marketplace_ids: str | None = None
 
     def _run(self, product_category: str, target_markets: str) -> dict[str, Any]:
-        if not self.crm_api_token:
+        config = CommerceApiConfig(
+            shopify_store_domain=self.shopify_store_domain,
+            shopify_admin_access_token=self.shopify_admin_access_token or self.crm_api_token,
+            shopify_api_version=self.shopify_api_version,
+            amazon_sp_api_endpoint=self.amazon_sp_api_endpoint,
+            amazon_sp_api_access_token=self.amazon_sp_api_access_token or self.crm_api_token,
+            amazon_marketplace_ids=self.amazon_marketplace_ids,
+        )
+        if not any(
+            [
+                config.shopify_admin_access_token and config.shopify_store_domain,
+                config.amazon_sp_api_access_token and config.amazon_sp_api_endpoint,
+            ]
+        ):
             return self._dev_fallback(product_category, target_markets)
+
+        regional_metrics: list[dict[str, Any]] = []
+        provider_errors: list[str] = []
+        for region in [item.strip() for item in target_markets.split(",") if item.strip()]:
+            try:
+                regional_metrics.append(
+                    fetch_commerce_metrics(config, "", region, "Last 60 Days")
+                )
+            except Exception as exc:
+                provider_errors.append(f"{region}: {exc}")
+
+        if not regional_metrics:
+            fallback = self._dev_fallback(product_category, target_markets)
+            fallback["provider_error"] = "; ".join(provider_errors)
+            return fallback
+
+        total_orders = sum((item.get("metrics") or {}).get("order_count", 0) for item in regional_metrics)
+        cancelled_orders = sum(
+            (item.get("metrics") or {}).get("cancelled_order_count", 0)
+            for item in regional_metrics
+        )
+        cancellation_rate = cancelled_orders / total_orders if total_orders else 0
 
         return {
             "product": product_category,
             "markets": target_markets,
-            "status": "prod_ready",
-            "data_source": "external_crm_api",
-            "confidence_level": "high",
-            "message": "Connect a real CRM or e-commerce analytics endpoint.",
+            "data_source": "external_commerce_orders_api",
+            "confidence_level": "medium",
+            "status": "live_provider",
+            "regional_metrics": regional_metrics,
+            "overall_conversion_rate": "not_available_from_orders_api",
+            "top_drop_off": (
+                f"Cancelled orders, {cancellation_rate:.1%}"
+                if total_orders
+                else "not_available_from_orders_api"
+            ),
+            "regional_gaps": {
+                item["region"]: {
+                    "order_count": (item.get("metrics") or {}).get("order_count"),
+                    "cancelled_order_count": (item.get("metrics") or {}).get("cancelled_order_count"),
+                    "note": "Derived from order statuses; full funnel requires analytics events.",
+                }
+                for item in regional_metrics
+            },
+            "assumption_notice": (
+                "Sales funnel metrics are derived from commerce orders. Session, product-page, "
+                "cart, checkout, and payment-step drop-offs require analytics or CRM events."
+            ),
+            "provider_errors": provider_errors,
         }
 
     @staticmethod
