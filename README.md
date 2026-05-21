@@ -541,8 +541,8 @@ $body = @{
     subject = "Sustainable Activewear for Cold Climates"
     product_category = "Eco-Friendly Winter Sportswear"
     target_markets = "Germany, Japan, Canada"
-    target_languages = @("de", "ja", "en")
-    platforms = @("Instagram", "LinkedIn", "X")
+    target_languages = @("de", "ja", "en", "zh-CN")
+    platforms = @("Instagram", "LinkedIn", "X", "小红书")
   }
 } | ConvertTo-Json -Depth 5
 

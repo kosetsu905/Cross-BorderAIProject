@@ -12,13 +12,19 @@ content_strategy:
 
 content_creation:
   description: >
-    Write a full blog/article in markdown format about {subject} based on the content strategy.
-    Then generate platform-specific social media posts for {platforms} in {target_languages}.
+    Write one full localized blog/article in markdown format about {subject} for every language in {target_languages}.
+    Then generate localized platform-specific social media posts that cover every language in {target_languages}
+    and every platform in {platforms}.
     Ensure cultural adaptation, proper hashtags, and clear CTAs.
-  expected_output: "A complete markdown article and a list of localized social media posts ready for scheduling."
+    Do not collapse languages into a single article. If target_languages contains de, ja, en, and zh-CN,
+    the final output must contain four localized articles, and social posts should include all requested languages
+    and all requested platforms without requiring every language-platform combination.
+  expected_output: "A complete multilingual content package with one localized article per requested language and localized social posts covering all requested languages and platforms."
 
 quality_assurance:
   description: >
     Review the article and social posts for SEO optimization, brand voice consistency, cultural accuracy, and compliance.
     Fix any issues, ensure proper formatting, and validate against {target_markets} regulations.
+    Confirm that localized_articles covers every language in {target_languages}.
+    Confirm that social_media_posts includes all requested languages and all requested platforms.
   expected_output: "Final polished content package with SEO keywords, compliance notes, and structured social posts."

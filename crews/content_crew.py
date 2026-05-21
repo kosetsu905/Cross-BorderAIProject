@@ -19,12 +19,22 @@ class SocialMediaPost(BaseModel):
     content: str = Field(..., description="Optimized post content with hashtags or mentions")
 
 
+class LocalizedArticle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(..., description="Language code such as en, de, ja, or zh-CN")
+    title: str = Field(..., description="Localized article title")
+    article: str = Field(..., description="Full localized blog or article in markdown format")
+
+
 class ContentOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    article: str = Field(..., description="Full blog or article in markdown format")
+    localized_articles: list[LocalizedArticle] = Field(
+        ..., description="One localized article for each requested target language"
+    )
     social_media_posts: list[SocialMediaPost] = Field(
-        ..., description="Platform and language specific social posts"
+        ..., description="Social posts covering requested languages and platforms"
     )
     seo_keywords: list[str] = Field(
         ..., description="Primary and secondary SEO keywords used"
@@ -60,9 +70,71 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return serialize_crew_result(result)
 
 
+def _normalize_language(language: str) -> str:
+    aliases = {
+        "cn": "zh-CN",
+        "zh": "zh-CN",
+        "zh_cn": "zh-CN",
+        "zh-cn": "zh-CN",
+        "chinese": "zh-CN",
+    }
+    key = language.strip().lower().replace(" ", "")
+    return aliases.get(key, language.strip())
+
+
+def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(inputs)
+    normalized["target_languages"] = [
+        _normalize_language(str(language))
+        for language in normalized.get("target_languages", [])
+    ]
+    return normalized
+
+
+def _annotate_localized_output(result: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    annotated = dict(result)
+    expected_languages = {
+        _normalize_language(str(language))
+        for language in inputs.get("target_languages", [])
+    }
+    expected_platforms = {
+        str(platform).strip()
+        for platform in inputs.get("platforms", [])
+    }
+    article_languages = {
+        _normalize_language(str(article.get("language", "")))
+        for article in result.get("localized_articles", [])
+    }
+    post_languages = {
+        _normalize_language(str(post.get("language", "")))
+        for post in result.get("social_media_posts", [])
+    }
+    post_platforms = {
+        str(post.get("platform", "")).strip()
+        for post in result.get("social_media_posts", [])
+    }
+
+    missing_articles = sorted(expected_languages - article_languages)
+    missing_post_languages = sorted(expected_languages - post_languages)
+    missing_post_platforms = sorted(expected_platforms - post_platforms)
+
+    if missing_articles or missing_post_languages or missing_post_platforms:
+        notes = str(annotated.get("compliance_notes", "")).strip()
+        coverage_note = (
+            " Coverage notice: output did not include every requested item. "
+            f"Missing localized_articles={missing_articles}; "
+            f"missing social media languages={missing_post_languages}; "
+            f"missing social media platforms={missing_post_platforms}."
+        )
+        annotated["compliance_notes"] = f"{notes}{coverage_note}".strip()
+
+    return annotated
+
+
 def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
     config_context = config_context or {}
+    normalized_inputs = _normalize_inputs(inputs)
 
     agents_config = _load_yaml_config("agents.yaml")
     tasks_config = _load_yaml_config("tasks.yaml")
@@ -108,4 +180,5 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         memory=_memory_enabled(config_context),
     )
 
-    return _serialize_crew_result(content_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(content_crew.kickoff(inputs=normalized_inputs))
+    return _annotate_localized_output(result, normalized_inputs)
