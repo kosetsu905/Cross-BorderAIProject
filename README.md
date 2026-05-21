@@ -51,6 +51,7 @@ Cross-BorderAIProject/
 |-- celery_worker/
 |   |-- celery_app.py
 |   `-- tasks.py
+|-- admin_dashboard.py
 |-- docs/
 |   |-- design_assets/
 |   `-- original_code_notes/
@@ -300,7 +301,21 @@ This persists job records across FastAPI restarts. If you use `WORKFLOW_BACKEND=
 
 The queue manager code is the background execution layer for long-running workflows. FastAPI receives the request, Redis acts as the message broker, and Celery workers execute the CrewAI workflow outside the web server process.
 
-Use the default local backend for simple development:
+The recommended local stack is Docker Compose:
+
+```powershell
+docker compose up -d --build
+```
+
+For later starts after the image has already been built:
+
+```powershell
+docker compose up -d
+```
+
+Docker Compose starts FastAPI, Redis, Celery, PostgreSQL, and Flower together.
+
+Use the default local backend only if you intentionally want to run without Celery:
 
 ```env
 WORKFLOW_BACKEND=local
@@ -315,25 +330,7 @@ CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
 ```
 
-Start Redis separately, then run these in two terminals:
-
-```powershell
-python .\main.py
-```
-
-```powershell
-celery -A celery_worker.celery_app worker --loglevel=info --pool=solo
-```
-
-On Windows, `--pool=solo` is the safest local Celery worker mode. For Docker/Linux workers, the compose file uses normal worker concurrency.
-
 Celery workers retry only transient provider or network failures, such as rate limits, timeouts, connection errors, and retryable 5xx/429 HTTP responses. Deterministic failures such as validation errors, bad request schemas, missing configuration, authentication failures, and programming errors fail immediately so they do not waste additional API calls.
-
-Docker stack:
-
-```powershell
-docker compose up -d --build
-```
 
 Flower monitoring is exposed at:
 
@@ -348,15 +345,9 @@ POST /api/v1/workflow
 GET  /api/v1/workflow/{job_id}
 ```
 
-## Run API Server
+## Health Check
 
-Starting the API server does not execute a workflow by itself.
-
-```powershell
-python .\main.py
-```
-
-Health check:
+Health checks do not execute workflows.
 
 ```powershell
 curl http://localhost:8000/health
@@ -370,6 +361,18 @@ Expected shape:
   "registered_workflows": ["analytics", "bizdev", "marketing", "content", "scheduler", "sales_improvement", "support"]
 }
 ```
+
+## Run Admin Dashboard
+
+The Stage 2B Streamlit dashboard is a lightweight admin UI for testing workflows without writing raw HTTP requests. It can submit workflow jobs, poll job status, display usage metadata, and show execution events.
+
+With the Docker backend running, start the dashboard locally from the already configured virtual environment:
+
+```powershell
+streamlit run .\admin_dashboard.py
+```
+
+If `API_BEARER_TOKEN` is set, the dashboard reads it from `.env` by default. You can also paste the token into the sidebar. Opening the dashboard does not run a workflow; submitting a workflow from the page may consume tokens.
 
 ## Run Business Development
 

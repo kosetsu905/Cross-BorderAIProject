@@ -10,3 +10,4 @@ celery
 httpx
 sqlalchemy
 psycopg[binary]
+streamlit
