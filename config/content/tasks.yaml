@@ -16,9 +16,9 @@ content_creation:
     Then generate localized platform-specific social media posts that cover every language in {target_languages}
     and every platform in {platforms}.
     Ensure cultural adaptation, proper hashtags, and clear CTAs.
-    Do not collapse languages into a single article. If target_languages contains de, ja, en, and zh-CN,
-    the final output must contain four localized articles, and social posts should include all requested languages
-    and all requested platforms without requiring every language-platform combination.
+    Do not collapse multiple requested languages into a single article. The number of localized articles should match
+    the number of requested target languages. Social posts should include all requested languages and all requested
+    platforms without requiring every language-platform combination.
   expected_output: "A complete multilingual content package with one localized article per requested language and localized social posts covering all requested languages and platforms."
 
 quality_assurance:

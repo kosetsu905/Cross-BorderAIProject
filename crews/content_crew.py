@@ -15,14 +15,14 @@ class SocialMediaPost(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     platform: str = Field(..., description="Target platform")
-    language: str = Field(..., description="Language code such as en, de, or ja")
+    language: str = Field(..., description="Requested language code")
     content: str = Field(..., description="Optimized post content with hashtags or mentions")
 
 
 class LocalizedArticle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    language: str = Field(..., description="Language code such as en, de, ja, or zh-CN")
+    language: str = Field(..., description="Requested language code")
     title: str = Field(..., description="Localized article title")
     article: str = Field(..., description="Full localized blog or article in markdown format")
 
@@ -70,31 +70,14 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return serialize_crew_result(result)
 
 
-def _normalize_language(language: str) -> str:
-    aliases = {
-        "cn": "zh-CN",
-        "zh": "zh-CN",
-        "zh_cn": "zh-CN",
-        "zh-cn": "zh-CN",
-        "chinese": "zh-CN",
-    }
-    key = language.strip().lower().replace(" ", "")
-    return aliases.get(key, language.strip())
-
-
 def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(inputs)
-    normalized["target_languages"] = [
-        _normalize_language(str(language))
-        for language in normalized.get("target_languages", [])
-    ]
-    return normalized
+    return dict(inputs)
 
 
 def _annotate_localized_output(result: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
     annotated = dict(result)
     expected_languages = {
-        _normalize_language(str(language))
+        str(language).strip()
         for language in inputs.get("target_languages", [])
     }
     expected_platforms = {
@@ -102,11 +85,11 @@ def _annotate_localized_output(result: dict[str, Any], inputs: dict[str, Any]) -
         for platform in inputs.get("platforms", [])
     }
     article_languages = {
-        _normalize_language(str(article.get("language", "")))
+        str(article.get("language", "")).strip()
         for article in result.get("localized_articles", [])
     }
     post_languages = {
-        _normalize_language(str(post.get("language", "")))
+        str(post.get("language", "")).strip()
         for post in result.get("social_media_posts", [])
     }
     post_platforms = {
