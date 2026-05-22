@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -15,6 +16,7 @@ class JobStore(Protocol):
         job_id: str,
         workflow_type: WorkflowType,
         inputs: dict[str, Any],
+        cache_key: str | None = None,
     ) -> None:
         ...
 
@@ -22,6 +24,9 @@ class JobStore(Protocol):
         ...
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
+        ...
+
+    def find_cached_job(self, cache_key: str, ttl_seconds: int) -> dict[str, Any] | None:
         ...
 
     def log_event(
@@ -56,6 +61,7 @@ class InMemoryJobStore:
         job_id: str,
         workflow_type: WorkflowType,
         inputs: dict[str, Any],
+        cache_key: str | None = None,
     ) -> None:
         self._jobs[job_id] = {
             "job_id": job_id,
@@ -63,6 +69,9 @@ class InMemoryJobStore:
             "status": JobStatus.PENDING,
             "inputs": inputs,
             "result": None,
+            "cache_key": cache_key,
+            "cache_hit": False,
+            "source_job_id": None,
             "usage_metrics": None,
             "prompt_tokens": None,
             "completion_tokens": None,
@@ -92,6 +101,9 @@ class InMemoryJobStore:
                 "inputs": None,
                 "result": None,
                 "usage_metrics": None,
+                "cache_key": None,
+                "cache_hit": None,
+                "source_job_id": None,
                 "prompt_tokens": None,
                 "completion_tokens": None,
                 "total_tokens": None,
@@ -104,6 +116,17 @@ class InMemoryJobStore:
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         return self._jobs.get(job_id)
+
+    def find_cached_job(self, cache_key: str, ttl_seconds: int) -> dict[str, Any] | None:
+        for job in reversed(list(self._jobs.values())):
+            if (
+                job.get("cache_key") == cache_key
+                and job.get("status") == JobStatus.COMPLETED
+                and job.get("result") is not None
+                and not job.get("cache_hit")
+            ):
+                return job
+        return None
 
     def log_event(
         self,
@@ -141,6 +164,7 @@ class PostgresJobStore:
         job_id: str,
         workflow_type: WorkflowType,
         inputs: dict[str, Any],
+        cache_key: str | None = None,
     ) -> None:
         with self._session_factory() as session:
             session.add(
@@ -150,6 +174,9 @@ class PostgresJobStore:
                     status=JobStatus.PENDING.value,
                     inputs=_json_safe(inputs),
                     result=None,
+                    cache_key=cache_key,
+                    cache_hit=False,
+                    source_job_id=None,
                     usage_metrics=None,
                     prompt_tokens=None,
                     completion_tokens=None,
@@ -183,6 +210,12 @@ class PostgresJobStore:
                 record.status = _status_value(fields["status"])
             if "result" in fields:
                 record.result = _json_safe(fields["result"])
+            if "cache_key" in fields:
+                record.cache_key = fields["cache_key"]
+            if "cache_hit" in fields:
+                record.cache_hit = fields["cache_hit"]
+            if "source_job_id" in fields:
+                record.source_job_id = fields["source_job_id"]
             if "usage_metrics" in fields:
                 record.usage_metrics = _json_safe(fields["usage_metrics"])
             if "prompt_tokens" in fields:
@@ -235,6 +268,39 @@ class PostgresJobStore:
                 "job_id": record.job_id,
                 "status": JobStatus(record.status),
                 "result": record.result,
+                "cache_hit": record.cache_hit,
+                "source_job_id": record.source_job_id,
+                "usage_metrics": record.usage_metrics,
+                "prompt_tokens": record.prompt_tokens,
+                "completion_tokens": record.completion_tokens,
+                "total_tokens": record.total_tokens,
+                "cost_usd": record.cost_usd,
+                "duration_seconds": record.duration_seconds,
+                "error": record.error,
+            }
+
+    def find_cached_job(self, cache_key: str, ttl_seconds: int) -> dict[str, Any] | None:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+        with self._session_factory() as session:
+            query = (
+                session.query(JobRecord)
+                .filter(JobRecord.cache_key == cache_key)
+                .filter(JobRecord.status == JobStatus.COMPLETED.value)
+                .filter(JobRecord.result.isnot(None))
+                .filter(JobRecord.cache_hit.isnot(True))
+            )
+            if ttl_seconds > 0:
+                query = query.filter(JobRecord.updated_at >= cutoff)
+            record = query.order_by(JobRecord.updated_at.desc()).first()
+            if record is None:
+                return None
+
+            return {
+                "job_id": record.job_id,
+                "status": JobStatus(record.status),
+                "result": record.result,
+                "cache_hit": record.cache_hit,
+                "source_job_id": record.source_job_id,
                 "usage_metrics": record.usage_metrics,
                 "prompt_tokens": record.prompt_tokens,
                 "completion_tokens": record.completion_tokens,

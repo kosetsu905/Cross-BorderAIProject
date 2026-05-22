@@ -30,6 +30,8 @@ RUNTIME_CONFIG_KEYS = {
     "tiktok_advertiser_id",
     "openai_input_cost_per_1m_tokens",
     "openai_output_cost_per_1m_tokens",
+    "workflow_result_cache_enabled",
+    "workflow_result_cache_ttl_seconds",
 }
 
 
@@ -61,6 +63,8 @@ class RuntimeConfig:
     tiktok_advertiser_id: str | None = None
     openai_input_cost_per_1m_tokens: float = 0.0
     openai_output_cost_per_1m_tokens: float = 0.0
+    workflow_result_cache_enabled: bool = True
+    workflow_result_cache_ttl_seconds: int = 3600
 
     def as_context(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,6 +105,8 @@ def load_runtime_config() -> RuntimeConfig:
         tiktok_advertiser_id=os.getenv("TIKTOK_ADVERTISER_ID"),
         openai_input_cost_per_1m_tokens=_float_env("OPENAI_INPUT_COST_PER_1M_TOKENS"),
         openai_output_cost_per_1m_tokens=_float_env("OPENAI_OUTPUT_COST_PER_1M_TOKENS"),
+        workflow_result_cache_enabled=_bool_env("WORKFLOW_RESULT_CACHE_ENABLED", True),
+        workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
     )
 
 
@@ -109,6 +115,13 @@ def _float_env(name: str) -> float:
         return float(os.getenv(name, "0") or 0)
     except ValueError:
         return 0.0
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except ValueError:
+        return default
 
 
 def apply_runtime_environment(config: RuntimeConfig | dict[str, Any]) -> None:

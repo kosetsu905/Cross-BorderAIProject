@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,9 @@ class JobRecord(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     inputs: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    cache_hit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    source_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     usage_metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

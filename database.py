@@ -29,11 +29,16 @@ def init_db() -> None:
 def ensure_job_usage_columns() -> None:
     statements = [
         "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS usage_metrics JSONB",
+        "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS cache_key VARCHAR(64)",
+        "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN",
+        "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS source_job_id VARCHAR(64)",
         "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER",
         "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS completion_tokens INTEGER",
         "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS total_tokens INTEGER",
         "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION",
         "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE PRECISION",
+        "CREATE INDEX IF NOT EXISTS ix_workflow_jobs_cache_key ON workflow_jobs (cache_key)",
+        "CREATE INDEX IF NOT EXISTS ix_workflow_jobs_source_job_id ON workflow_jobs (source_job_id)",
     ]
     with engine.begin() as connection:
         for statement in statements:

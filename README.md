@@ -128,12 +128,15 @@ CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
 CELERY_RETRY_BASE_DELAY_SECONDS=30
 CELERY_RETRY_MAX_DELAY_SECONDS=300
+WORKFLOW_RESULT_CACHE_ENABLED=true
+WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 ```
 
 `WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
 PostgreSQL is used for persistent local-backend job state. The app creates the `workflow_jobs` table on startup.
 Runtime configuration and secrets are centralized in `runtime_config.py`. FastAPI/Celery load `.env` once, pass a `config_context` into the orchestrator and crews, and provider tools receive credentials through constructors instead of reading global environment variables directly.
 If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
+Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 
 Optional workflow data providers:
 
@@ -278,6 +281,26 @@ You can inspect recent usage directly in PostgreSQL:
 
 ```powershell
 docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT job_id, workflow_type, status, total_tokens, cost_usd, duration_seconds FROM workflow_jobs ORDER BY created_at DESC LIMIT 20;"
+```
+
+## Workflow Result Cache
+
+Completed workflow results are reused from PostgreSQL when a new request has the same `workflow_type`, validated `inputs`, and runtime configuration fingerprint. A cache hit creates a new completed job with `cache_hit=true`, `source_job_id` pointing to the original run, and token/cost fields set to `0` for the cached response.
+
+To bypass cache for one request, include metadata:
+
+```json
+{
+  "metadata": {
+    "bypass_cache": true
+  }
+}
+```
+
+Inspect cache usage directly in PostgreSQL:
+
+```powershell
+docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT job_id, workflow_type, status, cache_hit, source_job_id, total_tokens, created_at FROM workflow_jobs ORDER BY created_at DESC LIMIT 20;"
 ```
 
 ## Observability

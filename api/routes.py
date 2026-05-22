@@ -23,8 +23,9 @@ def create_router(orchestrator: object) -> APIRouter:
                 req.workflow_type,
                 req.inputs,
                 provider_credentials=provider_credentials,
+                metadata=req.metadata,
             )
-            return JobResponse(job_id=job_id, status=JobStatus.PENDING)
+            return JobResponse(**orchestrator.get_job_status(job_id))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

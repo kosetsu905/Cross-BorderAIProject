@@ -140,6 +140,8 @@ class JobResponse(BaseModel):
     job_id: str
     status: JobStatus
     result: dict[str, Any] | None = None
+    cache_hit: bool | None = None
+    source_job_id: str | None = None
     usage_metrics: dict[str, Any] | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

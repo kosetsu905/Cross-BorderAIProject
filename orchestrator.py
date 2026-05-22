@@ -10,6 +10,7 @@ from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowType
 from runtime_config import RuntimeConfig, apply_runtime_environment, merge_runtime_context
+from utils.result_cache import build_workflow_cache_key, cache_enabled, cache_ttl_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,69 @@ def _split_task_result(task_result: Any) -> tuple[dict[str, Any], dict[str, Any]
     return result_payload, {}
 
 
+def _cache_hit_usage_summary(source_job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "usage_metrics": {
+            "cache_hit": True,
+            "source_job_id": source_job.get("job_id"),
+            "source_total_tokens": source_job.get("total_tokens"),
+            "source_cost_usd": source_job.get("cost_usd"),
+        },
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
+    }
+
+
+def _maybe_create_cached_job(
+    job_store: JobStore,
+    workflow_type: WorkflowType,
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+    metadata: dict[str, Any] | None,
+    backend: str,
+) -> str | None:
+    cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
+    if not cache_enabled(config_context, metadata):
+        return None
+
+    cached_job = job_store.find_cached_job(cache_key, cache_ttl_seconds(config_context))
+    if cached_job is None:
+        return None
+
+    job_id = str(uuid.uuid4())
+    job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
+    usage_summary = _cache_hit_usage_summary(cached_job)
+    job_store.update_job(
+        job_id,
+        status=JobStatus.COMPLETED,
+        result=cached_job["result"],
+        cache_hit=True,
+        source_job_id=cached_job["job_id"],
+        **usage_summary,
+        error=None,
+    )
+    job_store.log_event(
+        job_id,
+        "cache_hit",
+        "Workflow result served from PostgreSQL cache.",
+        {
+            "workflow_type": workflow_type.value,
+            "backend": backend,
+            "source_job_id": cached_job["job_id"],
+        },
+    )
+    logger.info(
+        "Served workflow %s from cached job %s as job %s",
+        workflow_type.value,
+        cached_job["job_id"],
+        job_id,
+    )
+    return job_id
+
+
 class MasterOrchestrator:
     """Central router for local CrewAI execution with persistent job state."""
 
@@ -74,13 +138,26 @@ class MasterOrchestrator:
         workflow_type: WorkflowType,
         inputs: dict[str, Any],
         provider_credentials: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         if workflow_type not in self._crews:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        job_id = str(uuid.uuid4())
-        self._job_store.create_job(job_id, workflow_type, inputs)
         config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        cached_job_id = _maybe_create_cached_job(
+            self._job_store,
+            workflow_type,
+            inputs,
+            config_context,
+            metadata,
+            "local",
+        )
+        if cached_job_id:
+            return cached_job_id
+
+        job_id = str(uuid.uuid4())
+        cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
+        self._job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
         self._job_store.log_event(
             job_id,
             "queued",
@@ -194,14 +271,27 @@ class CeleryOrchestrator:
         workflow_type: WorkflowType,
         inputs: dict[str, Any],
         provider_credentials: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         task_name = self.TASK_MAP.get(workflow_type)
         if task_name is None:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        job_id = str(uuid.uuid4())
-        self._job_store.create_job(job_id, workflow_type, inputs)
         config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        cached_job_id = _maybe_create_cached_job(
+            self._job_store,
+            workflow_type,
+            inputs,
+            config_context,
+            metadata,
+            "celery",
+        )
+        if cached_job_id:
+            return cached_job_id
+
+        job_id = str(uuid.uuid4())
+        cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
+        self._job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
         self._job_store.log_event(
             job_id,
             "queued",
