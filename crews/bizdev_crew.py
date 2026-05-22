@@ -6,6 +6,7 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 from utils.crew_result import serialize_crew_result
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "business_development"
@@ -203,10 +204,12 @@ def run_bizdev_crew(inputs: dict[str, Any], config_context: dict[str, Any] | Non
         context=[outreach_task, research_task],
         output_pydantic=BizDevOutput,
     )
+    tasks = [research_task, strategy_task, outreach_task, sync_task]
+    attach_task_progress(config_context, "bizdev", tasks, list(tasks_config.keys()))
 
     bizdev_crew = Crew(
         agents=[prospector, strategist, outreach_agent, pipeline_agent],
-        tasks=[research_task, strategy_task, outreach_task, sync_task],
+        tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )

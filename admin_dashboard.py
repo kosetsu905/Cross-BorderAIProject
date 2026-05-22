@@ -74,6 +74,9 @@ PROGRESS_BY_EVENT = {
     "submitted": 0.08,
     "queued": 0.18,
     "running": 0.45,
+    "task_plan": 0.2,
+    "task_started": 0.25,
+    "task_completed": 0.4,
     "retrying": 0.5,
     "cache_hit": 1.0,
     "completed": 1.0,
@@ -154,6 +157,9 @@ def _latest_event(events: list[dict[str, Any]] | None) -> dict[str, Any] | None:
 def _progress_value(status: str, events: list[dict[str, Any]] | None) -> float:
     latest = _latest_event(events)
     if latest:
+        payload = latest.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("progress"), (int, float)):
+            return float(payload["progress"])
         event_progress = PROGRESS_BY_EVENT.get(str(latest.get("event_type")), 0)
         if event_progress:
             return event_progress
@@ -165,6 +171,11 @@ def _progress_label(status: str, latest_job: dict[str, Any], events: list[dict[s
     if latest:
         message = latest.get("message")
         if message:
+            payload = latest.get("payload")
+            if isinstance(payload, dict) and payload.get("task_index") and payload.get("total_tasks"):
+                agent = payload.get("agent_role")
+                suffix = f" · {agent}" if agent else ""
+                return f"{status}: {message}{suffix}"
             return f"{status}: {message}"
 
     result = latest_job.get("result")

@@ -6,6 +6,7 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 from utils.crew_result import serialize_crew_result
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "content"
@@ -155,10 +156,12 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         context=[creation_task],
         output_pydantic=ContentOutput,
     )
+    tasks = [research_task, strategy_task, creation_task, qa_task]
+    attach_task_progress(config_context, "content", tasks, list(tasks_config.keys()))
 
     content_crew = Crew(
         agents=[trend_monitor, content_strategist, multilingual_creator, qa_specialist],
-        tasks=[research_task, strategy_task, creation_task, qa_task],
+        tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )

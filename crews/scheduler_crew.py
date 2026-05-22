@@ -14,6 +14,7 @@ from tools.custom.scheduler_tools import (
     TimezoneHolidayTool,
 )
 from utils.crew_result import serialize_crew_result
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "scheduler"
@@ -233,6 +234,8 @@ def run_scheduler_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         context=[conflict_task],
         output_pydantic=SchedulerOutput,
     )
+    tasks = [timezone_task, alignment_task, conflict_task, notification_task]
+    attach_task_progress(config_context, "scheduler", tasks, list(tasks_config.keys()))
 
     scheduler_crew = Crew(
         agents=[
@@ -241,7 +244,7 @@ def run_scheduler_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
             conflict_resolver,
             notification_coordinator,
         ],
-        tasks=[timezone_task, alignment_task, conflict_task, notification_task],
+        tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )

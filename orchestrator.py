@@ -12,6 +12,7 @@ from models import JobStatus, WorkflowType
 from runtime_config import RuntimeConfig, apply_runtime_environment, merge_runtime_context
 from utils.result_cache import build_workflow_cache_key, cache_enabled, cache_ttl_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
+from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,12 @@ class MasterOrchestrator:
                 {"workflow_type": workflow_type.value, "backend": "local"},
             )
             crew_function = self._crews[workflow_type]
+            config_context[PROGRESS_CONTEXT_KEY] = WorkflowProgressRecorder(
+                job_id=job_id,
+                workflow_type=workflow_type.value,
+                job_store=self._job_store,
+                backend="local",
+            )
             apply_runtime_environment(config_context)
             started_at = monotonic_time()
             result = await asyncio.to_thread(crew_function, inputs, config_context)

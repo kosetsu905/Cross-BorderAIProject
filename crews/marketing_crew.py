@@ -17,6 +17,7 @@ from tools.integrations.cross_platform_ads_tools import (
     TikTokAdsTool,
 )
 from utils.crew_result import serialize_crew_result
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "marketing"
@@ -227,10 +228,12 @@ def run_marketing_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         context=[copy_task, strategy_task],
         output_pydantic=FinalCampaignOutput,
     )
+    tasks = [research_task, strategy_task, copy_task, qa_task]
+    attach_task_progress(config_context, "marketing", tasks, list(tasks_config.keys()))
 
     marketing_crew = Crew(
         agents=[strategist, copywriter, optimizer, qa_agent],
-        tasks=[research_task, strategy_task, copy_task, qa_task],
+        tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )

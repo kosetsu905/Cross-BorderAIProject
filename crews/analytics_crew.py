@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.analytics_tools import CompetitorBenchmarkTool, EcomPlatformMetricsTool
 from utils.crew_result import serialize_crew_result
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "analytics"
@@ -187,10 +188,12 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         context=[analyze_task, research_task],
         output_pydantic=AnalyticsReportOutput,
     )
+    tasks = [collect_task, analyze_task, research_task, report_task]
+    attach_task_progress(config_context, "analytics", tasks, list(tasks_config.keys()))
 
     analytics_crew = Crew(
         agents=[collector, analyst, researcher, reporter],
-        tasks=[collect_task, analyze_task, research_task, report_task],
+        tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )

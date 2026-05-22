@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.support_rag_tools import SupportKnowledgeSearchTool
 from utils.crew_result import serialize_crew_result
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
@@ -83,10 +84,12 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         context=[resolution_task],
         output_pydantic=SupportTicketOutput,
     )
+    tasks = [resolution_task, qa_task]
+    attach_task_progress(config_context, "support", tasks, list(tasks_config.keys()))
 
     support_crew = Crew(
         agents=[support_agent, qa_agent],
-        tasks=[resolution_task, qa_task],
+        tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )

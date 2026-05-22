@@ -12,6 +12,7 @@ from models import JobStatus
 from runtime_config import apply_runtime_environment, load_runtime_config
 from utils.retry_policy import is_retryable_exception, retry_countdown_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
+from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
 
 
 job_store = PostgresJobStore(SessionLocal)
@@ -26,6 +27,13 @@ def _run_with_job_state(
 ) -> dict:
     job_id = self.request.id
     config_context = config_context or load_runtime_config().as_context()
+    workflow_type = str(getattr(self, "name", "workflow.unknown")).removeprefix("workflow.")
+    config_context[PROGRESS_CONTEXT_KEY] = WorkflowProgressRecorder(
+        job_id=job_id,
+        workflow_type=workflow_type,
+        job_store=job_store,
+        backend="celery",
+    )
     apply_runtime_environment(config_context)
     self.update_state(state="PROGRESS", meta={"status": progress})
     job_store.update_job(job_id, status=JobStatus.RUNNING, result={"status": progress}, error=None)
