@@ -418,7 +418,7 @@ Expected shape:
 
 ## Run Admin Dashboard
 
-The Stage 2B Streamlit dashboard is a lightweight admin UI for testing workflows without writing raw HTTP requests. It can submit workflow jobs, poll job status, display usage metadata, and show execution events.
+The Stage 2B Streamlit dashboard is a lightweight admin UI for testing workflows without writing raw HTTP requests. It can submit workflow jobs, auto-refresh active job status, display usage metadata, and show execution events.
 
 With the Docker backend running, start the dashboard locally from the already configured virtual environment:
 

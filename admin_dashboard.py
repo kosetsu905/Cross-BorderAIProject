@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import Any
 
 import httpx
@@ -69,6 +70,18 @@ PROGRESS_BY_STATUS = {
     "failed": 1.0,
 }
 
+PROGRESS_BY_EVENT = {
+    "submitted": 0.08,
+    "queued": 0.18,
+    "running": 0.45,
+    "retrying": 0.5,
+    "cache_hit": 1.0,
+    "completed": 1.0,
+    "failed": 1.0,
+}
+
+ACTIVE_STATUSES = {"pending", "running"}
+
 
 def _headers(token: str) -> dict[str, str]:
     if not token:
@@ -105,6 +118,59 @@ def _request_json(
 
 def _format_json(value: dict[str, Any]) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False)
+
+
+def _fetch_job(
+    base_url: str,
+    token: str,
+    job_id: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
+    result, error = _request_json("GET", base_url, f"/api/v1/workflow/{job_id}", token)
+    if error:
+        return None, None, error
+
+    events, events_error = _request_json(
+        "GET",
+        base_url,
+        f"/api/v1/workflow/{job_id}/events",
+        token,
+    )
+    if events_error:
+        return result if isinstance(result, dict) else None, None, events_error
+
+    return (
+        result if isinstance(result, dict) else None,
+        events if isinstance(events, list) else None,
+        None,
+    )
+
+
+def _latest_event(events: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    if not events:
+        return None
+    return events[-1]
+
+
+def _progress_value(status: str, events: list[dict[str, Any]] | None) -> float:
+    latest = _latest_event(events)
+    if latest:
+        event_progress = PROGRESS_BY_EVENT.get(str(latest.get("event_type")), 0)
+        if event_progress:
+            return event_progress
+    return PROGRESS_BY_STATUS.get(status, 0.25)
+
+
+def _progress_label(status: str, latest_job: dict[str, Any], events: list[dict[str, Any]] | None) -> str:
+    latest = _latest_event(events)
+    if latest:
+        message = latest.get("message")
+        if message:
+            return f"{status}: {message}"
+
+    result = latest_job.get("result")
+    if isinstance(result, dict) and result.get("status"):
+        return f"{status}: {result['status']}"
+    return status
 
 
 def main() -> None:
@@ -164,45 +230,71 @@ def main() -> None:
                     st.error(error)
                 elif isinstance(result, dict):
                     st.session_state.job_id = result.get("job_id")
+                    st.session_state.latest_job = result
+                    st.session_state.latest_events = []
                     st.success(f"Submitted job {st.session_state.job_id}")
 
     with col_status:
         st.subheader("Job")
         job_id = st.text_input("Job ID", value=st.session_state.get("job_id", ""))
+        if job_id and job_id != st.session_state.get("job_id"):
+            st.session_state.job_id = job_id
+            st.session_state.latest_job = None
+            st.session_state.latest_events = []
+        auto_refresh = st.toggle("Auto refresh active job", value=True)
+        refresh_interval = st.slider("Refresh interval seconds", 2, 15, 5)
 
-        if st.button("Poll job", use_container_width=True) and job_id:
-            result, error = _request_json("GET", api_base_url, f"/api/v1/workflow/{job_id}", bearer_token)
+        if st.button("Refresh now", use_container_width=True) and job_id:
+            result, events, error = _fetch_job(api_base_url, bearer_token, job_id)
             if error:
                 st.error(error)
-            elif isinstance(result, dict):
+            if result:
                 st.session_state.latest_job = result
-
-            events, events_error = _request_json(
-                "GET",
-                api_base_url,
-                f"/api/v1/workflow/{job_id}/events",
-                bearer_token,
-            )
-            if events_error:
-                st.warning(events_error)
-            else:
+            if events is not None:
                 st.session_state.latest_events = events
 
         latest_job = st.session_state.get("latest_job")
         if latest_job:
             status = str(latest_job.get("status", "pending"))
-            st.progress(PROGRESS_BY_STATUS.get(status, 0.25), text=status)
+            latest_events = st.session_state.get("latest_events")
+            st.progress(
+                _progress_value(status, latest_events),
+                text=_progress_label(status, latest_job, latest_events),
+            )
             usage_cols = st.columns(4)
             usage_cols[0].metric("Tokens", latest_job.get("total_tokens") or 0)
             usage_cols[1].metric("Cost USD", latest_job.get("cost_usd") or 0)
             usage_cols[2].metric("Duration", latest_job.get("duration_seconds") or 0)
             usage_cols[3].metric("Status", status)
+            if latest_job.get("cache_hit"):
+                st.info(f"Served from cache: {latest_job.get('source_job_id')}")
             st.json(latest_job)
 
     latest_events = st.session_state.get("latest_events")
     if latest_events:
         st.subheader("Execution Events")
         st.dataframe(latest_events, use_container_width=True, hide_index=True)
+
+    if st.session_state.get("auto_refresh_error"):
+        st.warning(st.session_state.auto_refresh_error)
+
+    latest_job = st.session_state.get("latest_job")
+    active_job_id = st.session_state.get("job_id")
+    if (
+        auto_refresh
+        and active_job_id
+        and latest_job
+        and str(latest_job.get("status")) in ACTIVE_STATUSES
+    ):
+        time.sleep(refresh_interval)
+        result, events, error = _fetch_job(api_base_url, bearer_token, active_job_id)
+        if error:
+            st.session_state.auto_refresh_error = error
+        if result:
+            st.session_state.latest_job = result
+        if events is not None:
+            st.session_state.latest_events = events
+        st.rerun()
 
 
 if __name__ == "__main__":
