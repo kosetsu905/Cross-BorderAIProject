@@ -192,7 +192,7 @@ def main() -> None:
         st.header("API")
         api_base_url = st.text_input("Base URL", value=DEFAULT_API_BASE_URL)
         bearer_token = st.text_input("Bearer token", value=DEFAULT_BEARER_TOKEN, type="password")
-        if st.button("Check health", use_container_width=True):
+        if st.button("Check health", width="stretch"):
             health, error = _request_json("GET", api_base_url, "/health", bearer_token)
             if error:
                 st.error(error)
@@ -222,7 +222,7 @@ def main() -> None:
             help="Optional request-scoped provider credentials. Leave empty JSON for normal .env behavior.",
         )
 
-        if st.button("Submit workflow", type="primary", use_container_width=True):
+        if st.button("Submit workflow", type="primary", width="stretch"):
             try:
                 inputs = json.loads(inputs_json)
                 provider_credentials = json.loads(provider_credentials_json or "{}")
@@ -255,7 +255,7 @@ def main() -> None:
         auto_refresh = st.toggle("Auto refresh active job", value=True)
         refresh_interval = st.slider("Refresh interval seconds", 2, 15, 5)
 
-        if st.button("Refresh now", use_container_width=True) and job_id:
+        if st.button("Refresh now", width="stretch") and job_id:
             result, events, error = _fetch_job(api_base_url, bearer_token, job_id)
             if error:
                 st.error(error)
@@ -284,7 +284,7 @@ def main() -> None:
     latest_events = st.session_state.get("latest_events")
     if latest_events:
         st.subheader("Execution Events")
-        st.dataframe(latest_events, use_container_width=True, hide_index=True)
+        st.dataframe(latest_events, width="stretch", hide_index=True)
 
     if st.session_state.get("auto_refresh_error"):
         st.warning(st.session_state.auto_refresh_error)
