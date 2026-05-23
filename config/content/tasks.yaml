@@ -5,6 +5,10 @@ research_and_strategy:
     for {subject}, including recommended angles, article structure, SEO keyword themes, localization notes,
     and platform distribution guidance for {target_languages} and {platforms}. Keep guidance clearly separated
     by requested language and market so downstream language-specific generation can use only the relevant section.
+    Ground the blueprint in these user-provided product features when available:
+    {product_features_summary}
+    Treat product features as first-party input. Use them to shape article angles, examples, CTAs, and benefit-led
+    messaging, but do not exaggerate proof points beyond what the user provided.
   expected_output: "A concise research-backed content blueprint with market insights, SEO themes, localization guidance, article structure, and platform distribution notes."
 
 content_creation_and_qa:
@@ -18,6 +22,10 @@ content_creation_and_qa:
     structured output. Treat this as an independent single-language deliverable: use only strategy details
     relevant to {target_language} and {target_market}; do not discuss other requested languages, markets,
     or cultures unless they are explicitly relevant to this target language and market scope.
+    Product features to incorporate where relevant:
+    {product_features_summary}
+    Make the article concrete by connecting these features to practical user needs, usage scenarios, and CTAs.
+    If no product features are provided, avoid inventing specific capabilities.
     The article, social posts, SEO keywords, and compliance notes must be written in {target_language};
     do not mix in another language except unavoidable brand names, product names, URLs, or standard
     platform hashtags. Do not invent named local brands, exact market statistics, regulations,

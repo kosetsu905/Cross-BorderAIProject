@@ -89,7 +89,22 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
 
 
 def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
-    return dict(inputs)
+    normalized = dict(inputs)
+    normalized["product_features_summary"] = _summarize_product_features(
+        normalized.get("product_features")
+    )
+    return normalized
+
+
+def _summarize_product_features(features: Any) -> str:
+    if not features:
+        return "No product-specific features were provided. Keep claims broad and avoid inventing product details."
+
+    text = str(features).strip()
+    if not text:
+        return "No usable product-specific features were provided. Keep claims broad and avoid inventing product details."
+
+    return text
 
 
 def _split_markets(value: Any) -> list[str]:

@@ -43,6 +43,13 @@ class MarketingInputs(StrictInputModel):
 class ContentInputs(StrictInputModel):
     subject: str = Field(..., min_length=1)
     product_category: str = Field(..., min_length=1)
+    product_features: str | None = Field(
+        None,
+        description=(
+            "Optional product features or selling points to ground generated content "
+            "in the user's actual product instead of broad category-level discussion."
+        ),
+    )
     target_markets: str = Field(..., min_length=1)
     target_languages: list[str] = Field(..., min_length=1)
     platforms: list[str] = Field(..., min_length=1)

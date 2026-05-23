@@ -568,6 +568,7 @@ Invoke-RestMethod `
 
 This request starts the Content Creation CrewAI workflow and may consume OpenAI API tokens.
 For multilingual inputs, the workflow runs research/strategy once, then generates each requested language in parallel up to `CONTENT_LANGUAGE_CONCURRENCY`.
+Use `product_features` when you want the article to focus on your actual product instead of broad category-level trends.
 
 ```powershell
 $body = @{
@@ -575,6 +576,7 @@ $body = @{
   inputs = @{
     subject = "Sustainable Activewear for Cold Climates"
     product_category = "Eco-Friendly Winter Sportswear"
+    product_features = "Recycled thermal shell, wind-resistant construction, moisture-wicking base layer, designed for cold outdoor training."
     target_markets = "Germany, Japan, Canada"
     target_languages = @("de", "ja", "en")
     platforms = @("Instagram", "LinkedIn", "X")

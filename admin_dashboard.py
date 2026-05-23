@@ -24,6 +24,7 @@ WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
     "content": {
         "subject": "Sustainable Activewear for Cold Climates",
         "product_category": "Eco-Friendly Winter Sportswear",
+        "product_features": "Recycled thermal shell, wind-resistant construction, moisture-wicking base layer, designed for cold outdoor training.",
         "target_markets": "Germany, Japan, Canada",
         "target_languages": ["de", "ja", "en"],
         "platforms": ["Instagram", "LinkedIn", "X"],
