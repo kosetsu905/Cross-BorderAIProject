@@ -11,6 +11,11 @@ CACHE_CONTROL_KEYS = {
     "workflow_result_cache_ttl_seconds",
     "content_language_concurrency",
     "marketing_market_concurrency",
+    "serper_deep_read_enabled",
+    "serper_deep_read_max_pages",
+    "serper_deep_read_concurrency",
+    "serper_deep_read_timeout_seconds",
+    "serper_deep_read_max_chars",
     "openai_input_cost_per_1m_tokens",
     "openai_output_cost_per_1m_tokens",
 }

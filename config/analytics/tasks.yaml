@@ -18,14 +18,31 @@ market_research:
   description: >
     Research competitor positioning, pricing strategies, and market demand for {product_category} in {target_markets}.
     Cross-reference findings with our performance data to identify gaps and competitive advantages.
-    Do not invent exact market share, growth rates, or competitor facts unless provided by tools or source data.
-    If benchmark data is fallback/stub data, mark it as illustrative and low confidence.
-  expected_output: "A competitive landscape report with pricing benchmarks, strategic positioning recommendations, data source, confidence level, and assumptions."
+    Use Competitor & Market Benchmark Tool results when available. If the tool returns data_source=serper_search
+    or serper_deep_read, ground competitor observations in the returned search snippets, evidence page excerpts,
+    and source URLs. Prefer evidence entries with read_status=ok. Avoid inventing exact market share, growth rates,
+    average prices, or competitor facts that are not present in the tool output.
+    For each major competitor or market observation, prepare source evidence with market, claim, evidence summary,
+    source URLs, and confidence. Use URLs from source_urls, market_results.sources, or market_results.evidence.
+    Organize findings by region, separating competitor signals, pricing signals, demand signals, and channel signals.
+    If a category has no source-backed finding for a region, state that the evidence is unavailable instead of guessing.
+    If benchmark data is fallback data, mark it as illustrative and low confidence.
+  expected_output: "A competitive landscape report grounded in benchmark tool output, with region-by-region competitor, pricing, demand, and channel signals, source evidence candidates, strategic positioning recommendations, data source, confidence level, and assumptions."
 
 insight_report:
   description: >
     Synthesize the performance analysis and market research into a structured executive report.
     Include KPI dashboards, actionable recommendations, risk alerts, and a 30/60/90 day action plan.
     Include data_source, confidence_level, and assumptions. If source data is fallback/sample data, state clearly that the report is illustrative
-    and requires validation with real platform analytics before business decisions are made.
-  expected_output: "A comprehensive, structured analytics report with executive summary, regional breakdowns, prioritized next steps, data source, confidence level, and assumptions."
+    and requires validation with real platform analytics before business decisions are made. If market research uses
+    Serper search snippets or source-page excerpts, keep competitive insights tied to those evidence items and do
+    not convert them into unsupported exact growth rates, market shares, or average prices.
+    Include source_evidence as a list. Each item must contain market, claim, evidence_summary, sources, and confidence.
+    Every major claim in competitive_insights should have a matching source_evidence item. If a claim has no source URL,
+    either remove the claim or mark the evidence confidence as low and explain the limitation in assumptions.
+    Include market_intelligence_by_region with one item per requested region. Each item must include competitor_signals,
+    pricing_signals, demand_signals, channel_signals, source_urls, and confidence.
+    Include evidence_synthesis with strongest_supported_findings, weak_or_unverified_findings, and source_coverage_notes.
+    Include data_quality_notes that clearly separates fallback commerce metrics from live search or deep-read evidence.
+    Include recommended_next_research for missing provider integrations, better source coverage, or validation work.
+  expected_output: "A comprehensive, structured analytics report with executive summary, regional KPI breakdowns, market_intelligence_by_region, source_evidence, evidence_synthesis, data_quality_notes, recommended_next_research, prioritized next steps, data source, confidence level, and assumptions."

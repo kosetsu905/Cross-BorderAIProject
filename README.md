@@ -132,6 +132,11 @@ WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 CONTENT_LANGUAGE_CONCURRENCY=4
 MARKETING_MARKET_CONCURRENCY=4
+SERPER_DEEP_READ_ENABLED=false
+SERPER_DEEP_READ_MAX_PAGES=3
+SERPER_DEEP_READ_CONCURRENCY=5
+SERPER_DEEP_READ_TIMEOUT_SECONDS=10
+SERPER_DEEP_READ_MAX_CHARS=4000
 ```
 
 `WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
@@ -141,6 +146,7 @@ If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Aut
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
 Marketing runs one shared strategy/channel-planning task and then generates market-specific creative/compliance packages in parallel. `MARKETING_MARKET_CONCURRENCY` controls the maximum number of market workers.
+Analytics competitive research can optionally deep-read Serper result URLs. When `SERPER_DEEP_READ_ENABLED=true`, `CompetitorBenchmarkTool` reads up to `SERPER_DEEP_READ_MAX_PAGES` pages per market with `SERPER_DEEP_READ_CONCURRENCY` workers and passes source excerpts to CrewAI.
 
 Optional workflow data providers:
 
@@ -513,7 +519,8 @@ Invoke-RestMethod `
 ## Run Data Analytics
 
 This request starts the Analytics CrewAI workflow and may consume OpenAI API tokens.
-Without real platform and competitive data provider credentials such as Shopify or Amazon order API settings, analytics tools use development fallback sample data and the output should be treated as illustrative.
+Without real platform credentials such as Shopify or Amazon order API settings, analytics commerce metrics use development fallback sample data and the output should be treated as illustrative. If `SERPER_API_KEY` is configured, competitive research uses live Serper search snippets and source URLs through `CompetitorBenchmarkTool`; with `SERPER_DEEP_READ_ENABLED=true`, it also performs best-effort concurrent reads of the top result pages and passes source excerpts into the market research task. Those search-derived insights still require source-page validation before business decisions.
+Analytics output includes `source_evidence`, a claim-level evidence list with market, claim, evidence summary, source URLs, and confidence. It also includes `market_intelligence_by_region`, `evidence_synthesis`, `data_quality_notes`, and `recommended_next_research` so Serper snippets and deep-read source pages are preserved as region-by-region market intelligence instead of being compressed into a short summary.
 The API response enforces `data_source`, `confidence_level`, and `assumptions` from configured credentials after the crew finishes, so these fields should not claim live-provider confidence when fallback or placeholder tools were used.
 
 ```powershell

@@ -22,6 +22,50 @@ class RegionalKPI(BaseModel):
     roas: str = Field(..., description="Return on ad spend")
 
 
+class SourceEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market: str = Field(..., description="Target market or region for the claim")
+    claim: str = Field(..., description="Source-backed competitive or market claim")
+    evidence_summary: str = Field(..., description="Short summary of the supporting evidence")
+    sources: list[str] = Field(..., description="Source URLs used to support the claim")
+    confidence: str = Field(..., description="Evidence confidence level for this claim")
+
+
+class MarketIntelligence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    region: str = Field(..., description="Target market or region")
+    competitor_signals: list[str] = Field(
+        ..., description="Competitor names, positioning, product, or messaging signals found in sources"
+    )
+    pricing_signals: list[str] = Field(
+        ..., description="Source-backed pricing, discount, affordability, or price-positioning observations"
+    )
+    demand_signals: list[str] = Field(
+        ..., description="Source-backed demand, consumer preference, market trend, or adoption observations"
+    )
+    channel_signals: list[str] = Field(
+        ..., description="Source-backed channel, marketplace, retail, platform, or go-to-market observations"
+    )
+    source_urls: list[str] = Field(..., description="URLs supporting this region's market intelligence")
+    confidence: str = Field(..., description="Confidence level for this region's market intelligence")
+
+
+class EvidenceSynthesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strongest_supported_findings: list[str] = Field(
+        ..., description="Findings with the clearest source support"
+    )
+    weak_or_unverified_findings: list[str] = Field(
+        ..., description="Claims that need more source validation or live provider data"
+    )
+    source_coverage_notes: list[str] = Field(
+        ..., description="Notes about source coverage, gaps, duplicates, or market-specific limitations"
+    )
+
+
 class AnalyticsReportOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -47,11 +91,34 @@ class AnalyticsReportOutput(BaseModel):
     competitive_insights: str = Field(
         ..., description="Competitor benchmarking and market positioning analysis"
     )
+    market_intelligence_by_region: list[MarketIntelligence] = Field(
+        ...,
+        description=(
+            "Detailed per-region market intelligence so search and deep-read evidence "
+            "is preserved instead of compressed into the executive summary"
+        ),
+    )
+    source_evidence: list[SourceEvidence] = Field(
+        ...,
+        description=(
+            "Source-backed evidence items for competitive insights, including "
+            "claim, market, URLs, and claim-level confidence"
+        ),
+    )
+    evidence_synthesis: EvidenceSynthesis = Field(
+        ..., description="Cross-source synthesis of what is well supported and what remains weak"
+    )
     actionable_recommendations: list[str] = Field(
         ..., description="Prioritized next steps for optimization"
     )
     risk_alerts: list[str] = Field(
         ..., description="Potential risks, inventory issues, or policy changes"
+    )
+    data_quality_notes: list[str] = Field(
+        ..., description="Data quality caveats separating fallback metrics from live search evidence"
+    )
+    recommended_next_research: list[str] = Field(
+        ..., description="Follow-up research or integrations needed to improve confidence"
     )
 
 
@@ -70,7 +137,14 @@ def _build_analysis_tools(config_context: dict[str, Any]) -> list[Any]:
 
 def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = [
-        CompetitorBenchmarkTool(serper_api_key=config_context.get("serper_api_key")),
+        CompetitorBenchmarkTool(
+            serper_api_key=config_context.get("serper_api_key"),
+            deep_read_enabled=bool(config_context.get("serper_deep_read_enabled")),
+            deep_read_max_pages=int(config_context.get("serper_deep_read_max_pages") or 3),
+            deep_read_concurrency=int(config_context.get("serper_deep_read_concurrency") or 5),
+            deep_read_timeout_seconds=int(config_context.get("serper_deep_read_timeout_seconds") or 10),
+            deep_read_max_chars=int(config_context.get("serper_deep_read_max_chars") or 4000),
+        ),
         ScrapeWebsiteTool(),
     ]
     if config_context.get("serper_api_key"):
@@ -112,7 +186,7 @@ def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
             "confidence_level": "Low",
             "assumptions": [
                 "Analytics platform metrics used development fallback data because ECOM_API_TOKEN is not configured.",
-                "Some market research tools may use configured search data, but regional KPIs remain illustrative until connected to a live commerce platform.",
+                "Competitive research uses live Serper search snippets and optional source-page deep reads when SERPER_API_KEY is configured, but regional KPIs remain illustrative until connected to a live commerce platform.",
             ],
         }
 

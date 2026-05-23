@@ -34,6 +34,11 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_result_cache_ttl_seconds",
     "content_language_concurrency",
     "marketing_market_concurrency",
+    "serper_deep_read_enabled",
+    "serper_deep_read_max_pages",
+    "serper_deep_read_concurrency",
+    "serper_deep_read_timeout_seconds",
+    "serper_deep_read_max_chars",
 }
 
 
@@ -69,6 +74,11 @@ class RuntimeConfig:
     workflow_result_cache_ttl_seconds: int = 3600
     content_language_concurrency: int = 4
     marketing_market_concurrency: int = 4
+    serper_deep_read_enabled: bool = False
+    serper_deep_read_max_pages: int = 3
+    serper_deep_read_concurrency: int = 5
+    serper_deep_read_timeout_seconds: int = 10
+    serper_deep_read_max_chars: int = 4000
 
     def as_context(self) -> dict[str, Any]:
         return asdict(self)
@@ -113,6 +123,11 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
         content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
         marketing_market_concurrency=_int_env("MARKETING_MARKET_CONCURRENCY", 4),
+        serper_deep_read_enabled=_bool_env("SERPER_DEEP_READ_ENABLED", False),
+        serper_deep_read_max_pages=_int_env("SERPER_DEEP_READ_MAX_PAGES", 3),
+        serper_deep_read_concurrency=_int_env("SERPER_DEEP_READ_CONCURRENCY", 5),
+        serper_deep_read_timeout_seconds=_int_env("SERPER_DEEP_READ_TIMEOUT_SECONDS", 10),
+        serper_deep_read_max_chars=_int_env("SERPER_DEEP_READ_MAX_CHARS", 4000),
     )
 
 
