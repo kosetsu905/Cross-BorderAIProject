@@ -1,30 +1,28 @@
-trend_research:
+research_and_strategy:
   description: >
-    Research trending topics, competitor content, and search intent for {product_category} in {target_markets}.
-    Identify high-volume keywords, content gaps, and viral angles across {platforms}.
-  expected_output: "A comprehensive trend report with keywords, competitor analysis, and content opportunity insights."
+    Research trending topics, competitor content, search intent, audience needs, and platform context
+    for {product_category} in {target_markets}. Use that research to produce a compact content blueprint
+    for {subject}, including recommended angles, article structure, SEO keyword themes, localization notes,
+    and platform distribution guidance for {target_languages} and {platforms}. Keep guidance clearly separated
+    by requested language and market so downstream language-specific generation can use only the relevant section.
+  expected_output: "A concise research-backed content blueprint with market insights, SEO themes, localization guidance, article structure, and platform distribution notes."
 
-content_strategy:
+content_creation_and_qa:
   description: >
-    Using the trend research, develop a content strategy for {product_category} targeting {target_languages}.
-    Define audience persona, core message, SEO focus, content structure, and distribution plan.
-  expected_output: "A detailed content blueprint outlining structure, tone, SEO targets, and platform distribution strategy."
-
-content_creation:
-  description: >
-    Write one full localized blog/article in markdown format about {subject} for every language in {target_languages}.
-    Then generate localized platform-specific social media posts that cover every language in {target_languages}
-    and every platform in {platforms}.
-    Ensure cultural adaptation, proper hashtags, and clear CTAs.
-    Do not collapse multiple requested languages into a single article. The number of localized articles should match
-    the number of requested target languages. Social posts should include all requested languages and all requested
-    platforms without requiring every language-platform combination.
-  expected_output: "A complete multilingual content package with one localized article per requested language and localized social posts covering all requested languages and platforms."
-
-quality_assurance:
-  description: >
-    Review the article and social posts for SEO optimization, brand voice consistency, cultural accuracy, and compliance.
-    Fix any issues, ensure proper formatting, and validate against {target_markets} regulations.
-    Confirm that localized_articles covers every language in {target_languages}.
-    Confirm that social_media_posts includes all requested languages and all requested platforms.
-  expected_output: "Final polished content package with SEO keywords, compliance notes, and structured social posts."
+    Using this research and strategy blueprint: {strategy_context}
+    Write one full localized blog/article in markdown format about {subject} for the requested language
+    {target_language} and target market scope {target_market}. Then generate localized platform-specific social media posts for {target_language}
+    that cover the requested platforms: {platforms}.
+    Ensure cultural adaptation, useful hashtags or mentions where appropriate, clear CTAs, SEO quality,
+    and regional compliance notes for {target_markets}. Do a final self-review before returning the
+    structured output. Treat this as an independent single-language deliverable: use only strategy details
+    relevant to {target_language} and {target_market}; do not discuss other requested languages, markets,
+    or cultures unless they are explicitly relevant to this target language and market scope.
+    The article, social posts, SEO keywords, and compliance notes must be written in {target_language};
+    do not mix in another language except unavoidable brand names, product names, URLs, or standard
+    platform hashtags. Do not invent named local brands, exact market statistics, regulations,
+    material innovations, or cultural claims. If the strategy does not provide a verified source
+    for a specific claim, use cautious generic language such as "some brands", "many consumers",
+    or "consider checking certified materials" rather than presenting it as factual local market data.
+    Do not output placeholder brand names such as Brand A, Marca A, or [brand name].
+  expected_output: "A final structured single-language content package with localized_article, social_media_posts, seo_keywords, and compliance_notes."

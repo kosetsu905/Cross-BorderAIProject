@@ -1,4 +1,5 @@
 import logging
+from threading import Lock
 from typing import Any, Callable
 
 from models import JobStatus
@@ -16,6 +17,7 @@ class WorkflowProgressRecorder:
         self.workflow_type = workflow_type
         self.job_store = job_store
         self.backend = backend
+        self._lock = Lock()
 
     def emit_plan(self, task_names: list[str]) -> None:
         self._update_progress(
@@ -63,23 +65,33 @@ class WorkflowProgressRecorder:
         progress: float,
         payload: dict[str, Any],
     ) -> None:
-        event_payload = {
-            "workflow_type": self.workflow_type,
-            "backend": self.backend,
-            "progress": round(progress, 3),
-            **payload,
-        }
-        self.job_store.update_job(
-            self.job_id,
-            status=JobStatus.RUNNING,
-            result={
-                "status": message,
+        self.emit_progress(event_type, message, progress, payload)
+
+    def emit_progress(
+        self,
+        event_type: str,
+        message: str,
+        progress: float,
+        payload: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            event_payload = {
+                "workflow_type": self.workflow_type,
+                "backend": self.backend,
                 "progress": round(progress, 3),
                 **payload,
-            },
-            error=None,
-        )
-        self.job_store.log_event(self.job_id, event_type, message, event_payload)
+            }
+            self.job_store.update_job(
+                self.job_id,
+                status=JobStatus.RUNNING,
+                result={
+                    "status": message,
+                    "progress": round(progress, 3),
+                    **payload,
+                },
+                error=None,
+            )
+            self.job_store.log_event(self.job_id, event_type, message, event_payload)
 
 
 def attach_task_progress(

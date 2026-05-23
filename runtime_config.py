@@ -32,6 +32,7 @@ RUNTIME_CONFIG_KEYS = {
     "openai_output_cost_per_1m_tokens",
     "workflow_result_cache_enabled",
     "workflow_result_cache_ttl_seconds",
+    "content_language_concurrency",
 }
 
 
@@ -65,6 +66,7 @@ class RuntimeConfig:
     openai_output_cost_per_1m_tokens: float = 0.0
     workflow_result_cache_enabled: bool = True
     workflow_result_cache_ttl_seconds: int = 3600
+    content_language_concurrency: int = 4
 
     def as_context(self) -> dict[str, Any]:
         return asdict(self)
@@ -107,6 +109,7 @@ def load_runtime_config() -> RuntimeConfig:
         openai_output_cost_per_1m_tokens=_float_env("OPENAI_OUTPUT_COST_PER_1M_TOKENS"),
         workflow_result_cache_enabled=_bool_env("WORKFLOW_RESULT_CACHE_ENABLED", True),
         workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
+        content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
     )
 
 
