@@ -10,6 +10,7 @@ CACHE_CONTROL_KEYS = {
     "workflow_result_cache_enabled",
     "workflow_result_cache_ttl_seconds",
     "content_language_concurrency",
+    "marketing_market_concurrency",
     "openai_input_cost_per_1m_tokens",
     "openai_output_cost_per_1m_tokens",
 }

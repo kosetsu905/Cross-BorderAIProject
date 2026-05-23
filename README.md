@@ -131,6 +131,7 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 CONTENT_LANGUAGE_CONCURRENCY=4
+MARKETING_MARKET_CONCURRENCY=4
 ```
 
 `WORKFLOW_BACKEND=local` keeps the current lightweight in-process background execution. Use `WORKFLOW_BACKEND=celery` when Redis and a Celery worker are running and you want workflow jobs to be handled by the message broker.
@@ -139,6 +140,7 @@ Runtime configuration and secrets are centralized in `runtime_config.py`. FastAP
 If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
+Marketing runs one shared strategy/channel-planning task and then generates market-specific creative/compliance packages in parallel. `MARKETING_MARKET_CONCURRENCY` controls the maximum number of market workers.
 
 Optional workflow data providers:
 
@@ -592,6 +594,7 @@ $body = @{
     product_category = "Smart Home Security Cameras"
     product_usp = "AI-powered motion detection, 4K resolution, privacy-first cloud storage"
     target_markets = "US, UK, Germany, Japan"
+    target_languages = @("en-US", "en-GB", "de", "ja")
     budget = "$15,000 USD"
   }
 } | ConvertTo-Json -Depth 5

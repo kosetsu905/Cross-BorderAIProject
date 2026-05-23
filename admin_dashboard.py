@@ -18,6 +18,7 @@ WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
         "product_category": "Smart Home Security Cameras",
         "product_usp": "AI-powered motion detection, 4K resolution, privacy-first cloud storage",
         "target_markets": "US, UK, Germany, Japan",
+        "target_languages": ["en-US", "en-GB", "de", "ja"],
         "budget": "$15,000 USD",
     },
     "content": {

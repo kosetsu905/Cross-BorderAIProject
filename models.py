@@ -31,6 +31,13 @@ class MarketingInputs(StrictInputModel):
     product_usp: str = Field(..., min_length=1)
     target_markets: str = Field(..., min_length=1)
     budget: str = Field(..., min_length=1)
+    target_languages: list[str] | None = Field(
+        None,
+        description=(
+            "Optional target language codes or names. If omitted, Marketing should use "
+            "the primary local language for each target market."
+        ),
+    )
 
 
 class ContentInputs(StrictInputModel):

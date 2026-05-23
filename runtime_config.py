@@ -33,6 +33,7 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_result_cache_enabled",
     "workflow_result_cache_ttl_seconds",
     "content_language_concurrency",
+    "marketing_market_concurrency",
 }
 
 
@@ -67,6 +68,7 @@ class RuntimeConfig:
     workflow_result_cache_enabled: bool = True
     workflow_result_cache_ttl_seconds: int = 3600
     content_language_concurrency: int = 4
+    marketing_market_concurrency: int = 4
 
     def as_context(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,6 +112,7 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_result_cache_enabled=_bool_env("WORKFLOW_RESULT_CACHE_ENABLED", True),
         workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
         content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
+        marketing_market_concurrency=_int_env("MARKETING_MARKET_CONCURRENCY", 4),
     )
 
 

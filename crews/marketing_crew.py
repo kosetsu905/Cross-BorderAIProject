@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import yaml
@@ -6,23 +7,18 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from tools.custom.marketing_tools import (
-    ComplianceCheckerTool,
-    KeywordResearchTool,
-    PlatformAdSpecsTool,
-)
+from tools.custom.marketing_tools import ComplianceCheckerTool, KeywordResearchTool, PlatformAdSpecsTool
 from tools.integrations.cross_platform_ads_tools import (
     GoogleAdsKeywordTool,
     MetaAdsTool,
     TikTokAdsTool,
 )
 from utils.crew_result import serialize_crew_result
-from utils.workflow_progress import attach_task_progress
+from utils.usage_tracking import INTERNAL_USAGE_KEY
+from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "marketing"
-
-
 class CampaignAdVariant(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +64,21 @@ class FinalCampaignOutput(BaseModel):
     )
     launch_checklist: list[str] = Field(
         ..., description="Step-by-step pre-launch checklist"
+    )
+
+
+class PerMarketCampaignOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_summary: str = Field(..., description="Market-specific campaign summary")
+    ad_variants: list[CampaignAdVariant] = Field(
+        ..., description="Platform-specific ad copy variants for this market"
+    )
+    compliance_status: list[ComplianceStatus] = Field(
+        ..., description="Approval status and notes for this market"
+    )
+    launch_checklist: list[str] = Field(
+        ..., description="Market-specific launch checklist"
     )
 
 
@@ -179,64 +190,364 @@ def _platform_provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
 def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
     normalized.update(_platform_provider_status(config_context))
+    return _apply_marketing_quality_checks(normalized)
+
+
+def _apply_marketing_quality_checks(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    variants = normalized.get("ad_variants") or []
+    compliance_items = normalized.get("compliance_status") or []
+    compliance_by_key = {
+        (
+            str(item.get("region", "")).strip().casefold(),
+            str(item.get("platform", "")).strip().casefold(),
+        ): item
+        for item in compliance_items
+        if isinstance(item, dict)
+    }
+
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        key = (
+            str(variant.get("region", "")).strip().casefold(),
+            str(variant.get("platform", "")).strip().casefold(),
+        )
+        compliance = compliance_by_key.get(key)
+        if compliance is None:
+            compliance = {
+                "region": variant.get("region", ""),
+                "platform": variant.get("platform", ""),
+                "approved": True,
+                "notes": "",
+            }
+            compliance_items.append(compliance)
+            compliance_by_key[key] = compliance
+
+        variant_text = " ".join(
+            str(variant.get(field, ""))
+            for field in ("headline", "body_text", "cta")
+        )
+        notes = str(compliance.get("notes") or "").strip()
+        if not notes:
+            notes = (
+                "No obvious restricted claim detected in this draft; validate local law, platform policy, "
+                "privacy wording, and substantiation before launch."
+            )
+        compliance["notes"] = notes
+
+    normalized["compliance_status"] = compliance_items
     return normalized
+
+
+def _append_note(existing: str, note: str) -> str:
+    if not existing:
+        return note
+    if note in existing:
+        return existing
+    return f"{existing} {note}"
 
 
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return serialize_crew_result(result)
 
 
-def run_marketing_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Callable wrapper for FastAPI orchestration."""
-    config_context = config_context or {}
+def _split_csv(value: Any) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
-    agents_config = _load_yaml_config("agents.yaml")
-    tasks_config = _load_yaml_config("tasks.yaml")
 
-    strategist = Agent(
-        config=agents_config["campaign_strategist"],
-        tools=_build_research_tools(config_context),
-    )
-    copywriter = Agent(
-        config=agents_config["ad_copywriter"],
-        tools=[KeywordResearchTool(), _google_ads_tool(config_context)],
-    )
-    optimizer = Agent(
-        config=agents_config["channel_optimizer"],
-        tools=[PlatformAdSpecsTool(), _meta_ads_tool(config_context), _tiktok_ads_tool(config_context)],
-    )
-    qa_agent = Agent(
-        config=agents_config["compliance_qa_specialist"],
-        tools=[ComplianceCheckerTool(), _meta_ads_tool(config_context), _tiktok_ads_tool(config_context)],
-        allow_delegation=True,
+def _language_plan(inputs: dict[str, Any]) -> str:
+    markets = _split_csv(inputs.get("target_markets"))
+    languages = [
+        str(language).strip()
+        for language in inputs.get("target_languages", []) or []
+        if str(language).strip()
+    ]
+
+    if languages and len(languages) == len(markets):
+        pairs = [
+            f"{market}: use {language}"
+            for market, language in zip(markets, languages, strict=False)
+        ]
+        return "; ".join(pairs)
+
+    if languages:
+        return (
+            f"Use these requested target languages where appropriate: {', '.join(languages)}. "
+            "Map them to the target markets in order when possible; otherwise use the primary local language."
+        )
+
+    return (
+        "No explicit target_languages were provided. For each target market, write ad copy in "
+        "the primary local language normally used by consumers in that market. For example, Korea should "
+        "use Korean, Russia should use Russian, China should use Simplified Chinese, Japan should use Japanese, "
+        "Germany should use German, and English-speaking markets should use local English."
     )
 
-    research_task = Task(config=tasks_config["market_research"], agent=strategist)
+
+def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(inputs)
+    normalized["language_plan"] = _language_plan(normalized)
+    return normalized
+
+
+def _marketing_market_concurrency(config_context: dict[str, Any]) -> int:
+    try:
+        value = int(config_context.get("marketing_market_concurrency") or 4)
+    except (TypeError, ValueError):
+        value = 4
+    return max(1, min(value, 16))
+
+
+def _progress_recorder(config_context: dict[str, Any]) -> Any | None:
+    recorder = config_context.get(PROGRESS_CONTEXT_KEY)
+    if all(hasattr(recorder, name) for name in ("emit_plan", "task_started", "task_completed")):
+        return recorder
+    return None
+
+
+def _strategy_context_text(strategy_context: dict[str, Any]) -> str:
+    clean_context = {
+        key: value
+        for key, value in strategy_context.items()
+        if key != INTERNAL_USAGE_KEY
+    }
+    return yaml.safe_dump(clean_context, allow_unicode=True, sort_keys=False)
+
+
+def _language_for_market(inputs: dict[str, Any], market_index: int) -> str:
+    languages = [
+        str(language).strip()
+        for language in inputs.get("target_languages", []) or []
+        if str(language).strip()
+    ]
+    markets = _split_csv(inputs.get("target_markets"))
+    if len(languages) == len(markets):
+        return languages[market_index]
+    return ""
+
+
+def _language_plan_for_market(inputs: dict[str, Any], market: str, market_index: int) -> str:
+    language = _language_for_market(inputs, market_index)
+    if language:
+        return f"{market}: use {language}"
+    return (
+        f"{market}: use the primary local language normally used by consumers in this market. "
+        "If the market name is ambiguous, note the ambiguity in assumptions."
+    )
+
+
+def _product_category_for_market(inputs: dict[str, Any], market: str) -> str:
+    product_category = str(inputs.get("product_category", "")).strip()
+    return (
+        f"{product_category}. Treat this as a descriptive source-language product category; "
+        f"translate or localize it for {market} instead of copying the source phrase verbatim."
+    )
+
+
+def _run_strategy_channel_plan(
+    inputs: dict[str, Any],
+    agents_config: dict[str, Any],
+    tasks_config: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    strategy_channel_planner = Agent(
+        config=agents_config["strategy_channel_planner"],
+        tools=[
+            *_build_research_tools(config_context),
+            KeywordResearchTool(),
+            PlatformAdSpecsTool(),
+            _meta_ads_tool(config_context),
+            _tiktok_ads_tool(config_context),
+        ],
+    )
     strategy_task = Task(
-        config=tasks_config["campaign_strategy"],
-        agent=strategist,
-        context=[research_task],
+        config=tasks_config["strategy_channel_planning"],
+        agent=strategy_channel_planner,
     )
-    copy_task = Task(
-        config=tasks_config["ad_copy_generation"],
-        agent=copywriter,
-        context=[strategy_task],
-    )
-    qa_task = Task(
-        config=tasks_config["compliance_qa_review"],
-        agent=qa_agent,
-        context=[copy_task, strategy_task],
-        output_pydantic=FinalCampaignOutput,
-    )
-    tasks = [research_task, strategy_task, copy_task, qa_task]
-    attach_task_progress(config_context, "marketing", tasks, list(tasks_config.keys()))
-
     marketing_crew = Crew(
-        agents=[strategist, copywriter, optimizer, qa_agent],
-        tasks=tasks,
+        agents=[strategy_channel_planner],
+        tasks=[strategy_task],
         verbose=False,
         memory=_memory_enabled(config_context),
     )
+    return _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
 
-    result = _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
+
+def _run_market_creative_package(
+    market: str,
+    market_index: int,
+    inputs: dict[str, Any],
+    strategy_context: dict[str, Any],
+    agents_config: dict[str, Any],
+    tasks_config: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    creative_compliance_specialist = Agent(
+        config=agents_config["creative_compliance_specialist"],
+        tools=[
+            KeywordResearchTool(),
+            _google_ads_tool(config_context),
+            ComplianceCheckerTool(),
+            _meta_ads_tool(config_context),
+            _tiktok_ads_tool(config_context),
+        ],
+        allow_delegation=True,
+    )
+    creative_compliance_task = Task(
+        config=tasks_config["creative_compliance_package"],
+        agent=creative_compliance_specialist,
+        output_pydantic=PerMarketCampaignOutput,
+    )
+    marketing_crew = Crew(
+        agents=[creative_compliance_specialist],
+        tasks=[creative_compliance_task],
+        verbose=False,
+        memory=_memory_enabled(config_context),
+    )
+    market_inputs = {
+        **inputs,
+        "source_product_category": inputs.get("product_category", ""),
+        "product_category": _product_category_for_market(inputs, market),
+        "target_market": market,
+        "target_markets": market,
+        "target_languages": [_language_for_market(inputs, market_index)] if _language_for_market(inputs, market_index) else [],
+        "language_plan": _language_plan_for_market(inputs, market, market_index),
+        "strategy_context": _strategy_context_text(strategy_context),
+    }
+    return _serialize_crew_result(marketing_crew.kickoff(inputs=market_inputs))
+
+
+def _merge_market_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+    strategy_summaries: list[str] = []
+    ad_variants: list[dict[str, Any]] = []
+    compliance_status: list[dict[str, Any]] = []
+    launch_checklist: list[str] = []
+
+    for output in outputs:
+        summary = str(output.get("strategy_summary", "")).strip()
+        if summary:
+            strategy_summaries.append(summary)
+        ad_variants.extend(output.get("ad_variants") or [])
+        compliance_status.extend(output.get("compliance_status") or [])
+        for item in output.get("launch_checklist") or []:
+            if item not in launch_checklist:
+                launch_checklist.append(item)
+
+    return {
+        "strategy_summary": " ".join(strategy_summaries),
+        "ad_variants": ad_variants,
+        "compliance_status": compliance_status,
+        "launch_checklist": launch_checklist,
+    }
+
+
+def _merge_usage_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for result in results:
+        usage = result.get(INTERNAL_USAGE_KEY)
+        if not isinstance(usage, dict):
+            continue
+        for key, value in usage.items():
+            try:
+                numeric_value = int(value)
+            except (TypeError, ValueError):
+                continue
+            merged[key] = int(merged.get(key, 0)) + numeric_value
+    return merged
+
+
+def run_marketing_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Callable wrapper for FastAPI orchestration."""
+    config_context = config_context or {}
+    normalized_inputs = _normalize_inputs(inputs)
+
+    agents_config = _load_yaml_config("agents.yaml")
+    tasks_config = _load_yaml_config("tasks.yaml")
+    markets = _split_csv(normalized_inputs.get("target_markets"))
+    if not markets:
+        raise ValueError("Marketing workflow requires at least one target market.")
+
+    recorder = _progress_recorder(config_context)
+    task_names = ["strategy_channel_planning", *[f"creative_compliance_package:{market}" for market in markets]]
+    if recorder:
+        recorder.emit_plan(task_names)
+        recorder.task_started(
+            0,
+            len(task_names),
+            "strategy_channel_planning",
+            agents_config["strategy_channel_planner"]["role"],
+        )
+
+    strategy_context = _run_strategy_channel_plan(
+        normalized_inputs,
+        agents_config,
+        tasks_config,
+        config_context,
+    )
+    if recorder:
+        recorder.task_completed(
+            0,
+            len(task_names),
+            "strategy_channel_planning",
+            agents_config["strategy_channel_planner"]["role"],
+        )
+
+    outputs_by_market: dict[str, dict[str, Any]] = {}
+    max_workers = min(_marketing_market_concurrency(config_context), len(markets))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_market = {}
+        completed_market_count = 0
+        creative_role = agents_config["creative_compliance_specialist"]["role"]
+        current_progress = PROGRESS_START + (PROGRESS_SPAN / len(task_names))
+        for index, market in enumerate(markets, start=1):
+            if recorder:
+                recorder.emit_progress(
+                    "task_started",
+                    f"Task {index + 1}/{len(task_names)} started: creative_compliance_package:{market}",
+                    current_progress,
+                    {
+                        "task_index": index + 1,
+                        "total_tasks": len(task_names),
+                        "task_name": f"creative_compliance_package:{market}",
+                        "agent_role": creative_role,
+                    },
+                )
+            future = executor.submit(
+                _run_market_creative_package,
+                market,
+                index - 1,
+                normalized_inputs,
+                strategy_context,
+                agents_config,
+                tasks_config,
+                dict(config_context),
+            )
+            future_to_market[future] = (index, market)
+
+        for future in as_completed(future_to_market):
+            index, market = future_to_market[future]
+            outputs_by_market[market] = future.result()
+            completed_market_count += 1
+            if recorder:
+                progress = PROGRESS_START + (
+                    PROGRESS_SPAN * (1 + completed_market_count) / len(task_names)
+                )
+                recorder.emit_progress(
+                    "task_completed",
+                    f"Task {index + 1}/{len(task_names)} completed: creative_compliance_package:{market}",
+                    progress,
+                    {
+                        "task_index": index + 1,
+                        "total_tasks": len(task_names),
+                        "task_name": f"creative_compliance_package:{market}",
+                        "agent_role": creative_role,
+                    },
+                )
+
+    market_outputs = [outputs_by_market[market] for market in markets]
+    result = _merge_market_outputs(market_outputs)
+    usage_metrics = _merge_usage_metrics([strategy_context, *market_outputs])
+    if usage_metrics:
+        result[INTERNAL_USAGE_KEY] = usage_metrics
     return _apply_provider_status(result, config_context)

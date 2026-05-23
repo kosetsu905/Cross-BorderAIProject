@@ -1,29 +1,37 @@
-market_research:
+strategy_channel_planning:
   description: >
-    Conduct comprehensive research on the target product category ({product_category}) for the specified markets ({target_markets}).
-    Analyze competitor campaigns, identify trending keywords, audience pain points, and seasonal demand patterns.
-    Provide actionable insights for campaign positioning and messaging.
-  expected_output: "A structured market research report containing competitor analysis, keyword opportunities, audience insights, and regional demand trends."
+    Research the target product category ({product_category}) for {target_markets}, including competitor
+    positioning, keyword opportunities, audience pain points, seasonal demand, and channel fit. Build a
+    cross-border campaign strategy for a budget of {budget}, including channel mix across Meta, Google,
+    TikTok, and Amazon-style ads, budget allocation, bidding approach, KPI targets, launch timing,
+    audience segments, platform-format considerations, and language localization plan: {language_plan}.
+    Treat {product_category} as a descriptive product category, not as a brand name. In all market-specific
+    strategy text, translate or localize the product category into the target market's language instead of
+    copying the source-language phrase verbatim.
+    If platform tools return development fallback
+    data, treat CPC estimates, audience estimates, keyword ideas, and benchmark suggestions as illustrative.
+  expected_output: "A concise campaign and channel plan with market insights, keyword themes, budget split, channel priorities, KPI targets, audience segments, timing, platform caveats, and launch guidance."
 
-campaign_strategy:
+creative_compliance_package:
   description: >
-    Using the market research, develop a cross-border campaign strategy for {target_markets} with a budget of {budget}.
-    Define channel mix (Meta, Google, TikTok, Amazon Ads), budget allocation, bidding strategy, KPI targets, and launch timeline.
-  expected_output: "A detailed campaign strategy document outlining channel allocation, budget split, KPIs, timeline, and regional launch priorities."
-
-ad_copy_generation:
-  description: >
-    Generate platform-specific ad copy including headlines, primary text, descriptions, and CTAs for {target_markets}
-    based on the campaign strategy. Adapt tone and language for each region. Include three variants per platform/channel.
-    Ensure alignment with brand voice and product USP ({product_usp}).
-  expected_output: "A structured ad copy package with three variants per platform, localized for each target market, ready for A/B testing."
-
-compliance_qa_review:
-  description: >
-    Review the generated ad copy and campaign strategy for compliance with regional advertising laws such as GDPR and CCPA,
-    local e-commerce regulations, platform policies, and brand guidelines. Flag policy risks, suggest corrections, and provide
-    final approval status per market.
-    If Google Ads, Meta, or TikTok tools return development fallback data, explicitly mark data_source as development_fallback
-    or mixed, set confidence_level to Low or Illustrative, and add assumptions explaining which platform credentials were
-    missing and which benchmarks, audience estimates, or compliance checks are sample values.
-  expected_output: "A compliance audit report with approval status, flagged issues, recommended edits, platform data-source caveats, and a final ready-to-launch campaign package."
+    Using this campaign and channel plan: {strategy_context}
+    Generate platform-specific ad variants for the single target market {target_market}
+    aligned with product USP ({product_usp}). Ensure every target market in {target_markets} receives
+    at least one localized ad variant across the final merged campaign. For this task, focus only on
+    {target_market} and include broad platform coverage across Meta, Google, TikTok, and Amazon-style ads
+    where practical. Each variant must include platform, region, headline, body_text,
+    and CTA. Localize ad copy according to
+    this language plan: {language_plan}. The headline, body_text, and CTA for each region must be written
+    in that region's target language, not default English, except for unavoidable brand names, product
+    names, URLs, or standard platform terms. Treat {product_category} as a descriptive category, not a
+    brand name; translate or localize it for {target_market} and do not copy a source-language category
+    phrase verbatim into another market's ad copy. Then review the creative package
+    for regional advertising risk, privacy-sensitive claims, platform-policy fit, brand voice, and launch
+    readiness. Compliance status must cover each platform-region combination represented in the ad variants;
+    compliance notes must never be empty, even when approved. Do not summarize all markets as simply
+    "all compliant". Avoid unverified superlative or absolute claims such as best, top selling, ultimate,
+    zero worries, guaranteed, safest, maximum security, or equivalent localized wording unless explicitly
+    supported by verified provider data. If Google Ads, Meta, or TikTok tools return
+    development fallback data, explicitly mark the caveats in assumptions and avoid claiming live platform
+    approval.
+  expected_output: "A final ready-to-review campaign package with strategy_summary, ad_variants, compliance_status, launch_checklist, data_source, confidence_level, and assumptions."
