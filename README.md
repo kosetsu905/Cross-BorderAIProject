@@ -179,6 +179,12 @@ HOLIDAY_API_KEY=optional_holiday_provider_key
 # Support RAG knowledge base. Defaults to docs/knowledge_base.
 SUPPORT_KNOWLEDGE_DIR=docs/knowledge_base
 
+# Gmail delivery for Support replies. GMAIL_SEND_ENABLED defaults to false.
+# Access tokens must include the https://www.googleapis.com/auth/gmail.send scope.
+GMAIL_ACCESS_TOKEN=optional_gmail_oauth_access_token
+GMAIL_SENDER_EMAIL=support@example.com
+GMAIL_SEND_ENABLED=false
+
 # Marketing ad platform integrations. Without these, Marketing uses development fallback platform data.
 GOOGLE_ADS_DEVELOPER_TOKEN=optional_google_ads_developer_token
 GOOGLE_ADS_ACCESS_TOKEN=optional_google_ads_access_token
@@ -215,6 +221,9 @@ Example shape:
     "amazon_sp_api_endpoint": "https://sellingpartnerapi-na.amazon.com",
     "amazon_sp_api_access_token": "request_scoped_amazon_access_token",
     "amazon_marketplace_ids": "ATVPDKIKX0DER",
+    "gmail_access_token": "request_scoped_gmail_access_token",
+    "gmail_sender_email": "support@example.com",
+    "gmail_send_enabled": true,
     "meta_access_token": "request_scoped_meta_token",
     "meta_ad_account_id": "request_scoped_meta_account_id",
     "tiktok_access_token": "request_scoped_tiktok_token",
@@ -225,12 +234,14 @@ Example shape:
 
 For a production SaaS implementation, prefer passing a `tenant_id` and loading encrypted provider credentials from a secrets vault. Passing credentials directly in the API request is useful for local development and integration testing, but the Celery broker still receives the task payload.
 
+Support can optionally send the final `drafted_response` through Gmail after the workflow completes. This implementation uses a short-lived Gmail OAuth access token only; it does not store refresh tokens or provide an OAuth consent flow. Gmail delivery is skipped for escalated support tickets.
+
 ## No-Token Checks
 
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\integrations\cross_platform_ads_tools.py
+python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```

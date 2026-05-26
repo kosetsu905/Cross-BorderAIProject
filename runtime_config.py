@@ -23,6 +23,9 @@ RUNTIME_CONFIG_KEYS = {
     "google_ads_developer_token",
     "google_ads_access_token",
     "google_ads_customer_id",
+    "gmail_access_token",
+    "gmail_sender_email",
+    "gmail_send_enabled",
     "meta_access_token",
     "meta_ad_account_id",
     "meta_page_id",
@@ -63,6 +66,9 @@ class RuntimeConfig:
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
     google_ads_customer_id: str | None = None
+    gmail_access_token: str | None = None
+    gmail_sender_email: str | None = None
+    gmail_send_enabled: bool = False
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None
@@ -112,6 +118,9 @@ def load_runtime_config() -> RuntimeConfig:
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
         google_ads_access_token=os.getenv("GOOGLE_ADS_ACCESS_TOKEN"),
         google_ads_customer_id=os.getenv("GOOGLE_ADS_CUSTOMER_ID"),
+        gmail_access_token=os.getenv("GMAIL_ACCESS_TOKEN"),
+        gmail_sender_email=os.getenv("GMAIL_SENDER_EMAIL"),
+        gmail_send_enabled=_bool_env("GMAIL_SEND_ENABLED", False),
         meta_access_token=os.getenv("META_ACCESS_TOKEN"),
         meta_ad_account_id=os.getenv("META_AD_ACCOUNT_ID"),
         meta_page_id=os.getenv("META_PAGE_ID"),

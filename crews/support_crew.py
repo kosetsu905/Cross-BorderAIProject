@@ -6,6 +6,7 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
+from tools.custom.gmail_tools import send_gmail_message
 from tools.custom.support_automation_tools import (
     LogisticsIntegrationOutput,
     RMAAutomationTool,
@@ -21,6 +22,15 @@ from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
+
+
+class EmailDeliveryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., description="Gmail delivery status")
+    recipient: str | None = Field(..., description="Recipient email address")
+    message_id: str | None = Field(..., description="Gmail message id when sent")
+    error: str | None = Field(..., description="Delivery error when sending fails")
 
 
 class SupportTicketOutput(BaseModel):
@@ -51,6 +61,9 @@ class SupportTicketOutput(BaseModel):
     compliance_tags: list[str] = Field(..., description="Compliance and workflow handling tags")
     recommended_follow_up: str = Field(
         ..., description="Suggested next steps or follow-up timing"
+    )
+    email_delivery: EmailDeliveryResult | None = Field(
+        ..., description="Gmail delivery result, or null before post-processing"
     )
 
 
@@ -150,6 +163,55 @@ def _attach_automation_context(result: dict[str, Any], context: dict[str, Any], 
     return normalized
 
 
+def _bool_config(config_context: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = config_context.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _email_delivery_status(
+    result: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    recipient = result.get("customer_email")
+    if result.get("escalation_flag"):
+        return {
+            "status": "skipped_escalation",
+            "recipient": recipient,
+            "message_id": None,
+            "error": None,
+        }
+
+    if not _bool_config(config_context, "gmail_send_enabled"):
+        return {
+            "status": "disabled",
+            "recipient": recipient,
+            "message_id": None,
+            "error": None,
+        }
+
+    access_token = config_context.get("gmail_access_token")
+    sender = config_context.get("gmail_sender_email")
+    if not access_token or not sender or not recipient:
+        return {
+            "status": "missing_credentials",
+            "recipient": recipient,
+            "message_id": None,
+            "error": "Gmail access token, sender email, and customer email are required.",
+        }
+
+    return send_gmail_message(
+        access_token=str(access_token),
+        sender=str(sender),
+        recipient=str(recipient),
+        subject=f"Re: Support ticket {result.get('ticket_id') or 'TKT-PENDING'}",
+        body=str(result.get("drafted_response") or ""),
+    )
+
+
 def _memory_enabled(config_context: dict[str, Any]) -> bool:
     return bool(config_context.get("crewai_memory_enabled"))
 
@@ -217,4 +279,6 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     )
 
     result = _serialize_crew_result(support_crew.kickoff(inputs=crew_inputs))
-    return _attach_automation_context(result, automation_context, normalized_inputs)
+    result = _attach_automation_context(result, automation_context, normalized_inputs)
+    result["email_delivery"] = _email_delivery_status(result, config_context)
+    return result

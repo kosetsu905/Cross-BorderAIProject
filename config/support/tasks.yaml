@@ -49,7 +49,8 @@ quality_assurance_review:
     escalation_flag={escalation_flag}
     compliance_tags={compliance_tags}
     If escalation_flag is true, internal_notes must clearly state that human handoff is required.
+    Set email_delivery to null; Gmail delivery is handled after this QA task completes.
   expected_output: >
     A SupportTicketOutput object with ticket_id, customer_email, phone_number, ticket_summary, sentiment_analysis,
     rma_validation, logistics_output, escalation_flag, resolution_steps, drafted_response,
-    internal_notes, qa_notes, compliance_tags, and recommended_follow_up.
+    internal_notes, qa_notes, compliance_tags, recommended_follow_up, and email_delivery.

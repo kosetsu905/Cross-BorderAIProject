@@ -112,6 +112,9 @@ class ProviderCredentials(StrictInputModel):
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
     google_ads_customer_id: str | None = None
+    gmail_access_token: str | None = None
+    gmail_sender_email: str | None = None
+    gmail_send_enabled: bool | None = None
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None

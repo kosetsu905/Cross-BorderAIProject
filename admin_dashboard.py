@@ -83,6 +83,13 @@ PROGRESS_BY_EVENT = {
 }
 
 ACTIVE_STATUSES = {"pending", "running"}
+WORKFLOW_PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
+    "support": {
+        "gmail_access_token": "",
+        "gmail_sender_email": "",
+        "gmail_send_enabled": False,
+    }
+}
 ITEM_CONDITIONS = ["", "unopened", "damaged", "defective", "opened", "used"]
 SUPPORT_REGIONS = ["", "US", "EU", "JP", "DE", "FR", "AU"]
 SUPPORT_FORM_KEYS = [
@@ -435,6 +442,10 @@ def _render_support_result_summary(latest_job: dict[str, Any]) -> None:
     if support_result.get("drafted_response"):
         st.markdown("**Drafted Response**")
         st.write(support_result["drafted_response"])
+    email_delivery = support_result.get("email_delivery")
+    if email_delivery:
+        st.markdown("**Gmail Delivery**")
+        st.json(email_delivery)
 
 
 def main() -> None:
@@ -462,6 +473,9 @@ def main() -> None:
     ):
         st.session_state.workflow_type = workflow_type
         st.session_state.inputs_json = _format_json(selected_example)
+        st.session_state.provider_credentials_json = _format_json(
+            WORKFLOW_PROVIDER_EXAMPLES.get(workflow_type, {})
+        )
 
     col_inputs, col_status = st.columns([1, 1])
 
@@ -473,7 +487,7 @@ def main() -> None:
         inputs_json = st.text_area("Inputs JSON", key="inputs_json", height=300)
         provider_credentials_json = st.text_area(
             "Provider credentials JSON",
-            value="{}",
+            key="provider_credentials_json",
             height=120,
             help="Optional request-scoped provider credentials. Leave empty JSON for normal .env behavior.",
         )
