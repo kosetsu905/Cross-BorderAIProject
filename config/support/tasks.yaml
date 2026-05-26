@@ -1,16 +1,55 @@
+triage_and_routing:
+  description: >
+    Analyze the support ticket {ticket_id} from {customer_email}. Phone number, if provided: {phone_number}.
+    Inquiry text: {inquiry_text}
+    Use this precomputed automation context as the source of truth:
+    sentiment_analysis={sentiment_analysis}
+    escalation_flag={escalation_flag}
+    compliance_tags={compliance_tags}
+    Confirm the customer sentiment, intent category, customer tier, urgency level,
+    detected language, and whether human handoff is required. If the customer tier is
+    VIP or PREMIUM and sentiment_score is below -0.6, keep the handoff requirement.
+  expected_output: "A concise triage summary with sentiment, intent, tier, language, urgency, and handoff decision."
+
 inquiry_resolution:
   description: >
-    {customer} just reached out with an important inquiry: {inquiry}.
-    {person} from {customer} is the contact. Research and provide a complete, accurate response.
+    {customer} just reached out with an important inquiry: {inquiry_text}.
+    {person} from {customer} is the contact. Customer phone number, if provided: {phone_number}.
+    Research and provide a complete, accurate response.
     First search the internal Support Knowledge Base for policies, shipping timelines, return procedures,
     compensation guidance, escalation rules, or product specs. Use web/search tools only when the internal
     knowledge base does not contain enough information.
+    Use the precomputed automation context:
+    sentiment_analysis={sentiment_analysis}
+    rma_validation={rma_validation}
+    logistics_output={logistics_output}
+    escalation_flag={escalation_flag}
+    language_detected={language_detected}
+    If intent is RMA_REQUEST, prioritize the RMA validation result. If eligible and logistics_output exists,
+    include the simulated label URL, tracking number, warehouse notice, and localized return instructions.
+    If not eligible, explain the policy reason and offer reasonable alternatives. If escalation_flag is true,
+    draft an empathetic response and note that a human support lead should take over.
+    If a phone number is provided, record it as an internal contact channel. Do not repeat the full phone
+    number in the customer-facing response unless it is necessary for the next step.
     Ensure no assumptions are made and cite sources where applicable.
   expected_output: "A detailed, well-researched draft response addressing all parts of the inquiry, with clear resolution steps and referenced sources."
 
 quality_assurance_review:
   description: >
-    Review the drafted response for {customer}'s inquiry. Ensure it is comprehensive, accurate,
+    Review the complete support resolution for ticket {ticket_id}. Ensure it is comprehensive, accurate,
     culturally appropriate, and aligned with brand voice. Check that all questions are answered,
     tone is professional and friendly, and no unsupported claims are made.
-  expected_output: "A final, polished response ready for delivery, including QA notes, compliance checks, and recommended follow-up timing."
+    The final output must preserve these provided fields exactly unless you add more explanatory detail:
+    ticket_id={ticket_id}
+    customer_email={customer_email}
+    phone_number={phone_number}
+    sentiment_analysis={sentiment_analysis}
+    rma_validation={rma_validation}
+    logistics_output={logistics_output}
+    escalation_flag={escalation_flag}
+    compliance_tags={compliance_tags}
+    If escalation_flag is true, internal_notes must clearly state that human handoff is required.
+  expected_output: >
+    A SupportTicketOutput object with ticket_id, customer_email, phone_number, ticket_summary, sentiment_analysis,
+    rma_validation, logistics_output, escalation_flag, resolution_steps, drafted_response,
+    internal_notes, qa_notes, compliance_tags, and recommended_follow_up.

@@ -59,6 +59,15 @@ class SupportInputs(StrictInputModel):
     customer: str = Field(..., min_length=1)
     person: str = Field(..., min_length=1)
     inquiry: str = Field(..., min_length=1)
+    ticket_id: str | None = None
+    customer_email: str | None = None
+    phone_number: str | None = None
+    inquiry_text: str | None = None
+    order_id: str | None = None
+    item_sku: str | None = None
+    return_reason: str | None = None
+    order_history: dict[str, Any] | None = None
+    detected_language: str | None = None
 
 
 class AnalyticsInputs(StrictInputModel):

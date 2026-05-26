@@ -230,7 +230,7 @@ For a production SaaS implementation, prefer passing a `tenant_id` and loading e
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\integrations\cross_platform_ads_tools.py
+python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -244,7 +244,7 @@ Required `inputs` by workflow:
 ```text
 marketing: product_category, product_usp, target_markets, budget
 content: subject, product_category, target_markets, target_languages, platforms
-support: customer, person, inquiry
+support: customer, person, inquiry (optional: ticket_id, customer_email, phone_number, inquiry_text, order_id, item_sku, return_reason, order_history, detected_language)
 analytics: product_category, target_markets, date_range, currency
 bizdev: product_category, partnership_type, target_markets, target_languages, key_decision_maker_roles
 scheduler: event_type, target_markets, event_list, preferred_launch_window
@@ -545,6 +545,7 @@ Invoke-RestMethod `
 ## Run Customer Support
 
 This request starts the Customer Support CrewAI workflow and may consume OpenAI API tokens.
+The workflow remains backward compatible with the original `customer`, `person`, and `inquiry` fields.
 
 ```powershell
 $body = @{
@@ -555,6 +556,41 @@ $body = @{
     inquiry = "Our bulk order #EU-8842 is delayed. We need it by Friday for a product launch. What are the expedited shipping options and compensation policy?"
   }
 } | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/workflow" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
+  -Body $body
+```
+
+Customer Service 1.1 also accepts optional ticket, customer, order, and return context. These fields enable
+local sentiment/intent triage, VIP handoff detection, RMA policy validation, simulated return-label generation,
+and WMS inbound notification context before the CrewAI agents draft and QA the final response.
+
+```powershell
+$body = @{
+  workflow_type = "support"
+  inputs = @{
+    customer = "GlobalTech Solutions"
+    person = "Tanaka Sora"
+    inquiry = "The camera arrived damaged and this is unacceptable. I need a refund immediately."
+    ticket_id = "TKT-JP-VIP-001"
+    customer_email = "tanaka@enterprise.com"
+    phone_number = "+81-3-1234-5678"
+    order_id = "JP-2026-8842"
+    item_sku = "CAM-4K-PRO"
+    return_reason = "Item arrived damaged"
+    order_history = @{
+      lifetime_value = 8500
+      order_count = 12
+      days_since_delivery = 10
+      item_condition = "damaged"
+      region = "JP"
+    }
+  }
+} | ConvertTo-Json -Depth 6
 
 Invoke-RestMethod `
   -Uri "http://localhost:8000/api/v1/workflow" `

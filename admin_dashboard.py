@@ -30,12 +30,9 @@ WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
         "platforms": ["Instagram", "LinkedIn", "X"],
     },
     "support": {
-        "customer": "GlobalTech Solutions",
-        "person": "Maria Chen",
-        "inquiry": (
-            "Our bulk order #EU-8842 is delayed. We need it by Friday for a product launch. "
-            "What are the expedited shipping options and compensation policy?"
-        ),
+        "customer": "",
+        "person": "",
+        "inquiry": "",
     },
     "analytics": {
         "product_category": "Smart Home Security Cameras",
@@ -86,6 +83,25 @@ PROGRESS_BY_EVENT = {
 }
 
 ACTIVE_STATUSES = {"pending", "running"}
+ITEM_CONDITIONS = ["", "unopened", "damaged", "defective", "opened", "used"]
+SUPPORT_REGIONS = ["", "US", "EU", "JP", "DE", "FR", "AU"]
+SUPPORT_FORM_KEYS = [
+    "support_customer",
+    "support_person",
+    "support_inquiry",
+    "support_ticket_id",
+    "support_customer_email",
+    "support_phone_number",
+    "support_order_id",
+    "support_item_sku",
+    "support_detected_language",
+    "support_return_reason",
+    "support_lifetime_value",
+    "support_order_count",
+    "support_days_since_delivery",
+    "support_item_condition",
+    "support_region",
+]
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -123,6 +139,197 @@ def _request_json(
 
 def _format_json(value: dict[str, Any]) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False)
+
+
+def _parse_inputs_json(raw_json: str, fallback: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return dict(fallback)
+    return parsed if isinstance(parsed, dict) else dict(fallback)
+
+
+def _support_value(inputs: dict[str, Any], key: str, default: Any = "") -> Any:
+    value = inputs.get(key)
+    return default if value is None else value
+
+
+def _select_index(options: list[str], value: Any) -> int:
+    normalized = str(value or "")
+    return options.index(normalized) if normalized in options else 0
+
+
+def _reset_support_form() -> None:
+    for key in SUPPORT_FORM_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.inputs_json = _format_json(WORKFLOW_EXAMPLES["support"])
+
+
+def _clean_optional_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in fields.items()
+        if value is not None and str(value).strip()
+    }
+
+
+def _render_support_builder(selected_example: dict[str, Any]) -> None:
+    current_inputs = _parse_inputs_json(st.session_state.get("inputs_json", "{}"), selected_example)
+    order_history = current_inputs.get("order_history")
+    if not isinstance(order_history, dict):
+        order_history = {}
+
+    reset_col, apply_col = st.columns([1, 2])
+    if reset_col.button("Clear support form", width="stretch"):
+        _reset_support_form()
+        st.rerun()
+
+    st.caption("Customer")
+    basic_cols = st.columns(2)
+    customer = basic_cols[0].text_input(
+        "Customer",
+        value=str(_support_value(current_inputs, "customer", selected_example["customer"])),
+        key="support_customer",
+    )
+    person = basic_cols[1].text_input(
+        "Contact person",
+        value=str(_support_value(current_inputs, "person", selected_example["person"])),
+        key="support_person",
+    )
+    inquiry = st.text_area(
+        "Inquiry",
+        value=str(_support_value(current_inputs, "inquiry", selected_example["inquiry"])),
+        height=110,
+        key="support_inquiry",
+    )
+
+    contact_cols = st.columns(2)
+    customer_email = contact_cols[0].text_input(
+        "Customer email",
+        value=str(_support_value(current_inputs, "customer_email", "")),
+        key="support_customer_email",
+    )
+    phone_number = contact_cols[1].text_input(
+        "Phone number",
+        value=str(_support_value(current_inputs, "phone_number", "")),
+        key="support_phone_number",
+    )
+
+    st.caption("Ticket")
+    ticket_cols = st.columns(2)
+    ticket_id = ticket_cols[0].text_input(
+        "Ticket ID",
+        value=str(_support_value(current_inputs, "ticket_id", "")),
+        key="support_ticket_id",
+    )
+    detected_language = ticket_cols[1].text_input(
+        "Detected language override",
+        value=str(_support_value(current_inputs, "detected_language", "")),
+        help="Optional ISO language code such as en, ja, zh, es, de, or fr.",
+        key="support_detected_language",
+    )
+
+    st.caption("Order")
+    order_cols = st.columns(2)
+    order_id = order_cols[0].text_input(
+        "Order ID",
+        value=str(_support_value(current_inputs, "order_id", "")),
+        key="support_order_id",
+    )
+    item_sku = order_cols[1].text_input(
+        "Item SKU",
+        value=str(_support_value(current_inputs, "item_sku", "")),
+        key="support_item_sku",
+    )
+
+    st.caption("Return / RMA")
+    return_reason = st.text_input(
+        "Return reason",
+        value=str(_support_value(current_inputs, "return_reason", "")),
+        key="support_return_reason",
+    )
+
+    st.caption("Customer history")
+    history_cols = st.columns(5)
+    lifetime_value = history_cols[0].number_input(
+        "Lifetime value",
+        min_value=0.0,
+        value=float(order_history.get("lifetime_value") or 0),
+        step=100.0,
+        key="support_lifetime_value",
+    )
+    order_count = history_cols[1].number_input(
+        "Order count",
+        min_value=0,
+        value=int(order_history.get("order_count") or 0),
+        step=1,
+        key="support_order_count",
+    )
+    days_since_delivery = history_cols[2].number_input(
+        "Days since delivery",
+        min_value=0,
+        value=int(order_history.get("days_since_delivery") or 0),
+        step=1,
+        key="support_days_since_delivery",
+    )
+    item_condition = history_cols[3].selectbox(
+        "Item condition",
+        ITEM_CONDITIONS,
+        index=_select_index(ITEM_CONDITIONS, order_history.get("item_condition")),
+        key="support_item_condition",
+    )
+    region = history_cols[4].selectbox(
+        "Region",
+        SUPPORT_REGIONS,
+        index=_select_index(SUPPORT_REGIONS, order_history.get("region")),
+        key="support_region",
+    )
+
+    if apply_col.button("Apply support fields to JSON", width="stretch"):
+        missing_required = [
+            label
+            for label, value in {
+                "Customer": customer,
+                "Contact person": person,
+                "Inquiry": inquiry,
+            }.items()
+            if not str(value).strip()
+        ]
+        if missing_required:
+            st.warning(f"Please fill required fields first: {', '.join(missing_required)}")
+            return
+
+        support_inputs: dict[str, Any] = {
+            "customer": customer,
+            "person": person,
+            "inquiry": inquiry,
+        }
+
+        optional_fields: dict[str, Any] = {
+            "ticket_id": ticket_id,
+            "customer_email": customer_email,
+            "phone_number": phone_number,
+            "order_id": order_id,
+            "item_sku": item_sku,
+            "return_reason": return_reason,
+            "detected_language": detected_language,
+        }
+        support_inputs.update(_clean_optional_fields(optional_fields))
+
+        history_fields = _clean_optional_fields(
+            {
+                "lifetime_value": lifetime_value if lifetime_value else None,
+                "order_count": order_count if order_count else None,
+                "days_since_delivery": days_since_delivery if days_since_delivery else None,
+                "item_condition": item_condition,
+                "region": region,
+            }
+        )
+        if history_fields:
+            support_inputs["order_history"] = history_fields
+
+        st.session_state.inputs_json = _format_json(support_inputs)
+        st.rerun()
 
 
 def _fetch_job(
@@ -186,6 +393,50 @@ def _progress_label(status: str, latest_job: dict[str, Any], events: list[dict[s
     return status
 
 
+def _support_result_payload(latest_job: dict[str, Any]) -> dict[str, Any] | None:
+    result = latest_job.get("result")
+    return result if isinstance(result, dict) and "sentiment_analysis" in result else None
+
+
+def _render_support_result_summary(latest_job: dict[str, Any]) -> None:
+    support_result = _support_result_payload(latest_job)
+    if not support_result:
+        return
+
+    st.subheader("Support Summary")
+    if support_result.get("escalation_flag"):
+        st.warning("Human handoff required for this ticket.")
+
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Ticket", support_result.get("ticket_id") or "n/a")
+    summary_cols[1].metric("Email", support_result.get("customer_email") or "n/a")
+    summary_cols[2].metric("Phone", support_result.get("phone_number") or "n/a")
+    sentiment = support_result.get("sentiment_analysis")
+    if isinstance(sentiment, dict):
+        summary_cols[3].metric("Intent", sentiment.get("intent_category") or "n/a")
+        st.json(
+            {
+                "sentiment": sentiment.get("sentiment_label"),
+                "score": sentiment.get("sentiment_score"),
+                "tier": sentiment.get("customer_tier"),
+                "urgency": sentiment.get("urgency_level"),
+                "language": sentiment.get("language_detected"),
+            }
+        )
+
+    rma = support_result.get("rma_validation")
+    logistics = support_result.get("logistics_output")
+    if rma:
+        st.markdown("**RMA Validation**")
+        st.json(rma)
+    if logistics:
+        st.markdown("**Logistics Output**")
+        st.json(logistics)
+    if support_result.get("drafted_response"):
+        st.markdown("**Drafted Response**")
+        st.write(support_result["drafted_response"])
+
+
 def main() -> None:
     st.set_page_config(page_title="Cross-Border AI Admin", layout="wide")
     st.title("Cross-Border AI Admin")
@@ -216,6 +467,9 @@ def main() -> None:
 
     with col_inputs:
         st.subheader("Request")
+        if workflow_type == "support":
+            with st.expander("Customer Service 1.1 fields", expanded=True):
+                _render_support_builder(selected_example)
         inputs_json = st.text_area("Inputs JSON", key="inputs_json", height=300)
         provider_credentials_json = st.text_area(
             "Provider credentials JSON",
@@ -281,6 +535,7 @@ def main() -> None:
             usage_cols[3].metric("Status", status)
             if latest_job.get("cache_hit"):
                 st.info(f"Served from cache: {latest_job.get('source_job_id')}")
+            _render_support_result_summary(latest_job)
             st.json(latest_job)
 
     latest_events = st.session_state.get("latest_events")

@@ -1,0 +1,45 @@
+listing_strategy_research:
+  description: >
+    Conduct comprehensive market and competitor research for the product category "{product_category}" priced at {product_price} across target markets: {target_markets}.
+    Analyze top-performing competitor listings on Amazon, Meta Shops, Google Shopping, and TikTok Shop to identify:
+    1. High-intent keywords & search volume trends per region
+    2. Audience pain points, feature priorities, and seasonal demand patterns
+    3. Platform-specific structural requirements (e.g., Amazon's 5 bullet points + backend search terms, Meta's description limits, Google's structured attributes, TikTok's short-form copy constraints)
+    4. Compliance & policy considerations per region (GDPR, CCPA, local e-commerce claims restrictions, restricted categories)
+    Build a cross-border listing strategy that maps product USP ({product_usp}) to platform formats, defines localization rules per {language_plan}, and establishes keyword/promo messaging hierarchies.
+    Treat "{product_category}" strictly as a descriptive product category. Never use it verbatim in non-English markets; always translate or localize it naturally into the target language.
+    If research tools return development/fallback data, explicitly note data limitations and treat CPC, volume, and benchmark suggestions as illustrative.
+  expected_output: >
+    A structured JSON-compatible listing strategy containing:
+    - market_insights: Regional demand trends, competitor positioning gaps, audience personas
+    - keyword_matrix: Primary, secondary, and long-tail keywords per platform & region
+    - platform_mapping: Field-by-field requirements for Amazon, Meta, Google, TikTok (title limits, bullet specs, description constraints, required attributes)
+    - localization_plan: Language-specific adaptation rules for {product_category}, tone guidelines, cultural nuances
+    - compliance_flags: Region/platform-specific regulatory constraints (claims, privacy, certifications)
+    - launch_recommendations: Priority channels, timing, pricing positioning, and A/B testing suggestions
+
+platform_listing_compliance_writer:
+  description: >
+    Using the approved listing strategy: {strategy_context}, generate fully localized, platform-ready product listing variants for the target market: {target_market}.
+    Ensure strict alignment with the product USP: {product_usp} and language plan: {language_plan}.
+    For each platform (Amazon, Meta, Google, TikTok), produce a complete listing variant containing:
+    - Amazon: Optimized title (<200 chars), 5 feature bullets (max 500 chars each), product description, backend search terms (avoid brand/competitor names)
+    - Meta Shops: Concise product name, engaging description (<2,000 chars), primary CTA, visual/content recommendation tags
+    - Google Shopping: Structured title, accurate description, product_type, condition, availability, GTIN/MPN placeholders if applicable
+    - TikTok Shop: Trend-optimized short title, benefit-driven description (<1,000 chars), hashtag/keyword recommendations, video hook suggestion
+    All copy must be natively written in {target_market}'s primary language. Translate/localize "{product_category}" contextually. Never copy-paste English phrasing.
+    Perform a rigorous compliance review per platform-region combination:
+    - Verify no unverified superlatives (best, #1, guaranteed, safest, zero risk) unless substantiated by verified data
+    - Check regional privacy/data claim requirements (GDPR/CCPA equivalents)
+    - Validate platform policy fit (character limits, prohibited claims, image/video specs)
+    - Confirm brand voice consistency and launch readiness
+    If fallback/illustrative data was used in strategy, explicitly mark assumptions and avoid claiming live platform approval.
+  expected_output: >
+    A production-ready, JSON-serializable listing package containing:
+    - strategy_summary: Brief alignment recap with approved strategy
+    - listing_variants: Array of objects, each with {platform, region, language, title, description_or_bullets, cta, backend_keywords, visual_notes}
+    - compliance_audit: Object with keys like "amazon_de", "google_jp", each containing {status: APPROVED/REVIEW_REQUIRED/REJECTED, notes: [...], required_edits: [...]}
+    - launch_checklist: Step-by-step pre-publish validation steps per platform
+    - data_source: List of research sources used (or "illustrative/fallback" if applicable)
+    - confidence_level: 0-100% score based on data completeness & compliance verification
+    - assumptions: Clear documentation of any inferred or fallback-based decisions

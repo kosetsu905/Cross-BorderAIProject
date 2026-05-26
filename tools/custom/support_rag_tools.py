@@ -14,6 +14,7 @@ except ImportError:
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
 DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[2] / "docs" / "knowledge_base"
+SUPPORTED_KNOWLEDGE_PATTERNS = ("*.md", "*.txt")
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,12 @@ def load_knowledge_chunks(knowledge_dir: str) -> tuple[KnowledgeChunk, ...]:
         return tuple()
 
     chunks: list[KnowledgeChunk] = []
-    for path in sorted(base_dir.glob("*.md")):
+    knowledge_paths = [
+        path
+        for pattern in SUPPORTED_KNOWLEDGE_PATTERNS
+        for path in base_dir.glob(pattern)
+    ]
+    for path in sorted(knowledge_paths):
         for heading, content in _split_markdown(path):
             chunks.append(
                 KnowledgeChunk(
@@ -130,6 +136,6 @@ class SupportKnowledgeSearchTool(BaseTool):
             "results": results,
             "status": "found" if results else "not_found",
             "assumption_notice": (
-                "Results come from the local markdown knowledge base. Validate against official policy updates."
+                "Results come from the local markdown/text knowledge base. Validate against official policy updates."
             ),
         }

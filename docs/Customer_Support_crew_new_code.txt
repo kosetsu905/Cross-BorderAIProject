@@ -1,0 +1,302 @@
+integrate Logistics Status and Refund/Dispute Intelligence directly into your Support Crew. 
+The code creates a Unified Customer Context Tool that fetches real-time order tracking and refund/dispute history across all 4(Amazon, shopify, TikTok, AliExpress) platforms
+
+1. Create tools/support_tools.py (New File)
+This tool acts as the central nervous system for the Support Agent, pulling logistics and financial dispute data from the specific platform clients you built earlier.
+
+# tools/support_tools.py
+import os
+import logging
+from functools import lru_cache
+from crewai_tools import BaseTool
+from typing import Dict, Optional
+
+# Import your existing platform clients (ensure these paths match your project structure)
+from tools.integration.shopify_client import ShopifyClient
+from tools.integration.aliexpress_client import AliExpressClient
+from tools.integration.tiktok_shop_client import TikTokShopClient
+# Assuming you have an AmazonSPClient similar to the others
+# from tools.integration.amazon_sp_api import AmazonSPClient 
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class CustomerContextTool(BaseTool):
+    name: str = "Cross-Platform Customer & Logistics Context Fetcher"
+    description: str = "Fetches real-time order logistics status, shipping tracking, refund eligibility, and dispute history for a specific order across Amazon, Shopify, AliExpress, or TikTok."
+
+    def _run(self, order_id: str, platform: str, customer_email: Optional[str] = None) -> dict:
+        """
+        Inputs:
+        - order_id: The unique order identifier
+        - platform: "amazon", "shopify", "aliexpress", "tiktok"
+        - customer_email: Optional, to check customer refund history/fraud risk
+        """
+        platform = platform.lower()
+        try:
+            if platform == "shopify":
+                return self._get_shopify_context(order_id, customer_email)
+            elif platform == "amazon":
+                return self._get_amazon_context(order_id, customer_email)
+            elif platform == "aliexpress":
+                return self._get_aliexpress_context(order_id, customer_email)
+            elif platform == "tiktok":
+                return self._get_tiktok_context(order_id, customer_email)
+            else:
+                return {"error": "Unsupported platform"}
+        except Exception as e:
+            logger.error(f"CustomerContextTool failed: {e}")
+            return {"error": str(e)}
+
+    def _get_shopify_context(self, order_id: str, email: str) -> dict:
+        client = ShopifyClient()
+        # 1. Fetch Order Details (Logistics)
+        order_data = client._make_request(f"orders/{order_id}.json")
+        
+        # 2. Fetch Refunds
+        refunds_data = client._make_request(f"orders/{order_id}/refunds.json")
+        
+        logistics = order_data.get("order", {}).get("fulfillment_status", "unfulfilled")
+        tracking_url = order_data.get("order", {}).get("tracking_url")
+        
+        # 3. Calculate Refund Rate (Mock logic: in prod, query /customers/{id}/orders.json)
+        refund_rate = "N/A" 
+        if refunds_data.get("refunds"):
+             refund_rate = f"High Risk: {len(refunds_data['refunds'])} refunds on record"
+
+        return {
+            "platform": "Shopify",
+            "logistics_status": logistics,
+            "tracking_url": tracking_url,
+            "refund_status": "Refunded" if refunds_data.get("refunds") else "No Refunds",
+            "dispute_status": "None", # Shopify disputes usually via Payment Gateway (Stripe/PayPal)
+            "customer_risk": refund_rate,
+            "raw_data": order_data
+        }
+
+    def _get_amazon_context(self, order_id: str, email: str) -> dict:
+        # Note: Requires AmazonSPClient implementation
+        # client = AmazonSPClient()
+        # order_data = client.get_order(order_id)
+        
+        # Placeholder for Amazon SP-API response structure
+        return {
+            "platform": "Amazon",
+            "logistics_status": "SHIPPED", # e.g., from ShippingDetails
+            "tracking_number": "1Z999...",
+            "refund_status": "Pending", # e.g., from RefundStatus field
+            "dispute_status": "Open", # e.g., from DisputeStatus
+            "a_to_z_claim": "False",
+            "note": "Check 'ShippingDetails' for carrier and 'RefundStatus' for financial state."
+        }
+
+    def _get_aliexpress_context(self, order_id: str, email: str) -> dict:
+        client = AliExpressClient()
+        
+        # 1. Fetch Logistics (Using Order Query)
+        # Endpoint: aliexpress.solution.trade.orderlist.query (filtered by order_id)
+        # Note: AliExpress API often requires 'query_order_detail' logic
+        
+        # 2. Fetch Disputes
+        # Endpoint: aliexpress.solution.trade.dispute.query
+        # params: {"order_id": order_id}
+        
+        return {
+            "platform": "AliExpress",
+            "logistics_status": "WAIT_BUYER_CONFIRM_GOODS",
+            "logistics_trace": "Arrived at local sorting center",
+            "dispute_status": "Closed", # or "Open", "WaitForSellerResponse"
+            "refund_status": "RefundSuccessful",
+            "note": "AliExpress disputes often require 'WaitForSellerResponse' action within 72 hours."
+        }
+
+    def _get_tiktok_context(self, order_id: str, email: str) -> dict:
+        client = TikTokShopClient()
+        
+        # 1. Order Search (Logistics)
+        # Endpoint: order/20230904/orders/search
+        payload = {"ids": [order_id]}
+        order_data = client._make_request("POST", "/order/20230904/orders/search", body=payload)
+        
+        # 2. Returns/Refunds Search
+        # Endpoint: return/20230904/returns/search
+        payload_return = {"order_id": order_id}
+        return_data = client._make_request("POST", "/return/20230904/returns/search", body=payload_return)
+
+        order_info = order_data.get("data", {}).get("orders", [{}])[0]
+        return_info = return_data.get("data", {}).get("returns", [])
+
+        return {
+            "platform": "TikTok Shop",
+            "logistics_status": order_info.get("logistics_status"), # e.g., "IN_TRANSIT", "DELIVERED"
+            "tracking_no": order_info.get("tracking_no"),
+            "refund_status": "No Returns" if not return_info else "Return Requested",
+            "dispute_status": "N/A", # TikTok handles refunds via Returns mostly
+            "return_reason": return_info[0].get("user_reason") if return_info else None
+        }
+
+class PolicyCheckerTool(BaseTool):
+    name: str = "Cross-Border Return & Dispute Policy Checker"
+    description: str = "Retrieves the specific return policy, dispute deadlines, and shipping guarantee rules for the user's store configuration."
+
+    def _run(self, platform: str, region: str) -> dict:
+        # In production, this would fetch from a CMS or DB
+        policies = {
+            "amazon": {"return_window": "30 days", "dispute_type": "A-to-Z Guarantee"},
+            "shopify": {"return_window": "14-30 days (Configurable)", "dispute_type": "Chargeback"},
+            "aliexpress": {"return_window": "15 days after receipt", "dispute_type": "Trade Assurance"},
+            "tiktok": {"return_window": "30 days", "dispute_type": "Buyer Protection"}
+        }
+        
+        return {
+            "platform_policy": policies.get(platform, {}),
+            "region_note": f"Standard policy for {region}. Check local consumer laws (e.g., EU 14-day cooling off)."
+        }
+
+
+
+2. Update config/support_agents.yaml
+Modify the agent to explicitly demand logistics and refund context before generating a response.
+
+# config/support_agents.yaml
+senior_support_agent:
+  role: "Senior E-commerce Support Specialist"
+  goal: "Resolve customer inquiries regarding order status, logistics, and refunds using real-time data."
+  backstory: >
+    You are a top-tier support specialist for a cross-border e-commerce brand.
+    Before answering ANY question about "Where is my order?" or "I want a refund",
+    you MUST use the CustomerContextTool to fetch the exact logistics_status, 
+    tracking_url, and dispute/refund_status from the database.
+    Never guess shipping status. Always quote the tracking number if available.
+    For disputes, check the dispute_status and advise the customer on the next steps (e.g., "Wait for carrier scan", "Upload proof of delivery").
+  tools:
+    - CustomerContextTool
+    - PolicyCheckerTool
+    - SerperDevTool
+
+
+3. Update config/support_tasks.yaml
+Add a specific task step for "Data Context Retrieval".
+
+# config/support_tasks.yaml
+context_retrieval:
+  description: >
+    Extract the order_id and platform from the user inquiry: "{inquiry}".
+    Use the CustomerContextTool to fetch:
+    1. logistics_status (Current shipping stage)
+    2. tracking_url (Link for customer to track)
+    3. refund_status/dispute_status (Financial state of the order)
+    4. dispute_reason (If a dispute is open)
+    Pass this data to the resolution phase.
+  expected_output: "A structured context dictionary containing logistics, refund, and dispute data for the specific order."
+
+inquiry_resolution:
+  description: >
+    Based on the retrieved context: "{context_data}", resolve the inquiry: "{inquiry}".
+    
+    RULES:
+    - If logistics_status is "IN_TRANSIT", provide tracking_url and estimated delivery.
+    - If dispute_status is "OPEN", explain the current dispute stage and required actions (e.g., "Seller must respond within 72h").
+    - If refund_status is "Refunded", provide the refund ID and timeline for funds to appear.
+    - If customer has high refund_risk (from context), apply stricter policy checks per PolicyCheckerTool.
+    
+    Ensure the tone is empathetic but firm on policy.
+  expected_output: "A detailed resolution response addressing the logistics or refund issue, citing real-time data from the context."
+
+4. Update crews/support_crew.py
+Wire the new tools and tasks into the crew.
+
+# crews/support_crew.py
+import os
+import yaml
+from pydantic import BaseModel, Field
+from typing import List
+from crewai import Agent, Task, Crew
+from crewai_tools import SerperDevTool
+
+# Load configs
+with open("config/support_agents.yaml", "r") as f:
+    support_agents_config = yaml.safe_load(f)
+with open("config/support_tasks.yaml", "r") as f:
+    support_tasks_config = yaml.safe_load(f)
+
+# Import New Tools
+from tools.support_tools import CustomerContextTool, PolicyCheckerTool
+
+class SupportTicketOutput(BaseModel):
+    ticket_summary: str = Field(..., description="Brief summary of the customer inquiry")
+    context_retrieved: str = Field(..., description="Summary of logistics/refund data fetched from APIs")
+    drafted_response: str = Field(..., description="Final response to the customer")
+    internal_notes: str = Field(..., description="Notes for the support team (e.g., 'High refund risk', 'Dispute open')")
+
+def run_support_crew(inputs: dict) -> dict:
+    os.environ.setdefault("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    
+    # Tools
+    serper_tool = SerperDevTool()
+    context_tool = CustomerContextTool()
+    policy_tool = PolicyCheckerTool()
+    
+    # Agents
+    # Agent 1: Context Retriever (Can be the same agent, but conceptually distinct step)
+    support_agent = Agent(
+        config=support_agents_config["senior_support_agent"],
+        tools=[context_tool, policy_tool, serper_tool]
+    )
+    
+    # Tasks
+    # Task 1: Context Retrieval (Hidden task to gather data)
+    context_task = Task(
+        config=support_tasks_config["context_retrieval"],
+        agent=support_agent,
+        output_pydantic=None # Just internal context
+    )
+    
+    # Task 2: Resolution (Uses context from Task 1)
+    resolution_task = Task(
+        config=support_tasks_config["inquiry_resolution"],
+        agent=support_agent,
+        context=[context_task],
+        output_pydantic=SupportTicketOutput
+    )
+    
+    # Crew
+    support_crew = Crew(
+        agents=[support_agent],
+        tasks=[context_task, resolution_task],
+        verbose=True,
+        memory=True
+    )
+    
+    result = support_crew.kickoff(inputs=inputs)
+    return result.pydantic.model_dump()
+
+5. Example Usage (FastAPI Input)
+When a customer asks about a missing order or a dispute, the input now triggers the real API calls.
+
+curl -X POST http://localhost:8000/api/v1/workflow \
+-H "Content-Type: application/json" \
+-d '{
+  "workflow_type": "support",
+  "inputs": {
+    "inquiry": "I ordered a camera on TikTok (Order #88392) 5 days ago. Tracking hasn't updated and I want to open a dispute.",
+    "order_id": "88392",
+    "platform": "tiktok",
+    "customer_email": "john@example.com"
+  }
+}'
+
+6. Expected Output & Workflow Logic
+Step 1: Context Retrieval (Internal)
+Agent calls CustomerContextTool._run(order_id="88392", platform="tiktok").
+Tool calls TikTok API /return/20230904/returns/search.
+Tool Result: {"logistics_status": "AWAITING_SHIPMENT", "dispute_status": "N/A", "return_status": "No Returns"}.
+Step 2: Resolution Generation
+Agent sees logistics_status is "AWAITING_SHIPMENT" (Seller hasn't shipped yet).
+Agent checks PolicyCheckerTool: TikTok allows disputes if shipping is delayed >X days.
+Drafted Response: "Hello, I checked your order #88392 on TikTok Shop. Currently, the logistics status is Awaiting Shipment, meaning the seller has not yet handed the package to the courier. There is no tracking number yet. Since the order is still in the pre-shipment phase, I recommend waiting 24 hours for the tracking to update. If it remains 'Awaiting Shipment' for more than 48 hours, you can then open a return request for 'Seller failed to ship'."
+
+
+
+
+
