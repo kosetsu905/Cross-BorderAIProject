@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from services.language_detector import LanguageDetector
 
 try:
     from crewai.tools import BaseTool
@@ -94,20 +95,7 @@ HYGIENE_SENSITIVE_KEYWORDS = ("earring", "ear ring", "earrings", "piercing", "un
 
 
 def detect_language(text: str, fallback: str | None = None) -> str:
-    if fallback:
-        return fallback.strip().lower()[:2]
-
-    language_patterns = (
-        (r"[\u3040-\u309f\u30a0-\u30ff]", "ja"),
-        (r"[\u4e00-\u9fff]", "zh"),
-        (r"[¿¡ñáéíóúü]", "es"),
-        (r"[äöüß]", "de"),
-        (r"[çàâêîôûëïü]", "fr"),
-    )
-    for pattern, language in language_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return language
-    return "en"
+    return LanguageDetector.detect(text, fallback=fallback or "en")
 
 
 def _has_any(text: str, keywords: tuple[str, ...]) -> bool:

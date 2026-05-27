@@ -8,6 +8,8 @@ PyYAML
 redis
 celery
 httpx
+langdetect
+tenacity
 sqlalchemy
 psycopg[binary]
 streamlit

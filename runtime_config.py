@@ -19,6 +19,10 @@ RUNTIME_CONFIG_KEYS = {
     "amazon_sp_api_access_token",
     "amazon_marketplace_ids",
     "support_knowledge_dir",
+    "support_handoff_webhook_url",
+    "support_session_redis_url",
+    "support_session_ttl_seconds",
+    "support_session_history_limit",
     "holiday_api_key",
     "google_ads_developer_token",
     "google_ads_access_token",
@@ -75,6 +79,10 @@ class RuntimeConfig:
     amazon_sp_api_access_token: str | None = None
     amazon_marketplace_ids: str | None = None
     support_knowledge_dir: str | None = None
+    support_handoff_webhook_url: str | None = None
+    support_session_redis_url: str | None = None
+    support_session_ttl_seconds: int = 86400
+    support_session_history_limit: int = 20
     holiday_api_key: str | None = None
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
@@ -123,6 +131,17 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def _env(name: str, fallback: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value not in (None, ""):
+        return value
+    if fallback:
+        fallback_value = os.getenv(fallback)
+        if fallback_value not in (None, ""):
+            return fallback_value
+    return None
+
+
 def load_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -140,6 +159,10 @@ def load_runtime_config() -> RuntimeConfig:
         amazon_sp_api_access_token=os.getenv("AMAZON_SP_API_ACCESS_TOKEN"),
         amazon_marketplace_ids=os.getenv("AMAZON_MARKETPLACE_IDS"),
         support_knowledge_dir=os.getenv("SUPPORT_KNOWLEDGE_DIR"),
+        support_handoff_webhook_url=_env("SUPPORT_HANDOFF_WEBHOOK_URL", "SLACK_WEBHOOK_URL"),
+        support_session_redis_url=_env("SUPPORT_SESSION_REDIS_URL", "CELERY_BROKER_URL"),
+        support_session_ttl_seconds=_int_env("SUPPORT_SESSION_TTL_SECONDS", 86400),
+        support_session_history_limit=_int_env("SUPPORT_SESSION_HISTORY_LIMIT", 20),
         holiday_api_key=os.getenv("HOLIDAY_API_KEY"),
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
         google_ads_access_token=os.getenv("GOOGLE_ADS_ACCESS_TOKEN"),
@@ -153,8 +176,8 @@ def load_runtime_config() -> RuntimeConfig:
         gmail_watch_topic_name=os.getenv("GMAIL_WATCH_TOPIC_NAME"),
         gmail_watch_label_ids=os.getenv("GMAIL_WATCH_LABEL_IDS", "INBOX"),
         gmail_sync_enabled=_bool_env("GMAIL_SYNC_ENABLED", False),
-        whatsapp_access_token=os.getenv("WHATSAPP_ACCESS_TOKEN"),
-        whatsapp_phone_number_id=os.getenv("WHATSAPP_PHONE_NUMBER_ID"),
+        whatsapp_access_token=_env("WHATSAPP_ACCESS_TOKEN", "WHATSAPP_TOKEN"),
+        whatsapp_phone_number_id=_env("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_PHONE_ID"),
         whatsapp_business_account_id=os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID"),
         whatsapp_verify_token=os.getenv("WHATSAPP_VERIFY_TOKEN"),
         whatsapp_app_secret=os.getenv("WHATSAPP_APP_SECRET"),

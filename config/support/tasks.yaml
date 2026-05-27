@@ -15,9 +15,13 @@ triage_and_routing:
 
 inquiry_resolution:
   description: >
-    {customer} just reached out with an important inquiry: {inquiry_text}.
+    {customer} reached out via {channel} with inquiry: {inquiry_text}.
     {person} from {customer} is the contact. Customer phone number, if provided: {phone_number}.
     Channel metadata: channel={channel}, sender_profile={sender_profile}, attachments={attachments}.
+    Adapt the customer-facing drafted_response tone, structure, and length for {channel}:
+    - WhatsApp: conversational, concise (<2000 chars), use bullet points sparingly, avoid formal salutations.
+    - Email/Gmail: professional, structured, detailed, include the ticket reference and signature.
+    - WebChat/Social: friendly, scannable, 1-2 short paragraphs max, with a clear next step.
     Research and provide a complete, accurate response.
     First search the internal Support Knowledge Base for policies, shipping timelines, return procedures,
     compensation guidance, escalation rules, or product specs. Use web/search tools only when the internal
@@ -35,7 +39,7 @@ inquiry_resolution:
     If a phone number is provided, record it as an internal contact channel. Do not repeat the full phone
     number in the customer-facing response unless it is necessary for the next step.
     Ensure no assumptions are made and cite sources where applicable.
-  expected_output: "A detailed, well-researched draft response addressing all parts of the inquiry, with clear resolution steps and referenced sources."
+  expected_output: "A channel-optimized draft response addressing all parts of the inquiry, with clear resolution steps, referenced sources, and structured fields compatible with SupportTicketOutput."
 
 quality_assurance_review:
   description: >

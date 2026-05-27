@@ -9,6 +9,7 @@ from database import get_db_session
 from db_models import SupportConversationRecord
 from models import JobEventResponse, JobResponse, JobStatus, WorkflowRequest, WorkflowType
 from runtime_config import load_runtime_config
+from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
 from support_inbox import SupportInboxStore
 from tools.custom.gmail_tools import (
     get_gmail_message,
@@ -387,27 +388,34 @@ def create_router(orchestrator: object) -> APIRouter:
                 "message_id": None,
                 "error": "WHATSAPP_SEND_ENABLED is false; no provider call was made.",
             }
-        if not config.whatsapp_access_token or not config.whatsapp_phone_number_id or not conversation.customer_handle:
+        if not conversation.customer_handle:
             return {
                 "status": "missing_credentials",
                 "conversation_id": conversation_id,
                 "message_id": None,
-                "error": "WhatsApp access token, phone number id, and recipient are required.",
+                "error": "WhatsApp recipient is required.",
             }
 
-        delivery = send_whatsapp_text_message(
-            access_token=config.whatsapp_access_token,
-            phone_number_id=config.whatsapp_phone_number_id,
-            recipient=conversation.customer_handle,
-            body=str(draft_text),
-            graph_api_version=config.whatsapp_graph_api_version,
+        delivery, raw_payload = await _send_whatsapp_approval_delivery(
+            config=config,
+            store=store,
+            conversation=conversation,
+            conversation_id=conversation_id,
+            draft_text=str(draft_text),
         )
+        if delivery.get("status") == "missing_credentials":
+            return {
+                "status": "missing_credentials",
+                "conversation_id": conversation_id,
+                "message_id": None,
+                "error": delivery.get("error"),
+            }
         outbound = store.record_outbound_message(
             conversation_id=conversation_id,
             text=str(draft_text),
             channel_message_id=delivery.get("message_id"),
             delivery_status=str(delivery.get("status") or "failed"),
-            raw_payload=delivery,
+            raw_payload=raw_payload,
         )
         return {
             "status": delivery.get("status"),
@@ -476,6 +484,69 @@ def _latest_inbound_headers(conversation_id: str, db: Session) -> dict[str, str]
     raw_payload = record.raw_payload if record else None
     headers = (raw_payload or {}).get("headers") if isinstance(raw_payload, dict) else None
     return headers if isinstance(headers, dict) else {}
+
+
+async def _send_whatsapp_approval_delivery(
+    *,
+    config: object,
+    store: SupportInboxStore,
+    conversation: SupportConversationRecord,
+    conversation_id: str,
+    draft_text: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    draft_payload = conversation.draft_payload or {}
+    session_state = store.session_manager.load_session(conversation_id) or {}
+    if store.session_manager.is_window_expired(conversation_id):
+        language = _whatsapp_template_language(draft_payload, session_state)
+        delivery = await WhatsAppTemplateManager.from_config(config).send_out_of_window_message(
+            to=conversation.customer_handle,
+            lang_code=language,
+        )
+        return delivery, {
+            "delivery": delivery,
+            "draft_payload": draft_payload,
+            "session_language": session_state.get("language_preference"),
+            "send_mode": "template",
+        }
+
+    if not getattr(config, "whatsapp_access_token", None) or not getattr(config, "whatsapp_phone_number_id", None):
+        return {
+            "status": "missing_credentials",
+            "recipient": conversation.customer_handle,
+            "message_id": None,
+            "error": "WhatsApp access token, phone number id, and recipient are required.",
+        }, {
+            "send_mode": "text",
+            "draft_payload": draft_payload,
+        }
+    delivery = send_whatsapp_text_message(
+        access_token=str(getattr(config, "whatsapp_access_token")),
+        phone_number_id=str(getattr(config, "whatsapp_phone_number_id")),
+        recipient=str(conversation.customer_handle),
+        body=draft_text,
+        graph_api_version=str(getattr(config, "whatsapp_graph_api_version", "v23.0")),
+    )
+    return delivery, {
+        "delivery": delivery,
+        "draft_payload": draft_payload,
+        "send_mode": "text",
+    }
+
+
+def _whatsapp_template_language(draft_payload: dict[str, object], session_state: dict[str, object]) -> str:
+    sentiment = draft_payload.get("sentiment_analysis")
+    if not isinstance(sentiment, dict):
+        sentiment = {}
+    candidates = [
+        draft_payload.get("detected_language"),
+        draft_payload.get("language_detected"),
+        sentiment.get("language_detected"),
+        session_state.get("language_preference"),
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "en"
 
 
 def _gmail_access_token_from_config(config: object) -> str | None:

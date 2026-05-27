@@ -9,6 +9,10 @@ from sqlalchemy.orm import Session
 
 from db_models import SupportConversationRecord, SupportMessageRecord
 from models import WorkflowType
+from runtime_config import load_runtime_config
+from services.language_detector import LanguageDetector
+from services.session_manager import SessionManager
+from tools.custom.support_handoff_tools import send_handoff_notification
 from tools.custom.whatsapp_tools import ChannelMessage, WhatsAppStatusUpdate, local_outbound_message_id
 
 
@@ -26,7 +30,7 @@ def mask_contact(value: str | None) -> str | None:
 
 
 def _conversation_status_from_result(result: dict[str, Any]) -> str:
-    if result.get("escalation_flag"):
+    if _requires_handoff(result):
         return "handoff_required"
     if result.get("drafted_response"):
         return "draft_ready"
@@ -45,9 +49,32 @@ def _requires_approval(result: dict[str, Any]) -> bool:
     )
 
 
+def _requires_handoff(result: dict[str, Any]) -> bool:
+    return bool(
+        result.get("escalation_flag")
+        or result.get("channel_recommended_action") == "human_handoff"
+    )
+
+
+def _handoff_notification_sent(payload: dict[str, Any] | None) -> bool:
+    notification = (payload or {}).get("handoff_notification")
+    return isinstance(notification, dict) and notification.get("status") == "sent"
+
+
+def _handoff_inquiry_preview(result: dict[str, Any]) -> str:
+    return str(
+        result.get("inquiry_text")
+        or result.get("ticket_summary")
+        or result.get("drafted_response")
+        or result.get("internal_notes")
+        or ""
+    )
+
+
 class SupportInboxStore:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, session_manager: SessionManager | None = None) -> None:
         self.session = session
+        self.session_manager = session_manager or SessionManager.from_config(load_runtime_config())
 
     def upsert_inbound_message(self, message: ChannelMessage) -> tuple[SupportConversationRecord, SupportMessageRecord, bool]:
         existing = self.session.execute(
@@ -112,6 +139,7 @@ class SupportInboxStore:
         self.session.commit()
         self.session.refresh(conversation)
         self.session.refresh(record)
+        self._record_inbound_session(conversation, record, message)
         return conversation, record, True
 
     def build_support_inputs(
@@ -119,16 +147,14 @@ class SupportInboxStore:
         conversation: SupportConversationRecord,
         message: SupportMessageRecord,
     ) -> dict[str, Any]:
-        history = [
-            _json_safe(self._message_to_dict(record, include_raw=False))
-            for record in self.session.execute(
-                select(SupportMessageRecord)
-                .where(SupportMessageRecord.conversation_id == conversation.conversation_id)
-                .order_by(SupportMessageRecord.created_at.asc())
-            ).scalars()
-        ]
+        session_state = self.session_manager.load_session(conversation.conversation_id)
+        session_history = session_state.get("history") if isinstance(session_state, dict) else None
+        history = session_history if isinstance(session_history, list) else self._db_history(conversation.conversation_id)
         display_name = conversation.customer_display_name or conversation.customer_handle_masked or "Channel Customer"
         inquiry_text = message.text or "[Customer sent an attachment or unsupported message.]"
+        session_language = session_state.get("language_preference") if isinstance(session_state, dict) else None
+        detected_language = getattr(message, "locale", None) or session_language or LanguageDetector.detect(inquiry_text)
+        language_plan = LanguageDetector.get_crewai_language_plan(str(detected_language))
         inputs = {
             "customer": display_name,
             "person": display_name,
@@ -137,6 +163,7 @@ class SupportInboxStore:
             "phone_number": conversation.customer_handle if conversation.channel == "whatsapp" else None,
             "inquiry_text": inquiry_text,
             "channel": conversation.channel,
+            "session_id": conversation.conversation_id,
             "channel_thread_id": conversation.channel_thread_id,
             "channel_message_id": message.channel_message_id,
             "sender_profile": {
@@ -145,7 +172,11 @@ class SupportInboxStore:
             },
             "attachments": message.attachments or [],
             "conversation_history": history[-20:],
+            "detected_language": detected_language,
+            "language_plan": language_plan,
         }
+        if detected_language:
+            self.session_manager.update_language_preference(conversation.conversation_id, str(detected_language))
         if conversation.channel == "gmail":
             inputs["customer_email"] = conversation.customer_handle
         return inputs
@@ -202,11 +233,32 @@ class SupportInboxStore:
         conversation = self.session.get(SupportConversationRecord, conversation_id)
         if conversation is None:
             return
+        previous_payload = conversation.draft_payload if isinstance(conversation.draft_payload, dict) else {}
+        draft_payload = dict(result)
         conversation.draft_response = result.get("drafted_response") or conversation.draft_response
-        conversation.draft_payload = result
         conversation.requires_approval = _requires_approval(result)
-        conversation.escalation_flag = bool(result.get("escalation_flag"))
+        conversation.escalation_flag = _requires_handoff(result)
         conversation.status = _conversation_status_from_result(result)
+        if conversation.escalation_flag:
+            if _handoff_notification_sent(previous_payload):
+                draft_payload["handoff_notification"] = previous_payload["handoff_notification"]
+            else:
+                config = load_runtime_config()
+                draft_payload["handoff_notification"] = send_handoff_notification(
+                    webhook_url=config.support_handoff_webhook_url,
+                    session_id=str(result.get("session_id") or conversation.conversation_id),
+                    channel=conversation.channel,
+                    inquiry_text=_handoff_inquiry_preview(result),
+                    context={
+                        "conversation_id": conversation.conversation_id,
+                        "job_id": job_data.get("job_id"),
+                        "ticket_id": result.get("ticket_id"),
+                        "customer_email": result.get("customer_email"),
+                        "channel_recommended_action": result.get("channel_recommended_action"),
+                        "escalation_flag": result.get("escalation_flag"),
+                    },
+                )
+        conversation.draft_payload = draft_payload
         self.session.commit()
 
     def assign_conversation(self, conversation_id: str, assigned_to: str | None) -> dict[str, Any] | None:
@@ -252,7 +304,52 @@ class SupportInboxStore:
         conversation.status = "sent" if delivery_status == "sent" else "send_failed"
         self.session.commit()
         self.session.refresh(message)
+        self._record_outbound_session(conversation, message)
         return message
+
+    def _db_history(self, conversation_id: str) -> list[dict[str, Any]]:
+        return [
+            _json_safe(self._message_to_dict(record, include_raw=False))
+            for record in self.session.execute(
+                select(SupportMessageRecord)
+                .where(SupportMessageRecord.conversation_id == conversation_id)
+                .order_by(SupportMessageRecord.created_at.asc())
+            ).scalars()
+        ]
+
+    def _record_inbound_session(
+        self,
+        conversation: SupportConversationRecord,
+        record: SupportMessageRecord,
+        message: ChannelMessage,
+    ) -> None:
+        self.session_manager.record_inbound_message(
+            session_id=conversation.conversation_id,
+            channel=conversation.channel,
+            customer_id=conversation.customer_handle,
+            language_preference=message.locale,
+            metadata={
+                "channel_thread_id": conversation.channel_thread_id,
+                "customer_handle_masked": conversation.customer_handle_masked,
+            },
+            message=_json_safe(self._message_to_dict(record, include_raw=False)),
+        )
+
+    def _record_outbound_session(
+        self,
+        conversation: SupportConversationRecord,
+        record: SupportMessageRecord,
+    ) -> None:
+        self.session_manager.record_outbound_message(
+            session_id=conversation.conversation_id,
+            channel=conversation.channel,
+            customer_id=conversation.customer_handle,
+            metadata={
+                "channel_thread_id": conversation.channel_thread_id,
+                "customer_handle_masked": conversation.customer_handle_masked,
+            },
+            message=_json_safe(self._message_to_dict(record, include_raw=False)),
+        )
 
     def _conversation_to_dict(
         self,

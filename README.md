@@ -201,6 +201,15 @@ WHATSAPP_VERIFY_TOKEN=choose_a_webhook_verification_token
 WHATSAPP_APP_SECRET=optional_meta_app_secret_for_x_hub_signature_validation
 WHATSAPP_SEND_ENABLED=false
 WHATSAPP_GRAPH_API_VERSION=v23.0
+SUPPORT_HANDOFF_WEBHOOK_URL=optional_slack_or_support_queue_webhook
+SUPPORT_SESSION_REDIS_URL=redis://localhost:6379/2
+SUPPORT_SESSION_TTL_SECONDS=86400
+SUPPORT_SESSION_HISTORY_LIMIT=20
+
+# Compatibility aliases accepted by runtime_config.py:
+# WHATSAPP_TOKEN -> WHATSAPP_ACCESS_TOKEN
+# WHATSAPP_PHONE_ID -> WHATSAPP_PHONE_NUMBER_ID
+# SLACK_WEBHOOK_URL -> SUPPORT_HANDOFF_WEBHOOK_URL
 
 # Marketing ad platform integrations. Without these, Marketing uses development fallback platform data.
 GOOGLE_ADS_DEVELOPER_TOKEN=optional_google_ads_developer_token
@@ -643,6 +652,16 @@ Invoke-RestMethod `
 
 ## Omni-Channel Support Inbox
 
+### Deployment checklist
+
+- Configure WhatsApp Cloud API credentials with `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, and optionally `WHATSAPP_APP_SECRET`; legacy deployment names `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_ID` are accepted as fallbacks.
+- Configure `SUPPORT_HANDOFF_WEBHOOK_URL` for human handoff notifications; `SLACK_WEBHOOK_URL` is accepted as a compatibility fallback.
+- Configure Gmail send/sync settings when email replies are needed. `SENDGRID_API_KEY` is not used by the current runnable code; Gmail is the active email provider, and SendGrid can be added later as a separate provider adapter.
+- Install the existing async/runtime dependencies from `requirements.txt`; `fastapi`, `uvicorn[standard]`, and `httpx` are already listed. `asyncio` is part of Python's standard library and should not be installed separately.
+- Use `WORKFLOW_BACKEND=celery` with Redis and PostgreSQL for production-style queueing and durable job state. The provided `docker-compose.yml` already starts FastAPI, Redis, Celery, PostgreSQL, and Flower.
+- Configure `SUPPORT_SESSION_REDIS_URL` when you want Redis-backed session context. If omitted, the app falls back to `CELERY_BROKER_URL`; if Redis is unavailable, PostgreSQL remains the source of truth and support workflows continue with database-backed history.
+- WhatsApp approval sending respects Meta's 24-hour customer service window. When Redis session state shows the window is still open, `approve-send` uses the normal WhatsApp text API. When the window is expired or no active session window is available, it sends a pre-approved template instead of free-form text.
+
 WhatsApp Cloud API webhook verification uses Meta's challenge flow:
 
 ```text
@@ -689,6 +708,10 @@ POST /api/v1/support/conversations/{conversation_id}/approve-send
 ```
 
 `approve-send` dispatches by conversation channel. It makes no provider call while `WHATSAPP_SEND_ENABLED=false` or `GMAIL_SEND_ENABLED=false`. Escalated conversations are blocked from this endpoint and must be handled manually.
+
+For WhatsApp conversations outside the 24-hour window, `approve-send` uses `WhatsAppTemplateManager` with the configured Graph API version (`WHATSAPP_GRAPH_API_VERSION`, default `v23.0`). The built-in template map is `en -> support_reengagement_en (en_US)`, `ja -> support_reengagement_ja (ja)`, `es -> support_reengagement_es (es)`, and `default -> support_reengagement (en_US)`. The service can also query template status and submit new utility/marketing/authentication templates for Meta approval; first-run templates must be approved in Meta before production sending.
+
+Redis session state is stored under `support:session:{session_id}` with a default 24-hour TTL (`SUPPORT_SESSION_TTL_SECONDS=86400`) and the latest 20 history entries (`SUPPORT_SESSION_HISTORY_LIMIT=20`). It caches channel, customer id, language preference, metadata, window expiry, and rotated inbound/outbound history for fast omni-channel context. PostgreSQL `support_conversations` and `support_messages` remain authoritative; Redis write/read failures degrade gracefully to database history.
 
 For long-running Gmail usage, do not rely on OAuth Playground's short-lived access token. Use OAuth Playground with "Use your own OAuth credentials", request offline access for Gmail scopes, and save the returned refresh token:
 

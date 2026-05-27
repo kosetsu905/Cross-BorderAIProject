@@ -6,6 +6,7 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.language_detector import LanguageDetector
 from tools.custom.gmail_tools import resolve_gmail_access_token, send_gmail_message
 from tools.custom.support_automation_tools import (
     LogisticsIntegrationOutput,
@@ -125,11 +126,17 @@ def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     normalized["item_sku"] = normalized.get("item_sku") or "SKU-NOT-PROVIDED"
     normalized["order_history"] = normalized.get("order_history") or {}
     normalized["channel"] = normalized.get("channel") or "email"
+    normalized["session_id"] = normalized.get("session_id") or "unknown"
     normalized["channel_thread_id"] = normalized.get("channel_thread_id")
     normalized["channel_message_id"] = normalized.get("channel_message_id")
     normalized["sender_profile"] = normalized.get("sender_profile") or {}
     normalized["attachments"] = normalized.get("attachments") or []
     normalized["conversation_history"] = normalized.get("conversation_history") or []
+    detected_language = normalized.get("detected_language") or LanguageDetector.detect(normalized["inquiry_text"])
+    normalized["detected_language"] = detected_language
+    normalized["language_plan"] = normalized.get("language_plan") or LanguageDetector.get_crewai_language_plan(
+        detected_language
+    )
     return normalized
 
 
@@ -292,7 +299,9 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         "escalation_flag": automation_context["escalation_flag"],
         "compliance_tags": automation_context["compliance_tags"],
         "language_detected": automation_context["sentiment_analysis"]["language_detected"],
+        "language_plan": normalized_inputs["language_plan"],
         "channel": normalized_inputs["channel"],
+        "session_id": normalized_inputs["session_id"],
         "channel_thread_id": normalized_inputs.get("channel_thread_id"),
         "channel_message_id": normalized_inputs.get("channel_message_id"),
         "sender_profile": normalized_inputs.get("sender_profile"),

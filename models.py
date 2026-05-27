@@ -68,7 +68,9 @@ class SupportInputs(StrictInputModel):
     return_reason: str | None = None
     order_history: dict[str, Any] | None = None
     detected_language: str | None = None
+    language_plan: str | None = None
     channel: str | None = None
+    session_id: str | None = None
     channel_thread_id: str | None = None
     channel_message_id: str | None = None
     sender_profile: dict[str, Any] | None = None
