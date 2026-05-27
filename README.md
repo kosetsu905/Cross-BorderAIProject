@@ -180,10 +180,27 @@ HOLIDAY_API_KEY=optional_holiday_provider_key
 SUPPORT_KNOWLEDGE_DIR=docs/knowledge_base
 
 # Gmail delivery for Support replies. GMAIL_SEND_ENABLED defaults to false.
-# Access tokens must include the https://www.googleapis.com/auth/gmail.send scope.
-GMAIL_ACCESS_TOKEN=optional_gmail_oauth_access_token
+# Sending needs gmail.send. Omni-channel inbound sync/watch also needs gmail.readonly or gmail.modify.
+# GMAIL_ACCESS_TOKEN is still supported for short local tests, but the refresh-token settings below
+# are preferred because the app can mint fresh access tokens automatically.
+GMAIL_ACCESS_TOKEN=optional_short_lived_gmail_oauth_access_token
+GMAIL_CLIENT_ID=optional_google_oauth_client_id
+GMAIL_CLIENT_SECRET=optional_google_oauth_client_secret
+GMAIL_REFRESH_TOKEN=optional_google_oauth_refresh_token
 GMAIL_SENDER_EMAIL=support@example.com
 GMAIL_SEND_ENABLED=false
+GMAIL_WATCH_TOPIC_NAME=projects/your-project/topics/gmail-support
+GMAIL_WATCH_LABEL_IDS=INBOX
+GMAIL_SYNC_ENABLED=false
+
+# WhatsApp Cloud API for omni-channel Support. WHATSAPP_SEND_ENABLED defaults to false.
+WHATSAPP_ACCESS_TOKEN=optional_whatsapp_cloud_api_access_token
+WHATSAPP_PHONE_NUMBER_ID=optional_whatsapp_business_phone_number_id
+WHATSAPP_BUSINESS_ACCOUNT_ID=optional_whatsapp_business_account_id
+WHATSAPP_VERIFY_TOKEN=choose_a_webhook_verification_token
+WHATSAPP_APP_SECRET=optional_meta_app_secret_for_x_hub_signature_validation
+WHATSAPP_SEND_ENABLED=false
+WHATSAPP_GRAPH_API_VERSION=v23.0
 
 # Marketing ad platform integrations. Without these, Marketing uses development fallback platform data.
 GOOGLE_ADS_DEVELOPER_TOKEN=optional_google_ads_developer_token
@@ -222,8 +239,20 @@ Example shape:
     "amazon_sp_api_access_token": "request_scoped_amazon_access_token",
     "amazon_marketplace_ids": "ATVPDKIKX0DER",
     "gmail_access_token": "request_scoped_gmail_access_token",
+    "gmail_client_id": "request_scoped_google_oauth_client_id",
+    "gmail_client_secret": "request_scoped_google_oauth_client_secret",
+    "gmail_refresh_token": "request_scoped_google_oauth_refresh_token",
     "gmail_sender_email": "support@example.com",
     "gmail_send_enabled": true,
+    "gmail_watch_topic_name": "projects/your-project/topics/gmail-support",
+    "gmail_watch_label_ids": "INBOX",
+    "gmail_sync_enabled": false,
+    "whatsapp_access_token": "request_scoped_whatsapp_access_token",
+    "whatsapp_phone_number_id": "request_scoped_phone_number_id",
+    "whatsapp_business_account_id": "request_scoped_waba_id",
+    "whatsapp_verify_token": "request_scoped_webhook_verify_token",
+    "whatsapp_app_secret": "request_scoped_meta_app_secret",
+    "whatsapp_send_enabled": false,
     "meta_access_token": "request_scoped_meta_token",
     "meta_ad_account_id": "request_scoped_meta_account_id",
     "tiktok_access_token": "request_scoped_tiktok_token",
@@ -234,14 +263,15 @@ Example shape:
 
 For a production SaaS implementation, prefer passing a `tenant_id` and loading encrypted provider credentials from a secrets vault. Passing credentials directly in the API request is useful for local development and integration testing, but the Celery broker still receives the task payload.
 
-Support can optionally send the final `drafted_response` through Gmail after the workflow completes. This implementation uses a short-lived Gmail OAuth access token only; it does not store refresh tokens or provide an OAuth consent flow. Gmail delivery is skipped for escalated support tickets.
+Support can optionally send the final `drafted_response` through Gmail after the workflow completes. Gmail can use either a short-lived `GMAIL_ACCESS_TOKEN` or the preferred `GMAIL_CLIENT_ID` + `GMAIL_CLIENT_SECRET` + `GMAIL_REFRESH_TOKEN` settings to mint fresh access tokens automatically. Gmail delivery is skipped for escalated support tickets.
+Gmail and WhatsApp support can also use the omni-channel inbox flow instead of workflow auto-send. Channel inbound messages are stored, submitted as `support` workflow jobs, and exposed for review. `POST /api/v1/support/conversations/{conversation_id}/approve-send` sends only when the channel's send flag is enabled; otherwise it returns `disabled` and makes no provider API call.
 
 ## No-Token Checks
 
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\integrations\cross_platform_ads_tools.py
+python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\support_inbox.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\custom\whatsapp_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -255,7 +285,7 @@ Required `inputs` by workflow:
 ```text
 marketing: product_category, product_usp, target_markets, budget
 content: subject, product_category, target_markets, target_languages, platforms
-support: customer, person, inquiry (optional: ticket_id, customer_email, phone_number, inquiry_text, order_id, item_sku, return_reason, order_history, detected_language)
+support: customer, person, inquiry (optional: ticket_id, customer_email, phone_number, inquiry_text, order_id, item_sku, return_reason, order_history, detected_language, channel, channel_thread_id, channel_message_id, sender_profile, attachments, conversation_history)
 analytics: product_category, target_markets, date_range, currency
 bizdev: product_category, partnership_type, target_markets, target_languages, key_decision_maker_roles
 scheduler: event_type, target_markets, event_list, preferred_launch_window
@@ -609,6 +639,70 @@ Invoke-RestMethod `
   -ContentType "application/json" `
   -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
   -Body $body
+```
+
+## Omni-Channel Support Inbox
+
+WhatsApp Cloud API webhook verification uses Meta's challenge flow:
+
+```text
+GET /api/v1/channels/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=<WHATSAPP_VERIFY_TOKEN>&hub.challenge=<challenge>
+```
+
+Inbound WhatsApp webhooks are accepted at:
+
+```text
+POST /api/v1/channels/whatsapp/webhook
+```
+
+When `WHATSAPP_APP_SECRET` is configured, the webhook validates `X-Hub-Signature-256`. Inbound messages are stored idempotently by `channel_message_id`, normalized into support inputs, and submitted as `workflow_type=support`. WhatsApp delivery/read status webhooks update outbound message records.
+
+Gmail omni-channel support uses Gmail API message fetch plus optional Pub/Sub watch:
+
+```text
+POST /api/v1/channels/gmail/watch
+POST /api/v1/channels/gmail/pubsub
+POST /api/v1/channels/gmail/sync
+POST /api/v1/channels/gmail/sync-latest
+```
+
+`/gmail/watch` calls Gmail `users.watch` with `GMAIL_WATCH_TOPIC_NAME` and `GMAIL_WATCH_LABEL_IDS`. The Pub/Sub topic must grant Gmail publish permission in Google Cloud. Standard Gmail notifications include `emailAddress` and `historyId`; for deterministic local testing, use `/gmail/sync-latest` with `{"max_results": 5}` or `/gmail/sync` with `{"message_id": "gmail-message-id"}` and `GMAIL_SYNC_ENABLED=true`. Gmail attachments are stored as metadata only, not downloaded.
+
+To test without manually looking up Gmail message ids, use the dashboard's "Sync latest Gmail" button in the Omni-channel support inbox, or call:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/v1/channels/gmail/sync-latest" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:API_BEARER_TOKEN" } `
+  -Body '{"max_results": 5}'
+```
+
+Support agents can review drafts in the dashboard's "Omni-channel support inbox" expander or through the protected API:
+
+```text
+GET  /api/v1/support/conversations
+GET  /api/v1/support/conversations/{conversation_id}
+POST /api/v1/support/conversations/{conversation_id}/assign
+POST /api/v1/support/conversations/{conversation_id}/approve-send
+```
+
+`approve-send` dispatches by conversation channel. It makes no provider call while `WHATSAPP_SEND_ENABLED=false` or `GMAIL_SEND_ENABLED=false`. Escalated conversations are blocked from this endpoint and must be handled manually.
+
+For long-running Gmail usage, do not rely on OAuth Playground's short-lived access token. Use OAuth Playground with "Use your own OAuth credentials", request offline access for Gmail scopes, and save the returned refresh token:
+
+```env
+GMAIL_CLIENT_ID=your_google_oauth_client_id
+GMAIL_CLIENT_SECRET=your_google_oauth_client_secret
+GMAIL_REFRESH_TOKEN=your_google_refresh_token
+GMAIL_ACCESS_TOKEN=
+```
+
+The app exchanges the refresh token for a new access token before Gmail sync, watch, direct send, and approval send calls. If your Google Cloud OAuth app is `External` and still in `Testing`, Google may expire refresh tokens after 7 days for Gmail scopes; publish the app to production or use a Workspace internal app to avoid weekly re-authorization. After changing these values in `.env` for Docker, recreate the containers:
+
+```powershell
+docker compose up -d --force-recreate fastapi celery_worker
 ```
 
 ## Run Content Creation

@@ -68,6 +68,12 @@ class SupportInputs(StrictInputModel):
     return_reason: str | None = None
     order_history: dict[str, Any] | None = None
     detected_language: str | None = None
+    channel: str | None = None
+    channel_thread_id: str | None = None
+    channel_message_id: str | None = None
+    sender_profile: dict[str, Any] | None = None
+    attachments: list[dict[str, Any]] | None = None
+    conversation_history: list[dict[str, Any]] | None = None
 
 
 class AnalyticsInputs(StrictInputModel):
@@ -113,8 +119,21 @@ class ProviderCredentials(StrictInputModel):
     google_ads_access_token: str | None = None
     google_ads_customer_id: str | None = None
     gmail_access_token: str | None = None
+    gmail_client_id: str | None = None
+    gmail_client_secret: str | None = None
+    gmail_refresh_token: str | None = None
     gmail_sender_email: str | None = None
     gmail_send_enabled: bool | None = None
+    gmail_watch_topic_name: str | None = None
+    gmail_watch_label_ids: str | None = None
+    gmail_sync_enabled: bool | None = None
+    whatsapp_access_token: str | None = None
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_business_account_id: str | None = None
+    whatsapp_verify_token: str | None = None
+    whatsapp_app_secret: str | None = None
+    whatsapp_send_enabled: bool | None = None
+    whatsapp_graph_api_version: str | None = None
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None

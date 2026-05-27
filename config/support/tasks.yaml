@@ -1,7 +1,9 @@
 triage_and_routing:
   description: >
     Analyze the support ticket {ticket_id} from {customer_email}. Phone number, if provided: {phone_number}.
+    Channel metadata: channel={channel}, channel_thread_id={channel_thread_id}, channel_message_id={channel_message_id}.
     Inquiry text: {inquiry_text}
+    Conversation history, if provided: {conversation_history}
     Use this precomputed automation context as the source of truth:
     sentiment_analysis={sentiment_analysis}
     escalation_flag={escalation_flag}
@@ -15,6 +17,7 @@ inquiry_resolution:
   description: >
     {customer} just reached out with an important inquiry: {inquiry_text}.
     {person} from {customer} is the contact. Customer phone number, if provided: {phone_number}.
+    Channel metadata: channel={channel}, sender_profile={sender_profile}, attachments={attachments}.
     Research and provide a complete, accurate response.
     First search the internal Support Knowledge Base for policies, shipping timelines, return procedures,
     compensation guidance, escalation rules, or product specs. Use web/search tools only when the internal
@@ -50,7 +53,12 @@ quality_assurance_review:
     compliance_tags={compliance_tags}
     If escalation_flag is true, internal_notes must clearly state that human handoff is required.
     Set email_delivery to null; Gmail delivery is handled after this QA task completes.
+    Set outbound_channel to {channel}. Set requires_approval to true by default because channel replies are
+    reviewed by a support agent before sending. Use channel_recommended_action="human_handoff" when
+    escalation_flag is true, otherwise use "approve_send". outbound_payload_preview must include channel,
+    type="text", and the drafted response body without provider credentials.
   expected_output: >
     A SupportTicketOutput object with ticket_id, customer_email, phone_number, ticket_summary, sentiment_analysis,
     rma_validation, logistics_output, escalation_flag, resolution_steps, drafted_response,
-    internal_notes, qa_notes, compliance_tags, recommended_follow_up, and email_delivery.
+    internal_notes, qa_notes, compliance_tags, recommended_follow_up, channel_recommended_action,
+    outbound_channel, outbound_payload_preview, requires_approval, and email_delivery.

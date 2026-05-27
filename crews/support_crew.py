@@ -6,7 +6,7 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from tools.custom.gmail_tools import send_gmail_message
+from tools.custom.gmail_tools import resolve_gmail_access_token, send_gmail_message
 from tools.custom.support_automation_tools import (
     LogisticsIntegrationOutput,
     RMAAutomationTool,
@@ -31,6 +31,15 @@ class EmailDeliveryResult(BaseModel):
     recipient: str | None = Field(..., description="Recipient email address")
     message_id: str | None = Field(..., description="Gmail message id when sent")
     error: str | None = Field(..., description="Delivery error when sending fails")
+
+
+class OutboundPayloadPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str = Field(..., description="Outbound channel")
+    to: str | None = Field(..., description="Masked or provider-safe recipient reference")
+    type: str = Field(..., description="Outbound message type, such as text")
+    body: str = Field(..., description="Draft response body preview")
 
 
 class SupportTicketOutput(BaseModel):
@@ -62,6 +71,15 @@ class SupportTicketOutput(BaseModel):
     recommended_follow_up: str = Field(
         ..., description="Suggested next steps or follow-up timing"
     )
+    channel_recommended_action: str = Field(
+        "approve_send", description="Recommended channel action, such as approve_send, human_handoff, or draft_only"
+    )
+    outbound_channel: str = Field("email", description="Channel where the response should be sent")
+    outbound_payload_preview: OutboundPayloadPreview = Field(
+        ...,
+        description="Provider-safe preview payload for the outbound channel",
+    )
+    requires_approval: bool = Field(True, description="True when an agent must approve before sending")
     email_delivery: EmailDeliveryResult | None = Field(
         ..., description="Gmail delivery result, or null before post-processing"
     )
@@ -106,6 +124,12 @@ def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     normalized["order_id"] = normalized.get("order_id") or "ORDER-NOT-PROVIDED"
     normalized["item_sku"] = normalized.get("item_sku") or "SKU-NOT-PROVIDED"
     normalized["order_history"] = normalized.get("order_history") or {}
+    normalized["channel"] = normalized.get("channel") or "email"
+    normalized["channel_thread_id"] = normalized.get("channel_thread_id")
+    normalized["channel_message_id"] = normalized.get("channel_message_id")
+    normalized["sender_profile"] = normalized.get("sender_profile") or {}
+    normalized["attachments"] = normalized.get("attachments") or []
+    normalized["conversation_history"] = normalized.get("conversation_history") or []
     return normalized
 
 
@@ -157,10 +181,33 @@ def _attach_automation_context(result: dict[str, Any], context: dict[str, Any], 
     normalized["logistics_output"] = normalized.get("logistics_output") or context["logistics_output"]
     normalized["escalation_flag"] = bool(context["escalation_flag"])
     normalized["compliance_tags"] = normalized.get("compliance_tags") or context["compliance_tags"]
+    normalized["outbound_channel"] = normalized.get("outbound_channel") or inputs.get("channel") or "email"
+    normalized["requires_approval"] = _requires_human_approval(normalized, context)
+    normalized["channel_recommended_action"] = normalized.get("channel_recommended_action") or (
+        "human_handoff" if normalized["escalation_flag"] else "approve_send"
+    )
+    normalized["outbound_payload_preview"] = normalized.get("outbound_payload_preview") or {
+        "channel": normalized["outbound_channel"],
+        "to": inputs.get("channel_thread_id") or inputs.get("customer_email"),
+        "type": "text",
+        "body": normalized.get("drafted_response") or "",
+    }
     if not normalized.get("internal_notes"):
         handoff = "Human handoff required." if context["escalation_flag"] else "No human handoff required."
         normalized["internal_notes"] = f"{handoff} Automation context generated before CrewAI response drafting."
     return normalized
+
+
+def _requires_human_approval(result: dict[str, Any], context: dict[str, Any]) -> bool:
+    sentiment = context["sentiment_analysis"]
+    rma = context.get("rma_validation")
+    return bool(
+        result.get("requires_approval", True)
+        or context["escalation_flag"]
+        or sentiment.get("customer_tier") in {"VIP", "PREMIUM"}
+        or float(sentiment.get("sentiment_score") or 0) < -0.25
+        or (rma and not rma.get("eligible_for_return", True))
+    )
 
 
 def _bool_config(config_context: dict[str, Any], key: str, default: bool = False) -> bool:
@@ -177,6 +224,13 @@ def _email_delivery_status(
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
     recipient = result.get("customer_email")
+    if result.get("outbound_channel") and result.get("outbound_channel") != "email":
+        return {
+            "status": "skipped_channel",
+            "recipient": recipient,
+            "message_id": None,
+            "error": None,
+        }
     if result.get("escalation_flag"):
         return {
             "status": "skipped_escalation",
@@ -193,14 +247,19 @@ def _email_delivery_status(
             "error": None,
         }
 
-    access_token = config_context.get("gmail_access_token")
+    access_token = resolve_gmail_access_token(
+        access_token=config_context.get("gmail_access_token"),
+        client_id=config_context.get("gmail_client_id"),
+        client_secret=config_context.get("gmail_client_secret"),
+        refresh_token=config_context.get("gmail_refresh_token"),
+    )
     sender = config_context.get("gmail_sender_email")
     if not access_token or not sender or not recipient:
         return {
             "status": "missing_credentials",
             "recipient": recipient,
             "message_id": None,
-            "error": "Gmail access token, sender email, and customer email are required.",
+            "error": "Gmail access token or refresh-token credentials, sender email, and customer email are required.",
         }
 
     return send_gmail_message(
@@ -233,6 +292,12 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         "escalation_flag": automation_context["escalation_flag"],
         "compliance_tags": automation_context["compliance_tags"],
         "language_detected": automation_context["sentiment_analysis"]["language_detected"],
+        "channel": normalized_inputs["channel"],
+        "channel_thread_id": normalized_inputs.get("channel_thread_id"),
+        "channel_message_id": normalized_inputs.get("channel_message_id"),
+        "sender_profile": normalized_inputs.get("sender_profile"),
+        "attachments": normalized_inputs.get("attachments"),
+        "conversation_history": normalized_inputs.get("conversation_history"),
     }
 
     agents_config = _load_yaml_config("agents.yaml")

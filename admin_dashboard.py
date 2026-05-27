@@ -86,8 +86,20 @@ ACTIVE_STATUSES = {"pending", "running"}
 WORKFLOW_PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
     "support": {
         "gmail_access_token": "",
+        "gmail_client_id": "",
+        "gmail_client_secret": "",
+        "gmail_refresh_token": "",
         "gmail_sender_email": "",
         "gmail_send_enabled": False,
+        "gmail_watch_topic_name": "",
+        "gmail_watch_label_ids": "INBOX",
+        "gmail_sync_enabled": False,
+        "whatsapp_access_token": "",
+        "whatsapp_phone_number_id": "",
+        "whatsapp_business_account_id": "",
+        "whatsapp_verify_token": "",
+        "whatsapp_app_secret": "",
+        "whatsapp_send_enabled": False,
     }
 }
 ITEM_CONDITIONS = ["", "unopened", "damaged", "defective", "opened", "used"]
@@ -448,6 +460,101 @@ def _render_support_result_summary(latest_job: dict[str, Any]) -> None:
         st.json(email_delivery)
 
 
+def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
+    st.subheader("Support Inbox")
+    sync_cols = st.columns([1, 1])
+    latest_limit = sync_cols[0].number_input("Gmail latest count", min_value=1, max_value=20, value=5)
+    latest_query = sync_cols[1].text_input("Gmail query", value="")
+    if st.button("Sync latest Gmail", width="stretch"):
+        sync_payload: dict[str, Any] = {"max_results": int(latest_limit)}
+        if latest_query.strip():
+            sync_payload["query"] = latest_query.strip()
+        sync_result, sync_error = _request_json(
+            "POST",
+            api_base_url,
+            "/api/v1/channels/gmail/sync-latest",
+            bearer_token,
+            sync_payload,
+        )
+        if sync_error:
+            st.error(sync_error)
+        else:
+            st.success("Gmail sync completed")
+            st.json(sync_result)
+
+    conversations, error = _request_json(
+        "GET",
+        api_base_url,
+        "/api/v1/support/conversations?limit=25",
+        bearer_token,
+    )
+    if error:
+        st.info(f"Support inbox unavailable: {error}")
+        return
+    if not isinstance(conversations, list) or not conversations:
+        st.caption("No channel conversations yet.")
+        return
+
+    options = {
+        f"{item.get('status')} | {item.get('channel')} | {item.get('customer_handle_masked')} | {item.get('conversation_id')}": item
+        for item in conversations
+    }
+    selected_label = st.selectbox("Conversation", list(options.keys()))
+    selected = options[selected_label]
+    conversation_id = selected.get("conversation_id")
+    if not conversation_id:
+        return
+
+    conversation, detail_error = _request_json(
+        "GET",
+        api_base_url,
+        f"/api/v1/support/conversations/{conversation_id}",
+        bearer_token,
+    )
+    if detail_error:
+        st.error(detail_error)
+        return
+    if not isinstance(conversation, dict):
+        return
+
+    meta_cols = st.columns(4)
+    meta_cols[0].metric("Status", conversation.get("status") or "n/a")
+    meta_cols[1].metric("Channel", conversation.get("channel") or "n/a")
+    meta_cols[2].metric("Approval", "required" if conversation.get("requires_approval") else "optional")
+    meta_cols[3].metric("Escalation", "yes" if conversation.get("escalation_flag") else "no")
+
+    messages = conversation.get("messages")
+    if isinstance(messages, list):
+        st.markdown("**Messages**")
+        for message in messages[-8:]:
+            direction = message.get("direction")
+            status = message.get("status")
+            text = message.get("text") or "[attachment or empty message]"
+            st.caption(f"{direction} | {status} | {message.get('created_at')}")
+            st.write(text)
+
+    draft = conversation.get("draft_response")
+    if draft:
+        st.markdown("**Draft response**")
+        edited = st.text_area("Approved message", value=str(draft), height=160)
+        send_disabled = bool(conversation.get("escalation_flag"))
+        if st.button("Approve and send", disabled=send_disabled, width="stretch"):
+            result, send_error = _request_json(
+                "POST",
+                api_base_url,
+                f"/api/v1/support/conversations/{conversation_id}/approve-send",
+                bearer_token,
+                {"message": edited},
+            )
+            if send_error:
+                st.error(send_error)
+            else:
+                st.success("Approval submitted")
+                st.json(result)
+    else:
+        st.caption("Draft response will appear after the linked support job completes.")
+
+
 def main() -> None:
     st.set_page_config(page_title="Cross-Border AI Admin", layout="wide")
     st.title("Cross-Border AI Admin")
@@ -556,6 +663,9 @@ def main() -> None:
     if latest_events:
         st.subheader("Execution Events")
         st.dataframe(latest_events, width="stretch", hide_index=True)
+
+    with st.expander("Omni-channel support inbox", expanded=False):
+        _render_support_inbox(api_base_url, bearer_token)
 
     if st.session_state.get("auto_refresh_error"):
         st.warning(st.session_state.auto_refresh_error)
