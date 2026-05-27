@@ -14,6 +14,13 @@ from crews.support_crew import CustomerServiceOutput, _attach_customer_service_c
 from models import WorkflowType
 from runtime_config import load_runtime_config
 from services.pim_connector import PIMConnector, PIMQueryResult
+from scripts.train_intent_classifier import (
+    INTENT_LABELS,
+    IntentClassifierTool,
+    IntentDatasetBuilder,
+    TrainingConfig,
+    export_label_map,
+)
 from support_inbox import SupportInboxStore
 from tests.test_whatsapp_omnichannel import FakeSupportSession
 from tools.custom.customer_service_tools import IntentRouterTool, OrderTrackingTool, PreSalesProductKnowledgeTool
@@ -270,6 +277,53 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(config.pim_akeneo_base_url, "https://akeneo.example")
         self.assertEqual(config.pim_plytix_api_key, "plytix-key")
         self.assertEqual(config.pim_custom_api_key, "custom-key")
+
+    def test_intent_training_config_defaults(self) -> None:
+        config = TrainingConfig()
+
+        self.assertEqual(config.model_name, "bert-base-multilingual-cased")
+        self.assertEqual(config.num_labels, 3)
+        self.assertEqual(config.output_dir, "artifacts/intent_classifier_v1")
+        self.assertEqual(config.languages, ["en", "es", "fr", "de", "ja", "zh", "ar", "pt", "ko", "it"])
+
+    def test_intent_dataset_builder_covers_languages_and_labels(self) -> None:
+        config = TrainingConfig()
+        samples = IntentDatasetBuilder.build_samples(config, include_augmentation=False)
+        languages = {sample["language"] for sample in samples}
+        intents = {sample["intent"] for sample in samples}
+
+        self.assertEqual(languages, set(config.languages))
+        self.assertEqual(intents, {"pre_sales", "order_fulfillment", "post_sales_support"})
+        self.assertEqual(INTENT_LABELS, {"pre_sales": 0, "order_fulfillment": 1, "post_sales_support": 2})
+        for language in config.languages:
+            self.assertEqual(sum(1 for sample in samples if sample["language"] == language), 9)
+
+    def test_intent_dataset_dry_run_needs_no_ml_dependencies(self) -> None:
+        summary = IntentDatasetBuilder.dry_run_summary(TrainingConfig(languages=["en", "ja"]))
+
+        self.assertEqual(summary["num_labels"], 3)
+        self.assertEqual(summary["by_language"]["en"], 18)
+        self.assertEqual(summary["by_language"]["ja"], 9)
+        self.assertEqual(summary["by_intent"]["pre_sales"], 9)
+        self.assertEqual(summary["label2id"]["order_fulfillment"], 1)
+
+    def test_intent_classifier_tool_with_fake_pipeline(self) -> None:
+        class FakeClassifier:
+            def __call__(self, text):
+                return [{"label": "LABEL_1", "score": 0.91}]
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_label_map(tmpdir)
+            result = IntentClassifierTool(tmpdir, classifier=FakeClassifier()).predict(
+                "Where is my order?", language="en"
+            )
+
+        self.assertEqual(result["detected_intent"], "order_fulfillment")
+        self.assertEqual(result["confidence_score"], 0.91)
+        self.assertFalse(result["requires_human_review"])
+        self.assertEqual(result["language_detected"], "en")
 
     def test_support_yaml_contains_customer_service_agents_and_tasks(self) -> None:
         root = Path(__file__).resolve().parents[1]

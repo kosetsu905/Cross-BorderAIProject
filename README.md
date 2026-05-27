@@ -102,6 +102,12 @@ cd D:\Cross-BorderAIProject
 python -m pip install -r requirements.txt
 ```
 
+Optional ML training dependencies are kept separate from the runtime install:
+
+```powershell
+python -m pip install -r requirements-ml.txt
+```
+
 The project expects a root-level `.env` file.
 
 Minimum required for running CrewAI workflows:
@@ -679,6 +685,7 @@ Invoke-RestMethod `
 - Use `WORKFLOW_BACKEND=celery` with Redis and PostgreSQL for production-style queueing and durable job state. The provided `docker-compose.yml` already starts FastAPI, Redis, Celery, PostgreSQL, and Flower.
 - Configure `SUPPORT_SESSION_REDIS_URL` when you want Redis-backed session context. If omitted, the app falls back to `CELERY_BROKER_URL`; if Redis is unavailable, PostgreSQL remains the source of truth and support workflows continue with database-backed history.
 - Configure `PIM_BACKEND=akeneo|plytix|custom` plus the matching `PIM_*_BASE_URL` and `PIM_*_API_KEY` when pre-sales product answers should use a live PIM. Without credentials, Customer Service uses a deterministic mock PIM fallback for local and CI runs; Postgres/Redis/inbox are not product master-data stores.
+- Train the optional multilingual intent classifier with `scripts/train_intent_classifier.py` only after installing `requirements-ml.txt`. The default runtime still uses the keyword router; trained artifacts are written under `artifacts/intent_classifier_v1` and are ignored by git.
 - WhatsApp approval sending respects Meta's 24-hour customer service window. When Redis session state shows the window is still open, `approve-send` uses the normal WhatsApp text API. When the window is expired or no active session window is available, it sends a pre-approved template instead of free-form text.
 
 WhatsApp Cloud API webhook verification uses Meta's challenge flow:
@@ -731,6 +738,25 @@ POST /api/v1/support/conversations/{conversation_id}/approve-send
 For WhatsApp conversations outside the 24-hour window, `approve-send` resolves the configured WhatsApp provider and sends a pre-approved template. The built-in template map is `en -> support_reengagement_en (en_US)`, `ja -> support_reengagement_ja (ja)`, `es -> support_reengagement_es (es)`, and `default -> support_reengagement (en_US)`. `WHATSAPP_PROVIDER=meta` uses Meta Cloud API directly; `WHATSAPP_PROVIDER=ycloud` uses YCloud's `sendDirectly` and template APIs for validation/gray rollout. Business code calls the provider adapter, so you can switch providers through configuration.
 
 Redis session state is stored under `support:session:{session_id}` with a default 24-hour TTL (`SUPPORT_SESSION_TTL_SECONDS=86400`) and the latest 20 history entries (`SUPPORT_SESSION_HISTORY_LIMIT=20`). It caches channel, customer id, language preference, metadata, window expiry, and rotated inbound/outbound history for fast omni-channel context. PostgreSQL `support_conversations` and `support_messages` remain authoritative; Redis write/read failures degrade gracefully to database history.
+
+### Multilingual intent classifier training
+
+The Customer Service router can be upgraded later with a trained multilingual classifier. The training script is offline by default:
+
+```powershell
+python .\scripts\train_intent_classifier.py --dry-run
+```
+
+For real training, install the optional ML dependencies first, then run:
+
+```powershell
+python -m pip install -r requirements-ml.txt
+python .\scripts\train_intent_classifier.py --train
+```
+
+The script trains a `bert-base-multilingual-cased` three-class classifier for `pre_sales`, `order_fulfillment`, and `post_sales_support`, exports `label_map.json`, and saves the final model under `artifacts/intent_classifier_v1/final`. The generated model is not used automatically by the production router yet; it is a prepared integration point for a future configured switch.
+
+The offline 8.7.3 expected-outcome validation lives in `tests.test_customer_service_integration`. It verifies PIM fallback and multilingual intent classifier wiring with a fake classifier, so it does not need ML dependencies, credentials, network, or a trained model.
 
 For long-running Gmail usage, do not rely on OAuth Playground's short-lived access token. Use OAuth Playground with "Use your own OAuth credentials", request offline access for Gmail scopes, and save the returned refresh token:
 
