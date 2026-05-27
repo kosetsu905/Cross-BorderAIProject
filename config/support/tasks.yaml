@@ -1,68 +1,63 @@
-triage_and_routing:
+pre_sales_consultation:
   description: >
-    Analyze the support ticket {ticket_id} from {customer_email}. Phone number, if provided: {phone_number}.
-    Channel metadata: channel={channel}, channel_thread_id={channel_thread_id}, channel_message_id={channel_message_id}.
-    Inquiry text: {inquiry_text}
+    {customer} is asking about {product_category} before purchase: "{inquiry_text}".
     Conversation history, if provided: {conversation_history}
-    Use this precomputed automation context as the source of truth:
-    sentiment_analysis={sentiment_analysis}
-    escalation_flag={escalation_flag}
-    compliance_tags={compliance_tags}
-    Confirm the customer sentiment, intent category, customer tier, urgency level,
-    detected language, and whether human handoff is required. If the customer tier is
-    VIP or PREMIUM and sentiment_score is below -0.6, keep the handoff requirement.
-  expected_output: "A concise triage summary with sentiment, intent, tier, language, urgency, and handoff decision."
+    Product lookup context: {pre_sales_context}
+    Provide a clear, helpful response that answers feature, compatibility, variant, and use-case questions using verified product specs.
+    Recommend the best fit for {use_case_if_provided} when enough information is available, and ask a concise clarifying question otherwise.
+    Include clear next steps such as add to cart, check size guide, confirm compatibility, or contact for bulk pricing.
+    Avoid over-promising unverified features, integrations, certifications, or delivery timelines.
+    Adapt tone for {channel} and language for {language_plan}.
+  expected_output: >
+    JSON with response_type="pre_sales", product_recommendation, feature_explanation, comparison_summary,
+    next_steps, confidence_level, requires_human_review, and final_response.
+
+order_status_handling:
+  description: >
+    {customer} is inquiring about order {order_id_if_provided}: "{inquiry_text}".
+    Conversation history, if provided: {conversation_history}
+    Order/tracking context: {order_context}
+    This is a post-purchase, pre-delivery inquiry. Verify order existence and current status from the provided context.
+    Provide shipping or tracking information when available, explain delivery timelines, customs status, or delay reasons,
+    and offer actionable options such as address modification, cancellation, carrier preferences, or escalation when eligible.
+    Never guess order status. If data is unavailable, say so and provide an escalation path.
+    Adapt tone for {channel} and language for {language_plan}.
+  expected_output: >
+    JSON with response_type="order_fulfillment", order_verified, current_status, tracking_info,
+    delivery_estimate, available_actions, escalation_needed, next_update_timeline, and final_response.
 
 inquiry_resolution:
   description: >
-    {customer} reached out via {channel} with inquiry: {inquiry_text}.
-    {person} from {customer} is the contact. Customer phone number, if provided: {phone_number}.
-    Channel metadata: channel={channel}, sender_profile={sender_profile}, attachments={attachments}.
-    Adapt the customer-facing drafted_response tone, structure, and length for {channel}:
-    - WhatsApp: conversational, concise (<2000 chars), use bullet points sparingly, avoid formal salutations.
-    - Email/Gmail: professional, structured, detailed, include the ticket reference and signature.
-    - WebChat/Social: friendly, scannable, 1-2 short paragraphs max, with a clear next step.
-    Research and provide a complete, accurate response.
-    First search the internal Support Knowledge Base for policies, shipping timelines, return procedures,
-    compensation guidance, escalation rules, or product specs. Use web/search tools only when the internal
-    knowledge base does not contain enough information.
-    Use the precomputed automation context:
-    sentiment_analysis={sentiment_analysis}
-    rma_validation={rma_validation}
-    logistics_output={logistics_output}
-    escalation_flag={escalation_flag}
-    language_detected={language_detected}
-    If intent is RMA_REQUEST, prioritize the RMA validation result. If eligible and logistics_output exists,
-    include the simulated label URL, tracking number, warehouse notice, and localized return instructions.
-    If not eligible, explain the policy reason and offer reasonable alternatives. If escalation_flag is true,
-    draft an empathetic response and note that a human support lead should take over.
-    If a phone number is provided, record it as an internal contact channel. Do not repeat the full phone
-    number in the customer-facing response unless it is necessary for the next step.
-    Ensure no assumptions are made and cite sources where applicable.
-  expected_output: "A channel-optimized draft response addressing all parts of the inquiry, with clear resolution steps, referenced sources, and structured fields compatible with SupportTicketOutput."
+    {customer} reached out via {channel} with post-purchase inquiry: {inquiry_text}.
+    This is a post-delivery support request such as returns, refunds, defects, usage help, or complaints.
+    Channel metadata: sender_profile={sender_profile}, attachments={attachments}.
+    Conversation history, if provided: {conversation_history}
+    Automation context: sentiment_analysis={sentiment_analysis}, rma_validation={rma_validation},
+    logistics_output={logistics_output}, escalation_flag={escalation_flag}, compliance_tags={compliance_tags}.
+    Use the internal Support Knowledge Base first for policies, shipping timelines, returns, compensation, escalation rules, and product specs.
+    If intent is RMA_REQUEST, prioritize the RMA validation and logistics context. Include return label/tracking details only when present.
+    If escalation_flag is true, draft an empathetic handoff response and state that a human support lead should take over.
+    Adapt tone, structure, and length for {channel}: WhatsApp concise and conversational (<2000 chars);
+    Email/Gmail professional and structured;
+    WebChat/Social friendly, scannable, and action-oriented. Use {language_plan}.
+  expected_output: >
+    JSON with response_type="post_sales_support", issue_category, resolution_steps, policy_reference,
+    compensation_offered, follow_up_required, and a channel-optimized draft response in final_response.
 
 quality_assurance_review:
   description: >
-    Review the complete support resolution for ticket {ticket_id}. Ensure it is comprehensive, accurate,
-    culturally appropriate, and aligned with brand voice. Check that all questions are answered,
-    tone is professional and friendly, and no unsupported claims are made.
-    The final output must preserve these provided fields exactly unless you add more explanatory detail:
-    ticket_id={ticket_id}
-    customer_email={customer_email}
-    phone_number={phone_number}
-    sentiment_analysis={sentiment_analysis}
-    rma_validation={rma_validation}
-    logistics_output={logistics_output}
-    escalation_flag={escalation_flag}
-    compliance_tags={compliance_tags}
-    If escalation_flag is true, internal_notes must clearly state that human handoff is required.
-    Set email_delivery to null; Gmail delivery is handled after this QA task completes.
-    Set outbound_channel to {channel}. Set requires_approval to true by default because channel replies are
-    reviewed by a support agent before sending. Use channel_recommended_action="human_handoff" when
-    escalation_flag is true, otherwise use "approve_send". outbound_payload_preview must include channel,
-    type="text", and the drafted response body without provider credentials.
+    Review the drafted response for {customer}'s {response_type} inquiry.
+    Ensure it is comprehensive, accurate, culturally appropriate, channel-optimized for {channel}, and aligned with brand voice.
+    Verify:
+    - Pre-sales: no over-promising; unverified features or delivery timelines are clearly qualified.
+    - Order: status is based on provided order context; no guessed timelines; clear escalation path.
+    - Post-sales: policy-compliant; empathetic tone; actionable next steps; human handoff preserved when required.
+    The final output must be a CustomerServiceOutput-compatible JSON object with:
+    session_id, customer_context, detected_intent, routing_confidence, pre_sales_response,
+    order_response, support_response, final_response, qa_status, compliance_flags,
+    recommended_follow_up, escalation_needed, data_sources, and assumptions.
+    Use qa_status="APPROVED" only when the response can be sent without human review.
+    Use qa_status="REVIEW_REQUIRED" for uncertainty, low routing confidence, policy gaps, billing disputes,
+    VIP/PREMIUM concerns, negative sentiment, or any unsupported claim. Use qa_status="REJECTED" if the answer is unsafe.
   expected_output: >
-    A SupportTicketOutput object with ticket_id, customer_email, phone_number, ticket_summary, sentiment_analysis,
-    rma_validation, logistics_output, escalation_flag, resolution_steps, drafted_response,
-    internal_notes, qa_notes, compliance_tags, recommended_follow_up, channel_recommended_action,
-    outbound_channel, outbound_payload_preview, requires_approval, and email_delivery.
+    A CustomerServiceOutput object with one stage-specific response populated and a polished final_response.

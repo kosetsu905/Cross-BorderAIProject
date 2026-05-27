@@ -43,6 +43,18 @@ RUNTIME_CONFIG_KEYS = {
     "whatsapp_app_secret",
     "whatsapp_send_enabled",
     "whatsapp_graph_api_version",
+    "whatsapp_provider",
+    "ycloud_api_key",
+    "ycloud_whatsapp_from",
+    "ycloud_waba_id",
+    "ycloud_base_url",
+    "pim_backend",
+    "pim_akeneo_base_url",
+    "pim_akeneo_api_key",
+    "pim_plytix_base_url",
+    "pim_plytix_api_key",
+    "pim_custom_base_url",
+    "pim_custom_api_key",
     "meta_access_token",
     "meta_ad_account_id",
     "meta_page_id",
@@ -103,6 +115,18 @@ class RuntimeConfig:
     whatsapp_app_secret: str | None = None
     whatsapp_send_enabled: bool = False
     whatsapp_graph_api_version: str = "v23.0"
+    whatsapp_provider: str = "ycloud"
+    ycloud_api_key: str | None = None
+    ycloud_whatsapp_from: str | None = None
+    ycloud_waba_id: str | None = None
+    ycloud_base_url: str = "https://api.ycloud.com/v2"
+    pim_backend: str = "akeneo"
+    pim_akeneo_base_url: str | None = None
+    pim_akeneo_api_key: str | None = None
+    pim_plytix_base_url: str | None = None
+    pim_plytix_api_key: str | None = None
+    pim_custom_base_url: str | None = None
+    pim_custom_api_key: str | None = None
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None
@@ -183,6 +207,18 @@ def load_runtime_config() -> RuntimeConfig:
         whatsapp_app_secret=os.getenv("WHATSAPP_APP_SECRET"),
         whatsapp_send_enabled=_bool_env("WHATSAPP_SEND_ENABLED", False),
         whatsapp_graph_api_version=os.getenv("WHATSAPP_GRAPH_API_VERSION", "v23.0"),
+        whatsapp_provider=os.getenv("WHATSAPP_PROVIDER", "ycloud"),
+        ycloud_api_key=os.getenv("YCLOUD_API_KEY"),
+        ycloud_whatsapp_from=os.getenv("YCLOUD_WHATSAPP_FROM"),
+        ycloud_waba_id=os.getenv("YCLOUD_WABA_ID"),
+        ycloud_base_url=os.getenv("YCLOUD_BASE_URL", "https://api.ycloud.com/v2"),
+        pim_backend=os.getenv("PIM_BACKEND", "akeneo"),
+        pim_akeneo_base_url=os.getenv("PIM_AKENEO_BASE_URL"),
+        pim_akeneo_api_key=os.getenv("PIM_AKENEO_API_KEY"),
+        pim_plytix_base_url=os.getenv("PIM_PLYTIX_BASE_URL"),
+        pim_plytix_api_key=os.getenv("PIM_PLYTIX_API_KEY"),
+        pim_custom_base_url=os.getenv("PIM_CUSTOM_BASE_URL"),
+        pim_custom_api_key=os.getenv("PIM_CUSTOM_API_KEY"),
         meta_access_token=os.getenv("META_ACCESS_TOKEN"),
         meta_ad_account_id=os.getenv("META_AD_ACCOUNT_ID"),
         meta_page_id=os.getenv("META_PAGE_ID"),

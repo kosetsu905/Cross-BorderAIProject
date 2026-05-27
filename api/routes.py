@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
@@ -9,6 +10,7 @@ from database import get_db_session
 from db_models import SupportConversationRecord
 from models import JobEventResponse, JobResponse, JobStatus, WorkflowRequest, WorkflowType
 from runtime_config import load_runtime_config
+from services.whatsapp_provider import get_whatsapp_provider
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
 from support_inbox import SupportInboxStore
 from tools.custom.gmail_tools import (
@@ -23,7 +25,6 @@ from tools.custom.gmail_tools import (
 )
 from tools.custom.whatsapp_tools import (
     parse_whatsapp_webhook,
-    send_whatsapp_text_message,
     verify_whatsapp_signature,
 )
 
@@ -272,6 +273,35 @@ def create_router(orchestrator: object) -> APIRouter:
             for event in orchestrator.get_job_events(job_id)
         ]
 
+    @router.post("/api/v1/service/inquiry")
+    async def submit_customer_service_inquiry(
+        _: AuthDependency,
+        payload: dict[str, object] = Body(...),
+    ) -> dict[str, object]:
+        customer_key = str(payload.get("customer_email") or payload.get("customer") or payload.get("person") or "unknown")
+        session_id = str(payload.get("session_id") or f"sess_{customer_key}_{int(time.time())}")
+        inputs = {
+            **payload,
+            "session_id": session_id,
+            "customer": payload.get("customer") or payload.get("person") or customer_key,
+            "person": payload.get("person") or payload.get("customer") or customer_key,
+            "inquiry": payload.get("inquiry") or payload.get("inquiry_text") or "",
+            "inquiry_text": payload.get("inquiry_text") or payload.get("inquiry") or "",
+            "conversation_history": payload.get("conversation_history") or [],
+            "customer_tier": payload.get("customer_tier") or "STANDARD",
+        }
+        job_id = await orchestrator.submit_job(
+            WorkflowType.SUPPORT,
+            inputs,
+            metadata={"source": "service_inquiry", "session_id": session_id},
+        )
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "session_id": session_id,
+            "workflow_type": WorkflowType.SUPPORT.value,
+        }
+
     @router.get("/api/v1/support/conversations")
     async def list_support_conversations(
         _: AuthDependency,
@@ -496,39 +526,32 @@ async def _send_whatsapp_approval_delivery(
 ) -> tuple[dict[str, object], dict[str, object]]:
     draft_payload = conversation.draft_payload or {}
     session_state = store.session_manager.load_session(conversation_id) or {}
+    provider = get_whatsapp_provider(config)
     if store.session_manager.is_window_expired(conversation_id):
         language = _whatsapp_template_language(draft_payload, session_state)
-        delivery = await WhatsAppTemplateManager.from_config(config).send_out_of_window_message(
+        template = WhatsAppTemplateManager.from_config(config).template_for_language(language)
+        delivery = await provider.send_template_message(
             to=conversation.customer_handle,
-            lang_code=language,
+            template_name=template["name"],
+            language_code=template["lang"],
+            parameters=[],
         )
         return delivery, {
             "delivery": delivery,
             "draft_payload": draft_payload,
             "session_language": session_state.get("language_preference"),
+            "provider": delivery.get("provider") or getattr(provider, "provider_name", "unknown"),
             "send_mode": "template",
         }
 
-    if not getattr(config, "whatsapp_access_token", None) or not getattr(config, "whatsapp_phone_number_id", None):
-        return {
-            "status": "missing_credentials",
-            "recipient": conversation.customer_handle,
-            "message_id": None,
-            "error": "WhatsApp access token, phone number id, and recipient are required.",
-        }, {
-            "send_mode": "text",
-            "draft_payload": draft_payload,
-        }
-    delivery = send_whatsapp_text_message(
-        access_token=str(getattr(config, "whatsapp_access_token")),
-        phone_number_id=str(getattr(config, "whatsapp_phone_number_id")),
-        recipient=str(conversation.customer_handle),
+    delivery = await provider.send_text_message(
+        to=conversation.customer_handle,
         body=draft_text,
-        graph_api_version=str(getattr(config, "whatsapp_graph_api_version", "v23.0")),
     )
     return delivery, {
         "delivery": delivery,
         "draft_payload": draft_payload,
+        "provider": delivery.get("provider") or getattr(provider, "provider_name", "unknown"),
         "send_mode": "text",
     }
 

@@ -219,6 +219,30 @@ class MasterOrchestrator:
                     "duration_seconds": usage_summary.get("duration_seconds"),
                 },
             )
+            if workflow_type == WorkflowType.SUPPORT and isinstance(clean_result, dict):
+                try:
+                    from services.support_auto_dispatch import process_completed_support_job
+
+                    dispatch_result = await process_completed_support_job(
+                        job_id=job_id,
+                        inputs=inputs,
+                        result=clean_result,
+                        config_context=config_context,
+                    )
+                    self._job_store.log_event(
+                        job_id,
+                        "support_auto_dispatch",
+                        "Support auto-dispatch evaluated.",
+                        dispatch_result,
+                    )
+                except Exception as dispatch_exc:
+                    logger.exception("Support auto-dispatch failed for job %s", job_id)
+                    self._job_store.log_event(
+                        job_id,
+                        "support_auto_dispatch_failed",
+                        "Support auto-dispatch failed after workflow completion.",
+                        {"error": str(dispatch_exc)},
+                    )
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._job_store.update_job(

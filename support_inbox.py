@@ -32,7 +32,7 @@ def mask_contact(value: str | None) -> str | None:
 def _conversation_status_from_result(result: dict[str, Any]) -> str:
     if _requires_handoff(result):
         return "handoff_required"
-    if result.get("drafted_response"):
+    if _draft_response_from_result(result):
         return "draft_ready"
     return "processing"
 
@@ -40,18 +40,32 @@ def _conversation_status_from_result(result: dict[str, Any]) -> str:
 def _requires_approval(result: dict[str, Any]) -> bool:
     sentiment = result.get("sentiment_analysis") or {}
     rma = result.get("rma_validation") or {}
-    return bool(
-        result.get("requires_approval", True)
+    qa_status = str(result.get("qa_status") or "").upper()
+    confidence = float(result.get("routing_confidence") or 1)
+    forced_review = bool(
+        _requires_handoff(result)
         or result.get("escalation_flag")
+        or result.get("escalation_needed")
+        or qa_status in {"REVIEW_REQUIRED", "REJECTED"}
+        or confidence < 0.75
         or sentiment.get("customer_tier") in {"VIP", "PREMIUM"}
         or float(sentiment.get("sentiment_score") or 0) < -0.25
+        or sentiment.get("intent_category") == "BILLING_ISSUE"
         or (rma and not rma.get("eligible_for_return", True))
     )
+    if forced_review:
+        return True
+    if "requires_approval" in result and result.get("requires_approval") is not None:
+        return bool(result.get("requires_approval"))
+    if qa_status == "APPROVED":
+        return False
+    return True
 
 
 def _requires_handoff(result: dict[str, Any]) -> bool:
     return bool(
-        result.get("escalation_flag")
+        result.get("escalation_needed")
+        or result.get("escalation_flag")
         or result.get("channel_recommended_action") == "human_handoff"
     )
 
@@ -65,10 +79,16 @@ def _handoff_inquiry_preview(result: dict[str, Any]) -> str:
     return str(
         result.get("inquiry_text")
         or result.get("ticket_summary")
+        or result.get("final_response")
         or result.get("drafted_response")
         or result.get("internal_notes")
         or ""
     )
+
+
+def _draft_response_from_result(result: dict[str, Any]) -> str | None:
+    value = result.get("final_response") or result.get("drafted_response")
+    return str(value) if value else None
 
 
 class SupportInboxStore:
@@ -235,7 +255,7 @@ class SupportInboxStore:
             return
         previous_payload = conversation.draft_payload if isinstance(conversation.draft_payload, dict) else {}
         draft_payload = dict(result)
-        conversation.draft_response = result.get("drafted_response") or conversation.draft_response
+        conversation.draft_response = _draft_response_from_result(result) or conversation.draft_response
         conversation.requires_approval = _requires_approval(result)
         conversation.escalation_flag = _requires_handoff(result)
         conversation.status = _conversation_status_from_result(result)
@@ -252,10 +272,10 @@ class SupportInboxStore:
                     context={
                         "conversation_id": conversation.conversation_id,
                         "job_id": job_data.get("job_id"),
-                        "ticket_id": result.get("ticket_id"),
+                        "ticket_id": result.get("ticket_id") or result.get("session_id"),
                         "customer_email": result.get("customer_email"),
-                        "channel_recommended_action": result.get("channel_recommended_action"),
-                        "escalation_flag": result.get("escalation_flag"),
+                        "channel_recommended_action": result.get("channel_recommended_action") or result.get("qa_status"),
+                        "escalation_flag": result.get("escalation_flag") or result.get("escalation_needed"),
                     },
                 )
         conversation.draft_payload = draft_payload

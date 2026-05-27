@@ -1,3 +1,5 @@
+import asyncio
+
 from celery_worker.celery_app import celery_app
 from crews.analytics_crew import run_analytics_crew
 from crews.bizdev_crew import run_bizdev_crew
@@ -72,6 +74,31 @@ def _run_with_job_state(
                 "duration_seconds": usage_summary.get("duration_seconds"),
             },
         )
+        if workflow_type == "support":
+            try:
+                from services.support_auto_dispatch import process_completed_support_job
+
+                dispatch_result = asyncio.run(
+                    process_completed_support_job(
+                        job_id=job_id,
+                        inputs=inputs,
+                        result=normalized_result,
+                        config_context=config_context,
+                    )
+                )
+                job_store.log_event(
+                    job_id,
+                    "support_auto_dispatch",
+                    "Support auto-dispatch evaluated.",
+                    dispatch_result,
+                )
+            except Exception as dispatch_exc:
+                job_store.log_event(
+                    job_id,
+                    "support_auto_dispatch_failed",
+                    "Support auto-dispatch failed after workflow completion.",
+                    {"error": str(dispatch_exc)},
+                )
         return {
             "data": normalized_result,
             "meta": usage_summary,

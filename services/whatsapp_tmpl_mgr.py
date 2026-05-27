@@ -68,6 +68,21 @@ class WhatsAppTemplateManager:
         return dict(self.approved_templates.get(normalized) or self.approved_templates["default"])
 
     async def send_out_of_window_message(self, to: str | None, lang_code: str | None) -> dict[str, Any]:
+        template = self.template_for_language(lang_code)
+        return await self.send_template_message(
+            to=to,
+            template_name=template["name"],
+            language_code=template["lang"],
+            parameters=[],
+        )
+
+    async def send_template_message(
+        self,
+        to: str | None,
+        template_name: str,
+        language_code: str,
+        parameters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if not self.access_token or not self.phone_number_id or not to:
             return {
                 "status": "missing_credentials",
@@ -76,7 +91,7 @@ class WhatsAppTemplateManager:
                 "error": "WhatsApp access token, phone number id, and recipient are required.",
             }
 
-        template = self.template_for_language(lang_code)
+        template = {"name": template_name, "lang": language_code}
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -84,7 +99,7 @@ class WhatsAppTemplateManager:
             "template": {
                 "name": template["name"],
                 "language": {"code": template["lang"]},
-                "components": [{"type": "body", "parameters": []}],
+                "components": [{"type": "body", "parameters": parameters or []}],
             },
         }
         url = f"{self.base_url}/{self.phone_number_id}/messages"

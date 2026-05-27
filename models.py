@@ -67,6 +67,13 @@ class SupportInputs(StrictInputModel):
     item_sku: str | None = None
     return_reason: str | None = None
     order_history: dict[str, Any] | None = None
+    customer_tier: str | None = None
+    product_category: str | None = None
+    product_category_hint: str | None = None
+    use_case: str | None = None
+    use_case_if_provided: str | None = None
+    order_id_if_provided: str | None = None
+    region: str | None = None
     detected_language: str | None = None
     language_plan: str | None = None
     channel: str | None = None
@@ -136,6 +143,11 @@ class ProviderCredentials(StrictInputModel):
     whatsapp_app_secret: str | None = None
     whatsapp_send_enabled: bool | None = None
     whatsapp_graph_api_version: str | None = None
+    whatsapp_provider: str | None = None
+    ycloud_api_key: str | None = None
+    ycloud_whatsapp_from: str | None = None
+    ycloud_waba_id: str | None = None
+    ycloud_base_url: str | None = None
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None

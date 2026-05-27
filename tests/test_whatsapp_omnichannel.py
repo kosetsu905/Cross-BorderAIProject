@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import yaml
 
 from api.routes import _send_whatsapp_approval_delivery
@@ -16,6 +17,13 @@ from models import SupportInputs
 from runtime_config import load_runtime_config
 from services.language_detector import LanguageDetector
 from services.session_manager import AsyncSessionManager, SessionManager
+from services.support_auto_dispatch import _send_whatsapp_auto_reply, process_completed_support_job
+from services.whatsapp_provider import (
+    MetaCloudWhatsAppProvider,
+    YCloudWhatsAppProvider,
+    get_whatsapp_provider,
+    send_rma_label_message,
+)
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
 from support_inbox import SupportInboxStore, _json_safe, mask_contact
 from tools.custom.support_automation_tools import detect_language
@@ -45,7 +53,29 @@ class FakeSupportSession:
         return None
 
     def execute(self, statement: object) -> object:
-        return SimpleNamespace(scalars=lambda: self.records)
+        return SimpleNamespace(scalars=lambda: FakeScalarResult(self.records))
+
+
+class FakeScalarResult:
+    def __init__(self, records: list[SimpleNamespace]) -> None:
+        self.records = records
+
+    def __iter__(self) -> object:
+        return iter(self.records)
+
+    def first(self) -> SimpleNamespace | None:
+        return self.records[0] if self.records else None
+
+
+class FakeSessionContext:
+    def __init__(self, session: FakeSupportSession) -> None:
+        self.session = session
+
+    def __enter__(self) -> FakeSupportSession:
+        return self.session
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
 
 
 class FakeRedis:
@@ -75,10 +105,17 @@ class FakeAsyncRedis:
 
 
 class FakeAsyncResponse:
-    def __init__(self, payload: dict[str, object]) -> None:
+    def __init__(self, payload: dict[str, object], status_code: int = 200) -> None:
         self.payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
 
     def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            response = httpx.Response(self.status_code, text=self.text)
+            request = httpx.Request("GET", "https://api.example.test")
+            response.request = request
+            raise httpx.HTTPStatusError(str(self.status_code), request=request, response=response)
         return None
 
     def json(self) -> dict[str, object]:
@@ -86,9 +123,16 @@ class FakeAsyncResponse:
 
 
 class FakeAsyncClient:
-    def __init__(self, *, post_response: dict[str, object] | None = None, get_response: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        post_response: dict[str, object] | None = None,
+        get_response: dict[str, object] | None = None,
+        get_status_code: int = 200,
+    ) -> None:
         self.post_response = post_response or {}
         self.get_response = get_response or {}
+        self.get_status_code = get_status_code
         self.posts: list[dict[str, object]] = []
         self.gets: list[dict[str, object]] = []
 
@@ -102,9 +146,23 @@ class FakeAsyncClient:
         self.posts.append({"url": url, "json": json, "headers": headers})
         return FakeAsyncResponse(self.post_response)
 
-    async def get(self, url: str, *, headers: dict[str, str], params: dict[str, str]) -> FakeAsyncResponse:
-        self.gets.append({"url": url, "headers": headers, "params": params})
-        return FakeAsyncResponse(self.get_response)
+    async def get(self, url: str, *, headers: dict[str, str], params: dict[str, str] | None = None) -> FakeAsyncResponse:
+        self.gets.append({"url": url, "headers": headers, "params": params or {}})
+        return FakeAsyncResponse(self.get_response, self.get_status_code)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, object] | None = None,
+    ) -> FakeAsyncResponse:
+        if method.upper() == "GET":
+            self.gets.append({"url": url, "headers": headers, "params": {}})
+            return FakeAsyncResponse(self.get_response, self.get_status_code)
+        self.posts.append({"url": url, "json": json or {}, "headers": headers})
+        return FakeAsyncResponse(self.post_response)
 
 
 class FakeWindowSessionManager:
@@ -347,6 +405,26 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertEqual(config.support_session_redis_url, "redis://broker:6379/0")
         self.assertEqual(config.support_session_ttl_seconds, 86400)
         self.assertEqual(config.support_session_history_limit, 20)
+
+    def test_runtime_config_loads_ycloud_provider_settings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WHATSAPP_PROVIDER": "ycloud",
+                "YCLOUD_API_KEY": "yc-key",
+                "YCLOUD_WHATSAPP_FROM": "+15551234567",
+                "YCLOUD_WABA_ID": "waba-1",
+                "YCLOUD_BASE_URL": "https://api.example.test/v2",
+            },
+            clear=True,
+        ):
+            config = load_runtime_config()
+
+        self.assertEqual(config.whatsapp_provider, "ycloud")
+        self.assertEqual(config.ycloud_api_key, "yc-key")
+        self.assertEqual(config.ycloud_whatsapp_from, "+15551234567")
+        self.assertEqual(config.ycloud_waba_id, "waba-1")
+        self.assertEqual(config.ycloud_base_url, "https://api.example.test/v2")
 
     def test_session_manager_records_inbound_session_state(self) -> None:
         redis_client = FakeRedis()
@@ -689,13 +767,278 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertEqual(payload["category"], "UTILITY")
         self.assertEqual(payload["components"][0]["type"], "BODY")
 
-    @patch("api.routes.WhatsAppTemplateManager.from_config")
-    def test_whatsapp_approval_uses_template_when_window_expired(self, from_config: Mock) -> None:
+    def test_whatsapp_provider_factory_defaults_to_ycloud(self) -> None:
+        self.assertIsInstance(
+            get_whatsapp_provider(
+                SimpleNamespace(
+                    ycloud_api_key="yc-key",
+                    ycloud_whatsapp_from="+15551234567",
+                    ycloud_waba_id="waba-1",
+                    ycloud_base_url="https://api.example.test/v2",
+                )
+            ),
+            YCloudWhatsAppProvider,
+        )
+
+    def test_whatsapp_provider_factory_can_select_meta(self) -> None:
+        self.assertIsInstance(get_whatsapp_provider(SimpleNamespace(whatsapp_provider="meta")), MetaCloudWhatsAppProvider)
+
+    def test_whatsapp_provider_factory_returns_ycloud(self) -> None:
+        provider = get_whatsapp_provider(
+            SimpleNamespace(
+                whatsapp_provider="ycloud",
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            )
+        )
+
+        self.assertIsInstance(provider, YCloudWhatsAppProvider)
+
+    @patch("services.whatsapp_provider.send_whatsapp_text_message")
+    def test_meta_provider_wraps_text_sender(self, send_text: Mock) -> None:
+        send_text.return_value = {"status": "sent", "message_id": "wamid.text", "error": None}
+        provider = MetaCloudWhatsAppProvider(
+            SimpleNamespace(
+                whatsapp_access_token="token",
+                whatsapp_phone_number_id="phone-id",
+                whatsapp_graph_api_version="v23.0",
+            )
+        )
+
+        result = asyncio.run(provider.send_text_message("+61412345678", "Hello"))
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["provider"], "meta")
+        send_text.assert_called_once()
+
+    @patch("services.whatsapp_provider.WhatsAppTemplateManager.from_config")
+    def test_meta_provider_wraps_template_manager(self, from_config: Mock) -> None:
         manager = Mock()
-        manager.send_out_of_window_message = AsyncMock(
+        manager.send_template_message = AsyncMock(
             return_value={"status": "sent", "message_id": "wamid.template", "error": None}
         )
         from_config.return_value = manager
+        provider = MetaCloudWhatsAppProvider(SimpleNamespace())
+
+        result = asyncio.run(
+            provider.send_template_message(
+                to="+61412345678",
+                template_name="support_reengagement_en",
+                language_code="en_US",
+            )
+        )
+
+        self.assertEqual(result["provider"], "meta")
+        manager.send_template_message.assert_awaited_once()
+
+    def test_ycloud_provider_missing_credentials_returns_error(self) -> None:
+        provider = YCloudWhatsAppProvider(SimpleNamespace(ycloud_api_key=None, ycloud_whatsapp_from="+15551234567"))
+
+        result = asyncio.run(provider.send_text_message("+61412345678", "Hello"))
+
+        self.assertEqual(result["status"], "missing_credentials")
+        self.assertEqual(result["provider"], "ycloud")
+
+    def test_ycloud_provider_posts_text_payload(self) -> None:
+        client = FakeAsyncClient(post_response={"id": "ycloud-msg-1"})
+        provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: client,
+        )
+
+        result = asyncio.run(provider.send_text_message("+61412345678", "Hello"))
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["provider"], "ycloud")
+        self.assertEqual(client.posts[0]["url"], "https://api.example.test/v2/whatsapp/messages/sendDirectly")
+        self.assertEqual(client.posts[0]["headers"]["X-API-Key"], "yc-key")
+        self.assertEqual(client.posts[0]["headers"]["User-Agent"], "CrossBorderAI/1.0 (YCLOUD-Adapter)")
+        payload = client.posts[0]["json"]
+        self.assertEqual(payload["from"], "+15551234567")
+        self.assertEqual(payload["to"], "+61412345678")
+        self.assertEqual(payload["type"], "text")
+
+    def test_ycloud_provider_posts_template_payload(self) -> None:
+        client = FakeAsyncClient(post_response={"id": "ycloud-template-msg"})
+        provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: client,
+        )
+
+        result = asyncio.run(
+            provider.send_template_message(
+                "+61412345678",
+                "support_reengagement_en",
+                "en_US",
+            )
+        )
+
+        self.assertEqual(result["message_id"], "ycloud-template-msg")
+        payload = client.posts[0]["json"]
+        self.assertEqual(payload["type"], "template")
+        self.assertEqual(payload["template"]["name"], "support_reengagement_en")
+        self.assertEqual(payload["template"]["language"]["code"], "en_US")
+
+    def test_ycloud_provider_normalizes_standard_response_message_id(self) -> None:
+        client = FakeAsyncClient(post_response={"success": True, "data": {"message_id": "wamid.ycloud"}})
+        provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: client,
+        )
+
+        result = asyncio.run(provider.send_text_message("+61412345678", "Hello"))
+
+        self.assertEqual(result["message_id"], "wamid.ycloud")
+        self.assertEqual(result["status"], "sent")
+
+    def test_ycloud_provider_posts_document_media_payload(self) -> None:
+        client = FakeAsyncClient(post_response={"success": True, "data": {"message_id": "doc-msg"}})
+        provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: client,
+        )
+
+        result = asyncio.run(
+            provider.send_media_message(
+                to="+61412345678",
+                media_type="document",
+                url="https://labels.example.test/rma.pdf",
+                filename="RMA_123_Label.pdf",
+                caption="Print this label.",
+            )
+        )
+
+        self.assertEqual(result["message_id"], "doc-msg")
+        payload = client.posts[0]["json"]
+        self.assertEqual(payload["type"], "document")
+        self.assertEqual(payload["document"]["link"], "https://labels.example.test/rma.pdf")
+        self.assertEqual(payload["document"]["filename"], "RMA_123_Label.pdf")
+        self.assertEqual(payload["document"]["caption"], "Print this label.")
+
+    def test_ycloud_provider_posts_interactive_payload_and_truncates_buttons(self) -> None:
+        client = FakeAsyncClient(post_response={"success": True, "data": {"message_id": "interactive-msg"}})
+        provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: client,
+        )
+
+        result = asyncio.run(
+            provider.send_interactive_message(
+                to="+61412345678",
+                body="Choose an option",
+                buttons=[
+                    {"id": "track", "title": "Track"},
+                    {"id": "return", "title": "Return"},
+                    {"id": "agent", "title": "Agent"},
+                    {"id": "extra", "title": "Extra"},
+                ],
+            )
+        )
+
+        self.assertEqual(result["message_id"], "interactive-msg")
+        buttons = client.posts[0]["json"]["interactive"]["action"]["buttons"]
+        self.assertEqual(len(buttons), 3)
+        self.assertEqual(buttons[0]["reply"]["id"], "track")
+        self.assertEqual(buttons[2]["reply"]["title"], "Agent")
+
+    def test_send_rma_label_uses_media_inside_window_and_template_outside(self) -> None:
+        provider = Mock()
+        provider.send_media_message = AsyncMock(return_value={"status": "sent", "message_id": "doc-msg"})
+        provider.send_template_message = AsyncMock(return_value={"status": "sent", "message_id": "tmpl-msg"})
+
+        inside = asyncio.run(
+            send_rma_label_message(
+                provider=provider,
+                to="+61412345678",
+                label_url="https://labels.example.test/rma.pdf",
+                order_id="ORDER-123",
+                is_window_expired=False,
+            )
+        )
+        outside = asyncio.run(
+            send_rma_label_message(
+                provider=provider,
+                to="+61412345678",
+                label_url="https://labels.example.test/rma.pdf",
+                order_id="ORDER-123",
+                is_window_expired=True,
+            )
+        )
+
+        self.assertEqual(inside["message_id"], "doc-msg")
+        self.assertEqual(outside["message_id"], "tmpl-msg")
+        provider.send_media_message.assert_awaited_once()
+        provider.send_template_message.assert_awaited_once()
+
+    def test_ycloud_provider_template_status_and_create(self) -> None:
+        not_found_client = FakeAsyncClient(get_response={}, get_status_code=404)
+        not_found_provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: not_found_client,
+        )
+        approved_client = FakeAsyncClient(get_response={"status": "APPROVED"}, post_response={"id": "tmpl-123"})
+        approved_provider = YCloudWhatsAppProvider(
+            SimpleNamespace(
+                ycloud_api_key="yc-key",
+                ycloud_whatsapp_from="+15551234567",
+                ycloud_waba_id="waba-1",
+                ycloud_base_url="https://api.example.test/v2",
+            ),
+            http_client_factory=lambda **_: approved_client,
+        )
+
+        self.assertEqual(asyncio.run(not_found_provider.check_template_status("missing", "en_US")), "NOT_FOUND")
+        self.assertEqual(asyncio.run(approved_provider.check_template_status("support_reengagement_en", "en_US")), "APPROVED")
+        template_id = asyncio.run(
+            approved_provider.submit_template_for_approval(
+                "support_reengagement_en",
+                "UTILITY",
+                "A support agent has an update for you.",
+                "en",
+            )
+        )
+        self.assertEqual(template_id, "tmpl-123")
+        self.assertEqual(approved_client.posts[0]["url"], "https://api.example.test/v2/whatsapp/templates")
+
+    @patch("api.routes.get_whatsapp_provider")
+    def test_whatsapp_approval_uses_template_when_window_expired(self, provider_factory: Mock) -> None:
+        provider = Mock(provider_name="meta")
+        provider.send_template_message = AsyncMock(
+            return_value={"status": "sent", "message_id": "wamid.template", "error": None}
+        )
+        provider_factory.return_value = provider
         store = SimpleNamespace(session_manager=FakeWindowSessionManager(expired=True, session={"language_preference": "ja"}))
         conversation = SimpleNamespace(
             customer_handle="+61412345678",
@@ -714,11 +1057,16 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
 
         self.assertEqual(delivery["status"], "sent")
         self.assertEqual(raw_payload["send_mode"], "template")
-        manager.send_out_of_window_message.assert_awaited_once_with(to="+61412345678", lang_code="es")
+        self.assertEqual(raw_payload["provider"], "meta")
+        provider.send_template_message.assert_awaited_once()
 
-    @patch("api.routes.send_whatsapp_text_message")
-    def test_whatsapp_approval_uses_text_when_window_is_active(self, send_text: Mock) -> None:
-        send_text.return_value = {"status": "sent", "message_id": "wamid.text", "error": None}
+    @patch("api.routes.get_whatsapp_provider")
+    def test_whatsapp_approval_uses_text_when_window_is_active(self, provider_factory: Mock) -> None:
+        provider = Mock(provider_name="ycloud")
+        provider.send_text_message = AsyncMock(
+            return_value={"status": "sent", "message_id": "wamid.text", "error": None, "provider": "ycloud"}
+        )
+        provider_factory.return_value = provider
         store = SimpleNamespace(session_manager=FakeWindowSessionManager(expired=False, session={"language_preference": "ja"}))
         conversation = SimpleNamespace(customer_handle="+61412345678", draft_payload={})
 
@@ -738,7 +1086,8 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
 
         self.assertEqual(delivery["message_id"], "wamid.text")
         self.assertEqual(raw_payload["send_mode"], "text")
-        send_text.assert_called_once()
+        self.assertEqual(raw_payload["provider"], "ycloud")
+        provider.send_text_message.assert_awaited_once()
 
     @patch("support_inbox.load_runtime_config")
     def test_sync_job_result_records_disabled_handoff_notification(self, load_config: Mock) -> None:
@@ -805,6 +1154,224 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
 
         notify.assert_called_once()
         self.assertEqual(conversation.draft_payload["handoff_notification"]["status"], "sent")
+
+    def test_sync_job_result_respects_low_risk_auto_send_decision(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="whatsapp",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "ticket_id": "conv-1",
+                    "ticket_summary": "Simple shipping update request.",
+                    "drafted_response": "Your order is on the way.",
+                    "requires_approval": False,
+                    "escalation_flag": False,
+                    "channel_recommended_action": "auto_send",
+                    "sentiment_analysis": {
+                        "customer_tier": "STANDARD",
+                        "sentiment_score": 0.2,
+                        "intent_category": "SHIPPING_INQUIRY",
+                    },
+                },
+            },
+        )
+
+        self.assertFalse(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+
+    def test_sync_job_result_forces_vip_review_even_when_crew_allows_auto_send(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="whatsapp",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "ticket_id": "conv-1",
+                    "drafted_response": "I can help with that.",
+                    "requires_approval": False,
+                    "escalation_flag": False,
+                    "channel_recommended_action": "auto_send",
+                    "sentiment_analysis": {
+                        "customer_tier": "VIP",
+                        "sentiment_score": 0.5,
+                        "intent_category": "SHIPPING_INQUIRY",
+                    },
+                },
+            },
+        )
+
+        self.assertTrue(conversation.requires_approval)
+
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_sends_low_risk_gmail_reply(self, session_local: Mock, send_gmail: Mock) -> None:
+        send_gmail.return_value = {"status": "sent", "message_id": "gmail-out-1", "error": None}
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            channel_thread_id="gmail-thread-1",
+            customer_handle="maria@example.com",
+            customer_handle_masked="ma***@example.com",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        fake_session = FakeSupportSession(conversation)
+        session_local.return_value = FakeSessionContext(fake_session)
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result={
+                    "ticket_id": "conv-1",
+                    "drafted_response": "Your order is on the way.",
+                    "requires_approval": False,
+                    "escalation_flag": False,
+                    "channel_recommended_action": "auto_send",
+                    "sentiment_analysis": {
+                        "customer_tier": "STANDARD",
+                        "sentiment_score": 0.1,
+                        "intent_category": "SHIPPING_INQUIRY",
+                    },
+                },
+                config_context={
+                    "gmail_send_enabled": True,
+                    "gmail_access_token": "token",
+                    "gmail_sender_email": "support@example.com",
+                },
+            )
+        )
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(fake_session.added[-1].raw_payload["auto_dispatch"], True)
+        self.assertEqual(fake_session.added[-1].raw_payload["send_mode"], "text")
+        send_gmail.assert_called_once()
+
+    @patch("services.support_auto_dispatch.get_whatsapp_provider")
+    def test_auto_dispatch_uses_whatsapp_text_when_window_active(self, provider_factory: Mock) -> None:
+        provider = Mock(provider_name="meta")
+        provider.send_text_message = AsyncMock(
+            return_value={"status": "sent", "message_id": "wamid.text", "error": None, "provider": "meta"}
+        )
+        provider_factory.return_value = provider
+        store = SimpleNamespace(session_manager=FakeWindowSessionManager(expired=False, session={"language_preference": "en"}))
+        conversation = SimpleNamespace(customer_handle="+61412345678", draft_payload={})
+
+        delivery, raw_payload = asyncio.run(
+            _send_whatsapp_auto_reply(
+                config=SimpleNamespace(
+                    whatsapp_send_enabled=True,
+                    whatsapp_access_token="token",
+                    whatsapp_phone_number_id="phone-id",
+                    whatsapp_graph_api_version="v23.0",
+                ),
+                store=store,  # type: ignore[arg-type]
+                conversation=conversation,  # type: ignore[arg-type]
+                conversation_id="conv-1",
+                draft_text="Your order is on the way.",
+                job_id="job-1",
+            )
+        )
+
+        self.assertEqual(delivery["message_id"], "wamid.text")
+        self.assertEqual(raw_payload["auto_dispatch"], True)
+        self.assertEqual(raw_payload["send_mode"], "text")
+        self.assertEqual(raw_payload["provider"], "meta")
+        provider.send_text_message.assert_awaited_once()
+
+    @patch("services.support_auto_dispatch.get_whatsapp_provider")
+    def test_auto_dispatch_uses_whatsapp_template_when_window_expired(self, provider_factory: Mock) -> None:
+        provider = Mock(provider_name="ycloud")
+        provider.send_template_message = AsyncMock(
+            return_value={"status": "sent", "message_id": "wamid.template", "error": None, "provider": "ycloud"}
+        )
+        provider_factory.return_value = provider
+        store = SimpleNamespace(session_manager=FakeWindowSessionManager(expired=True, session={"language_preference": "ja"}))
+        conversation = SimpleNamespace(
+            customer_handle="+61412345678",
+            draft_payload={"sentiment_analysis": {"language_detected": "ja"}},
+        )
+
+        delivery, raw_payload = asyncio.run(
+            _send_whatsapp_auto_reply(
+                config=SimpleNamespace(whatsapp_send_enabled=True),
+                store=store,  # type: ignore[arg-type]
+                conversation=conversation,  # type: ignore[arg-type]
+                conversation_id="conv-1",
+                draft_text="Your order is on the way.",
+                job_id="job-1",
+            )
+        )
+
+        self.assertEqual(delivery["message_id"], "wamid.template")
+        self.assertEqual(raw_payload["send_mode"], "template")
+        self.assertEqual(raw_payload["provider"], "ycloud")
+        provider.send_template_message.assert_awaited_once()
+
+    @patch("services.support_auto_dispatch.SessionLocal")
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    def test_auto_dispatch_does_not_send_when_approval_required(self, send_gmail: Mock, session_local: Mock) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            channel_thread_id="gmail-thread-1",
+            customer_handle="maria@example.com",
+            customer_handle_masked="ma***@example.com",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        session_local.return_value = FakeSessionContext(FakeSupportSession(conversation))
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result={
+                    "ticket_id": "conv-1",
+                    "drafted_response": "Please review this billing case.",
+                    "requires_approval": True,
+                    "escalation_flag": False,
+                    "sentiment_analysis": {
+                        "customer_tier": "STANDARD",
+                        "sentiment_score": 0.1,
+                        "intent_category": "BILLING_ISSUE",
+                    },
+                },
+                config_context={"gmail_send_enabled": True},
+            )
+        )
+
+        self.assertEqual(result["reason"], "requires_approval")
+        send_gmail.assert_not_called()
 
 
 if __name__ == "__main__":
