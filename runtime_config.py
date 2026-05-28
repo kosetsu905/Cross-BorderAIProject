@@ -55,6 +55,10 @@ RUNTIME_CONFIG_KEYS = {
     "pim_plytix_api_key",
     "pim_custom_base_url",
     "pim_custom_api_key",
+    "intent_classifier_enabled",
+    "intent_classifier_model_path",
+    "intent_router_llm_fallback_enabled",
+    "intent_router_confidence_threshold",
     "meta_access_token",
     "meta_ad_account_id",
     "meta_page_id",
@@ -127,6 +131,10 @@ class RuntimeConfig:
     pim_plytix_api_key: str | None = None
     pim_custom_base_url: str | None = None
     pim_custom_api_key: str | None = None
+    intent_classifier_enabled: bool = False
+    intent_classifier_model_path: str | None = None
+    intent_router_llm_fallback_enabled: bool = True
+    intent_router_confidence_threshold: float = 0.75
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None
@@ -219,6 +227,10 @@ def load_runtime_config() -> RuntimeConfig:
         pim_plytix_api_key=os.getenv("PIM_PLYTIX_API_KEY"),
         pim_custom_base_url=os.getenv("PIM_CUSTOM_BASE_URL"),
         pim_custom_api_key=os.getenv("PIM_CUSTOM_API_KEY"),
+        intent_classifier_enabled=_bool_env("INTENT_CLASSIFIER_ENABLED", False),
+        intent_classifier_model_path=os.getenv("INTENT_CLASSIFIER_MODEL_PATH"),
+        intent_router_llm_fallback_enabled=_bool_env("INTENT_ROUTER_LLM_FALLBACK_ENABLED", True),
+        intent_router_confidence_threshold=_float_env_with_default("INTENT_ROUTER_CONFIDENCE_THRESHOLD", 0.75),
         meta_access_token=os.getenv("META_ACCESS_TOKEN"),
         meta_ad_account_id=os.getenv("META_AD_ACCOUNT_ID"),
         meta_page_id=os.getenv("META_PAGE_ID"),
@@ -243,6 +255,13 @@ def _float_env(name: str) -> float:
         return float(os.getenv(name, "0") or 0)
     except ValueError:
         return 0.0
+
+
+def _float_env_with_default(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)) or default)
+    except ValueError:
+        return default
 
 
 def _int_env(name: str, default: int) -> int:

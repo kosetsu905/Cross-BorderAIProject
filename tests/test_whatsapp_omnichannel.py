@@ -1273,6 +1273,87 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertEqual(fake_session.added[-1].raw_payload["send_mode"], "text")
         send_gmail.assert_called_once()
 
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_records_disabled_gmail_for_high_confidence_pre_sales(self, session_local: Mock, send_gmail: Mock) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            channel_thread_id="gmail-thread-1",
+            customer_handle="maria@example.com",
+            customer_handle_masked="ma***@example.com",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        fake_session = FakeSupportSession(conversation)
+        session_local.return_value = FakeSessionContext(fake_session)
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result={
+                    "session_id": "conv-1",
+                    "detected_intent": "pre_sales",
+                    "routing_confidence": 0.95,
+                    "final_response": "The catalog item is available.",
+                    "qa_status": "REVIEW_REQUIRED",
+                    "escalation_needed": True,
+                    "pre_sales_response": {"requires_human_review": True},
+                },
+                config_context={"gmail_send_enabled": False},
+            )
+        )
+
+        self.assertEqual(result["status"], "disabled")
+        self.assertEqual(fake_session.added[-1].status, "disabled")
+        self.assertEqual(fake_session.added[-1].raw_payload["auto_dispatch"], True)
+        self.assertEqual(fake_session.added[-1].raw_payload["delivery"]["status"], "disabled")
+        self.assertFalse(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+        send_gmail.assert_not_called()
+
+    @patch("services.support_auto_dispatch.SessionLocal")
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    def test_auto_dispatch_skips_low_confidence_pre_sales(self, send_gmail: Mock, session_local: Mock) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            channel_thread_id="gmail-thread-1",
+            customer_handle="maria@example.com",
+            customer_handle_masked="ma***@example.com",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        session_local.return_value = FakeSessionContext(FakeSupportSession(conversation))
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result={
+                    "session_id": "conv-1",
+                    "detected_intent": "pre_sales",
+                    "routing_confidence": 0.74,
+                    "final_response": "A specialist should review this.",
+                    "qa_status": "REVIEW_REQUIRED",
+                    "escalation_needed": True,
+                },
+                config_context={"gmail_send_enabled": True},
+            )
+        )
+
+        self.assertEqual(result["reason"], "requires_approval")
+        self.assertTrue(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+        send_gmail.assert_not_called()
+
     @patch("services.support_auto_dispatch.get_whatsapp_provider")
     def test_auto_dispatch_uses_whatsapp_text_when_window_active(self, provider_factory: Mock) -> None:
         provider = Mock(provider_name="meta")

@@ -1,5 +1,7 @@
 from pathlib import Path
 from typing import Any
+import json
+import re
 
 import yaml
 from crewai import Agent, Crew, Task
@@ -22,12 +24,18 @@ from tools.custom.customer_service_tools import (
     OrderTrackingTool,
     PreSalesProductKnowledgeTool,
 )
-from tools.custom.support_rag_tools import SupportKnowledgeSearchTool
+from tools.custom.support_rag_tools import (
+    SupportKnowledgeSearchTool,
+    extract_catalog_product_offer,
+    search_knowledge_base,
+)
 from utils.crew_result import serialize_crew_result
+from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
+PRICE_VALUE_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?")
 
 
 class EmailDeliveryResult(BaseModel):
@@ -95,12 +103,12 @@ class CustomerServiceOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(..., description="Unique conversation identifier")
-    customer_context: dict[str, str] = Field(..., description="Customer name, tier, language, and channel")
+    customer_context: "CustomerContextOutput" = Field(..., description="Customer name, tier, language, and channel")
     detected_intent: str = Field(..., description="pre_sales | order_fulfillment | post_sales_support")
     routing_confidence: float = Field(..., ge=0, le=1)
-    pre_sales_response: dict[str, Any] | None = None
-    order_response: dict[str, Any] | None = None
-    support_response: dict[str, Any] | None = None
+    pre_sales_response: "PreSalesResponseOutput | None" = None
+    order_response: "OrderResponseOutput | None" = None
+    support_response: "SupportResponseOutput | None" = None
     final_response: str = Field(..., description="Polished, channel-adapted customer response")
     qa_status: str = Field(..., description="APPROVED | REVIEW_REQUIRED | REJECTED")
     compliance_flags: list[str] = Field(default_factory=list)
@@ -108,6 +116,134 @@ class CustomerServiceOutput(BaseModel):
     escalation_needed: bool = Field(..., description="True if a human agent should take over")
     data_sources: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+
+
+class CustomerContextOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = "Customer"
+    tier: str = "STANDARD"
+    language: str = "English"
+    channel: str = "email"
+
+
+class KeyValueOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: str
+
+
+class VariantOptionOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    sku: str | None = None
+    price: str | None = None
+    in_stock: bool | None = None
+    best_for: str | None = None
+
+
+class KnowledgeResultOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    score: float | None = None
+    source: str
+    heading: str
+    content: str
+
+
+class CatalogProductOfferOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = "not_found"
+    product_found: bool | None = None
+    product_name: str | None = None
+    unit_price: str | None = None
+    carton_quantity: str | None = None
+    carton_size: str | None = None
+    carton_weight: str | None = None
+    single_product_size: str | None = None
+    single_product_weight: str | None = None
+    discount_policy: str | None = None
+    source: str | None = None
+    heading: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    data_source: str | None = None
+
+
+class PreSalesResponseOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_found: bool | None = None
+    family_code: str | None = None
+    product_recommendation: str | None = None
+    feature_explanation: str | None = None
+    comparison_summary: str | None = None
+    next_steps: list[str] = Field(default_factory=list)
+    verified_features: list[str] = Field(default_factory=list)
+    compatibility_info: list[KeyValueOutput] = Field(default_factory=list)
+    variant_options: list[VariantOptionOutput] = Field(default_factory=list)
+    regional_compliance: str | None = None
+    confidence_level: float | None = None
+    requires_human_review: bool | None = None
+    last_updated: str | None = None
+    data_source: str | None = None
+    knowledge_data_source: str | None = None
+    catalog_knowledge_results: list[KnowledgeResultOutput] = Field(default_factory=list)
+    catalog_product_offer: CatalogProductOfferOutput | None = None
+    pricing_guardrails: list[str] = Field(default_factory=list)
+
+
+class TrackingInfoOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    carrier: str | None = None
+    tracking_number: str | None = None
+    tracking_url: str | None = None
+    last_update: str | None = None
+
+
+class CustomsInfoOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str | None = None
+    note: str | None = None
+
+
+class OrderResponseOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order_found: bool | None = None
+    order_verified: bool | None = None
+    order_id: str | None = None
+    current_status: str | None = None
+    status_explanation: str | None = None
+    tracking_info: TrackingInfoOutput | None = None
+    delivery_estimate: str | None = None
+    customs_info: CustomsInfoOutput | None = None
+    available_actions: list[str] = Field(default_factory=list)
+    suggested_actions: list[str] = Field(default_factory=list)
+    escalation_needed: bool | None = None
+    next_update_expected: str | None = None
+    next_update_timeline: str | None = None
+    error_message: str | None = None
+    data_source: str | None = None
+
+
+class SupportResponseOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_reference: str | None = None
+    sentiment_analysis: str | None = None
+    rma_validation: str | None = None
+    logistics_output: str | None = None
+    resolution_steps: list[str] = Field(default_factory=list)
+    internal_notes: str | None = None
+    qa_notes: str | None = None
+
+
+CustomerServiceOutput.model_rebuild()
 
 
 def _load_yaml_config(file_name: str) -> dict[str, Any]:
@@ -349,14 +485,18 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     config_context = config_context or {}
     normalized_inputs = _normalize_inputs(inputs)
     automation_context = _build_automation_context(normalized_inputs)
-    router_tool = IntentRouterTool()
+    router_tool = IntentRouterTool(config_context=config_context)
     router_result = router_tool._run(
         inquiry_text=normalized_inputs["inquiry_text"],
         has_order_id=bool(normalized_inputs.get("order_id") and normalized_inputs.get("order_id") != "ORDER-NOT-PROVIDED"),
         customer_tier=normalized_inputs.get("customer_tier", "STANDARD"),
+        language=normalized_inputs.get("detected_language", "en"),
     )
     if router_result["requires_human_review"]:
         return _handoff_customer_service_output(normalized_inputs, automation_context, router_result)
+    product_hint = (router_result.get("context_enrichment") or {}).get("product_category_hint")
+    if product_hint and normalized_inputs.get("product_category") == "Smart Home Camera":
+        normalized_inputs["product_category"] = product_hint
 
     pre_sales_tool = _build_pre_sales_tool(config_context)
     pre_sales_context = pre_sales_tool._run(
@@ -365,6 +505,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         region=normalized_inputs["region"],
         language=normalized_inputs["detected_language"],
     )
+    _attach_catalog_knowledge_context(pre_sales_context, normalized_inputs, config_context)
     order_context = OrderTrackingTool()._run(
         order_id=None if normalized_inputs["order_id"] == "ORDER-NOT-PROVIDED" else normalized_inputs["order_id"],
         customer_email=normalized_inputs.get("customer_email"),
@@ -468,12 +609,226 @@ def _build_pre_sales_tool(config_context: dict[str, Any]) -> PreSalesProductKnow
     )
 
 
+def _attach_catalog_knowledge_context(
+    pre_sales_context: dict[str, Any],
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    knowledge_dir = config_context.get("support_knowledge_dir") or str(BASE_DIR / "docs" / "knowledge_base")
+    query = " ".join(
+        item
+        for item in [
+            str(inputs.get("product_category") or ""),
+            str(inputs.get("inquiry_text") or ""),
+            str(inputs.get("use_case_if_provided") or ""),
+        ]
+        if item.strip()
+    )
+    results = search_knowledge_base(query, knowledge_dir=knowledge_dir, top_k=3)
+    if results:
+        pre_sales_context["catalog_knowledge_results"] = results
+        pre_sales_context["knowledge_data_source"] = "local_vector_knowledge_base"
+    if pre_sales_context.get("data_source") == "mock_fallback":
+        pre_sales_context["verified_features"] = []
+        pre_sales_context["compatibility_info"] = {}
+        pre_sales_context["variant_options"] = {}
+        pre_sales_context["mock_fallback_notice"] = (
+            "Mock fallback data is not customer-facing evidence; use catalog or real PIM facts only."
+        )
+    offer = extract_catalog_product_offer(query, knowledge_dir=knowledge_dir)
+    if offer.get("status") == "found":
+        pre_sales_context["catalog_product_offer"] = offer
+        pre_sales_context["knowledge_data_source"] = "local_pdf_catalog"
+        pre_sales_context["pricing_guardrails"] = [
+            "Quote only the catalog unit_price when a price is provided in catalog_product_offer.",
+            "Do not invent discount tiers, reduced prices, wholesale rates, or negotiated offers.",
+            "If the customer asks for a discount, state that discounts require sales approval and offer to have sales review the request.",
+            "Treat catalog wording such as 'Please contact me for a discount' as a review path, not as approval to quote a discount.",
+            "Do not use mock_fallback variants, SKUs, features, compatibility claims, or prices as customer-facing facts.",
+            "If only catalog packaging and price facts are available, say detailed feature specifications are not listed in the catalog.",
+        ]
+    return pre_sales_context
+
+
 def _customer_context(inputs: dict[str, Any]) -> dict[str, str]:
     return {
         "name": str(inputs.get("customer") or "Customer"),
         "tier": str(inputs.get("customer_tier") or "STANDARD"),
         "language": str(inputs.get("language_plan") or "English"),
         "channel": str(inputs.get("channel") or "email"),
+    }
+
+
+def _json_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _key_value_outputs(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, dict):
+        return []
+    return [{"key": str(key), "value": _json_text(item) or ""} for key, item in value.items()]
+
+
+def _variant_outputs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    variants: list[dict[str, Any]] = []
+    for name, details in value.items():
+        item = details if isinstance(details, dict) else {}
+        variants.append(
+            {
+                "name": str(name),
+                "sku": item.get("sku"),
+                "price": _json_text(item.get("price")),
+                "in_stock": item.get("in_stock") if isinstance(item.get("in_stock"), bool) else None,
+                "best_for": item.get("best_for"),
+            }
+        )
+    return variants
+
+
+def _knowledge_outputs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    results: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        results.append(
+            {
+                "score": float(item["score"]) if item.get("score") is not None else None,
+                "source": str(item.get("source") or ""),
+                "heading": str(item.get("heading") or ""),
+                "content": str(item.get("content") or ""),
+            }
+        )
+    return results
+
+
+def _apply_authoritative_pre_sales_context(
+    pre_sales_response: dict[str, Any] | None,
+    pre_sales_context: dict[str, Any],
+) -> None:
+    if not isinstance(pre_sales_response, dict):
+        return
+    offer = _catalog_offer_output(pre_sales_context.get("catalog_product_offer"))
+    if offer and offer.get("status") == "found":
+        pre_sales_response["product_found"] = True
+        pre_sales_response["requires_human_review"] = False
+        pre_sales_response["catalog_product_offer"] = offer
+        pre_sales_response["knowledge_data_source"] = pre_sales_context.get("knowledge_data_source") or "local_pdf_catalog"
+        pre_sales_response["pricing_guardrails"] = _string_list(pre_sales_context.get("pricing_guardrails"))
+        if pre_sales_response.get("data_source") in {None, "mock_fallback", "Product catalog"}:
+            pre_sales_response["variant_options"] = []
+            pre_sales_response["verified_features"] = []
+            pre_sales_response["compatibility_info"] = []
+
+
+def _catalog_offer_output(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "status": str(value.get("status") or "not_found"),
+        "product_found": value.get("product_found") if isinstance(value.get("product_found"), bool) else None,
+        "product_name": value.get("product_name"),
+        "unit_price": value.get("unit_price"),
+        "carton_quantity": value.get("carton_quantity"),
+        "carton_size": value.get("carton_size"),
+        "carton_weight": value.get("carton_weight"),
+        "single_product_size": value.get("single_product_size"),
+        "single_product_weight": value.get("single_product_weight"),
+        "discount_policy": value.get("discount_policy"),
+        "source": value.get("source"),
+        "heading": value.get("heading"),
+        "evidence": _string_list(value.get("evidence")),
+        "data_source": value.get("data_source"),
+    }
+
+
+def _normalize_pre_sales_response(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return {"feature_explanation": str(value)}
+    use_customer_facing_specs = value.get("data_source") != "mock_fallback" or isinstance(value.get("catalog_product_offer"), dict)
+    return {
+        "product_found": value.get("product_found") if isinstance(value.get("product_found"), bool) else None,
+        "family_code": value.get("family_code"),
+        "product_recommendation": value.get("product_recommendation"),
+        "feature_explanation": value.get("feature_explanation"),
+        "comparison_summary": value.get("comparison_summary"),
+        "next_steps": _string_list(value.get("next_steps")),
+        "verified_features": _string_list(value.get("verified_features")) if use_customer_facing_specs else [],
+        "compatibility_info": _key_value_outputs(value.get("compatibility_info")) if use_customer_facing_specs else [],
+        "variant_options": _variant_outputs(value.get("variant_options")) if value.get("data_source") != "mock_fallback" else [],
+        "regional_compliance": _json_text(value.get("regional_compliance")),
+        "confidence_level": float(value["confidence_level"]) if value.get("confidence_level") is not None else None,
+        "requires_human_review": value.get("requires_human_review")
+        if isinstance(value.get("requires_human_review"), bool)
+        else None,
+        "last_updated": value.get("last_updated"),
+        "data_source": value.get("data_source"),
+        "knowledge_data_source": value.get("knowledge_data_source"),
+        "catalog_knowledge_results": _knowledge_outputs(value.get("catalog_knowledge_results")),
+        "catalog_product_offer": _catalog_offer_output(value.get("catalog_product_offer")),
+        "pricing_guardrails": _string_list(value.get("pricing_guardrails")),
+    }
+
+
+def _normalize_order_response(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return {"status_explanation": str(value)}
+    tracking = value.get("tracking_info") if isinstance(value.get("tracking_info"), dict) else None
+    customs = value.get("customs_info") if isinstance(value.get("customs_info"), dict) else None
+    return {
+        "order_found": value.get("order_found") if isinstance(value.get("order_found"), bool) else None,
+        "order_verified": value.get("order_verified") if isinstance(value.get("order_verified"), bool) else None,
+        "order_id": value.get("order_id"),
+        "current_status": value.get("current_status"),
+        "status_explanation": value.get("status_explanation"),
+        "tracking_info": tracking,
+        "delivery_estimate": value.get("delivery_estimate"),
+        "customs_info": customs,
+        "available_actions": _string_list(value.get("available_actions")),
+        "suggested_actions": _string_list(value.get("suggested_actions")),
+        "escalation_needed": value.get("escalation_needed") if isinstance(value.get("escalation_needed"), bool) else None,
+        "next_update_expected": value.get("next_update_expected"),
+        "next_update_timeline": value.get("next_update_timeline"),
+        "error_message": value.get("error_message"),
+        "data_source": value.get("data_source"),
+    }
+
+
+def _normalize_support_response(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return {"policy_reference": str(value)}
+    return {
+        "policy_reference": value.get("policy_reference"),
+        "sentiment_analysis": _json_text(value.get("sentiment_analysis")),
+        "rma_validation": _json_text(value.get("rma_validation")),
+        "logistics_output": _json_text(value.get("logistics_output")),
+        "resolution_steps": _string_list(value.get("resolution_steps")),
+        "internal_notes": value.get("internal_notes"),
+        "qa_notes": value.get("qa_notes"),
     }
 
 
@@ -499,7 +854,9 @@ def _handoff_customer_service_output(
         "recommended_follow_up": "Human agent should respond within 15 minutes.",
         "escalation_needed": True,
         "data_sources": ["intent_router"],
-        "assumptions": ["Routing confidence below automatic handling threshold."],
+        "assumptions": [
+            "Routing confidence below automatic handling threshold after hybrid routing and optional fallback."
+        ],
     }
 
 
@@ -513,6 +870,7 @@ def _attach_customer_service_context(
     order_context: dict[str, Any],
 ) -> dict[str, Any]:
     normalized = dict(result)
+    usage_metrics = normalized.pop(INTERNAL_USAGE_KEY, None)
     intent = router_result["detected_intent"]
     final_response = (
         normalized.get("final_response")
@@ -531,30 +889,201 @@ def _attach_customer_service_context(
     )
     normalized["compliance_flags"] = normalized.get("compliance_flags") or automation_context.get("compliance_tags", [])
     normalized["recommended_follow_up"] = normalized.get("recommended_follow_up") or "Follow up if the customer replies."
-    normalized["escalation_needed"] = bool(
-        normalized.get("escalation_needed")
-        or automation_context["escalation_flag"]
-        or normalized["qa_status"] in {"REVIEW_REQUIRED", "REJECTED"}
-    )
     normalized["data_sources"] = normalized.get("data_sources") or _data_sources_for_intent(intent, pre_sales_context, order_context)
     normalized["assumptions"] = normalized.get("assumptions") or []
-    normalized.setdefault("pre_sales_response", pre_sales_context if intent == "pre_sales" else None)
-    normalized.setdefault("order_response", order_context if intent == "order_fulfillment" else None)
-    normalized.setdefault(
-        "support_response",
-        {
-            "policy_reference": "Return/RMA policy, warranty eligibility, and logistics guidance checked.",
-            "sentiment_analysis": automation_context["sentiment_analysis"],
-            "rma_validation": automation_context["rma_validation"],
-            "logistics_output": automation_context["logistics_output"],
-        } if intent == "post_sales_support" else None,
+    normalized["pre_sales_response"] = _normalize_pre_sales_response(
+        normalized.get("pre_sales_response") or (pre_sales_context if intent == "pre_sales" else None)
     )
-    return CustomerServiceOutput.model_validate(normalized).model_dump()
+    if intent == "pre_sales":
+        _apply_authoritative_pre_sales_context(normalized["pre_sales_response"], pre_sales_context)
+    if intent == "pre_sales":
+        normalized["final_response"] = _guard_pre_sales_catalog_pricing(
+            normalized["final_response"],
+            normalized["pre_sales_response"],
+            inputs,
+        )
+        if normalized["final_response"] != str(final_response):
+            flags = list(normalized.get("compliance_flags") or [])
+            if "UNVERIFIED_PRODUCT_FACT_REWRITTEN" not in flags:
+                flags.append("UNVERIFIED_PRODUCT_FACT_REWRITTEN")
+            normalized["compliance_flags"] = flags
+        if _is_low_risk_pre_sales_output(normalized, automation_context):
+            normalized["qa_status"] = "APPROVED"
+            if isinstance(normalized["pre_sales_response"], dict):
+                normalized["pre_sales_response"]["requires_human_review"] = False
+    normalized["order_response"] = _normalize_order_response(
+        normalized.get("order_response") or (order_context if intent == "order_fulfillment" else None)
+    )
+    normalized["support_response"] = _normalize_support_response(
+        normalized.get("support_response")
+        or (
+            {
+                "policy_reference": "Return/RMA policy, warranty eligibility, and logistics guidance checked.",
+                "sentiment_analysis": automation_context["sentiment_analysis"],
+                "rma_validation": automation_context["rma_validation"],
+                "logistics_output": automation_context["logistics_output"],
+            }
+            if intent == "post_sales_support"
+            else None
+        )
+    )
+    normalized["escalation_needed"] = _customer_service_escalation_needed(
+        normalized,
+        intent,
+        automation_context,
+    )
+    validated = CustomerServiceOutput.model_validate(normalized).model_dump()
+    if usage_metrics:
+        validated[INTERNAL_USAGE_KEY] = usage_metrics
+    return validated
+
+
+def _customer_service_escalation_needed(
+    normalized: dict[str, Any],
+    intent: str,
+    automation_context: dict[str, Any],
+) -> bool:
+    if automation_context["escalation_flag"]:
+        return True
+    qa_status = str(normalized.get("qa_status") or "").upper()
+    confidence = float(normalized.get("routing_confidence") or 0)
+    compliance_flags = {str(flag).upper() for flag in normalized.get("compliance_flags") or []}
+    hard_flags = {
+        "LOW_ROUTING_CONFIDENCE",
+        "HUMAN_HANDOFF",
+        "POLICY_GAP",
+        "BILLING_DISPUTE",
+        "UNSAFE_RESPONSE",
+        "VIP_REVIEW",
+        "NEGATIVE_SENTIMENT",
+    }
+    if qa_status == "REJECTED" or hard_flags.intersection(compliance_flags):
+        return True
+    if (
+        intent == "pre_sales"
+        and _is_low_risk_pre_sales_output(normalized, automation_context)
+    ):
+        return False
+    return bool(normalized.get("escalation_needed"))
+
+
+def _is_low_risk_pre_sales_output(
+    normalized: dict[str, Any],
+    automation_context: dict[str, Any],
+) -> bool:
+    if str(normalized.get("detected_intent") or "").lower() != "pre_sales":
+        return False
+    if automation_context["escalation_flag"]:
+        return False
+    if float(normalized.get("routing_confidence") or 0) < 0.75 or not normalized.get("final_response"):
+        return False
+    compliance_flags = {str(flag).upper() for flag in normalized.get("compliance_flags") or []}
+    hard_flags = {
+        "LOW_ROUTING_CONFIDENCE",
+        "HUMAN_HANDOFF",
+        "POLICY_GAP",
+        "BILLING_DISPUTE",
+        "UNSAFE_RESPONSE",
+        "VIP_REVIEW",
+        "NEGATIVE_SENTIMENT",
+    }
+    if hard_flags.intersection(compliance_flags):
+        return False
+    pre_sales = normalized.get("pre_sales_response")
+    if not isinstance(pre_sales, dict):
+        return False
+    return True
+
+
+def _guard_pre_sales_catalog_pricing(
+    final_response: str,
+    pre_sales_response: dict[str, Any] | None,
+    inputs: dict[str, Any],
+) -> str:
+    if not pre_sales_response:
+        return final_response
+    offer = pre_sales_response.get("catalog_product_offer")
+    if not isinstance(offer, dict) or offer.get("status") != "found" or not offer.get("unit_price"):
+        return final_response
+
+    unit_price = str(offer["unit_price"])
+    quoted_prices = {match.replace(" ", "") for match in PRICE_VALUE_RE.findall(final_response)}
+    has_unverified_price = bool(quoted_prices - {unit_price})
+    missing_verified_price = unit_price not in quoted_prices
+    missing_catalog_facts = any(
+        str(value) not in final_response
+        for value in (
+            offer.get("carton_quantity"),
+            offer.get("carton_size"),
+            offer.get("carton_weight"),
+            offer.get("single_product_size"),
+            offer.get("single_product_weight"),
+        )
+        if value
+    )
+    looks_like_discount_table = bool(re.search(r"\bbuy\s+\d+\b|\b\d+\s*:\s*\$", final_response, flags=re.I))
+    has_unverified_sku = bool(re.search(r"\bSKU\s*:?\s*[A-Z0-9][A-Z0-9_-]{2,}\b|\b[A-Z]{2,}-[A-Z0-9_-]{3,}\b", final_response))
+    has_variant_section = bool(re.search(r"\bvariants?\s+(?:available|options?)\b|\bbasic\s+headset\b|\bpro\s+headset\b", final_response, flags=re.I))
+    has_unverified_feature = bool(re.search(r"\bnoise isolation\b|\bnoise cancellation\b", final_response, flags=re.I))
+    understates_catalog_specs = bool(re.search(r"detailed specifications are not available|detailed feature specifications are not listed", final_response, flags=re.I))
+    if not (
+        has_unverified_price
+        or missing_verified_price
+        or missing_catalog_facts
+        or looks_like_discount_table
+        or has_unverified_sku
+        or has_variant_section
+        or has_unverified_feature
+        or understates_catalog_specs
+    ):
+        return final_response
+
+    product_name = str(offer.get("product_name") or inputs.get("product_category") or "the product")
+    carton_quantity = offer.get("carton_quantity")
+    carton_size = offer.get("carton_size")
+    carton_weight = offer.get("carton_weight")
+    single_product_size = offer.get("single_product_size")
+    single_product_weight = offer.get("single_product_weight")
+    channel = str(inputs.get("channel") or "email").lower()
+    facts = [f"current catalog unit price: {unit_price}"]
+    if carton_quantity:
+        facts.append(f"carton quantity: {carton_quantity}")
+    if carton_size:
+        facts.append(f"carton size: {carton_size}")
+    if carton_weight:
+        facts.append(f"carton weight: {carton_weight}")
+    if single_product_size:
+        facts.append(f"single product size: {single_product_size}")
+    if single_product_weight:
+        facts.append(f"single product weight: {single_product_weight}")
+    details_note = (
+        "The catalog lists these packaging/specification facts but does not list battery life, audio performance, "
+        "Bluetooth version, variants, or SKU options for this matched item."
+    )
+
+    if channel in {"whatsapp", "webchat", "social"}:
+        return (
+            f"Thanks for your interest. I found a catalog match: {product_name}. The verified catalog details are: "
+            f"{'; '.join(facts)}. {details_note} You can reply to confirm this is the item you want, and sales can help "
+            "with the purchase or review any discount request."
+        )
+
+    return (
+        f"Hello,\n\n"
+        f"Thank you for your interest. I found a catalog match: {product_name}.\n\n"
+        "The verified catalog details I have are:\n"
+        + "\n".join(f"- {fact}" for fact in facts)
+        + f"\n\n{details_note} You can reply to confirm this is the item you want, and our sales team can help with the purchase"
+        " or review any discount request.\n\nBest,\nCustomer Service Team"
+    )
 
 
 def _data_sources_for_intent(intent: str, pre_sales_context: dict[str, Any], order_context: dict[str, Any]) -> list[str]:
     if intent == "pre_sales":
-        return [str(pre_sales_context.get("data_source") or "product_knowledge")]
+        sources = [str(pre_sales_context.get("data_source") or "product_knowledge")]
+        if pre_sales_context.get("knowledge_data_source"):
+            sources.append(str(pre_sales_context["knowledge_data_source"]))
+        return list(dict.fromkeys(sources))
     if intent == "order_fulfillment":
         return [str(order_context.get("data_source") or "order_tracking")]
     return ["support_knowledge_base", "support_automation_context"]

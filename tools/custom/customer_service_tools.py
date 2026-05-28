@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from services.pim_connector import PIMConnector, PIMQueryResult
+from services.intent_router import classify_intent
 
 try:
     from crewai.tools import BaseTool
@@ -188,49 +189,21 @@ class OrderTrackingTool(BaseTool):
 class IntentRouterTool(BaseTool):
     name: str = "Customer Service Intent Classifier & Router"
     description: str = "Classifies inquiries as pre-sales, order-fulfillment, or post-sales support."
+    config_context: dict[str, Any] = {}
+    classifier: Any | None = None
 
-    def _run(self, inquiry_text: str, has_order_id: bool = False, customer_tier: str = "STANDARD") -> dict[str, Any]:
-        text = str(inquiry_text or "").lower()
-        pre_sales_keywords = [
-            "before buy", "which model", "compatible with", "does it work", "compare",
-            "recommend", "feature", "specification", "specs", "bulk pricing",
-            "deciding between", "better for", "outdoor", "rainy", "works better",
-        ]
-        order_keywords = [
-            "order status", "where is my order", "tracking", "shipping date",
-            "delivery time", "change address", "cancel order", "modify order",
-        ]
-        post_sales_keywords = [
-            "return", "refund", "defective", "not working", "damaged", "wrong item",
-            "setup help", "cracked", "replacement",
-        ]
-        if any(keyword in text for keyword in post_sales_keywords):
-            intent, confidence = "post_sales_support", 0.95
-        elif any(keyword in text for keyword in pre_sales_keywords) and not has_order_id:
-            intent, confidence = "pre_sales", 0.92
-        elif any(keyword in text for keyword in order_keywords) or has_order_id:
-            intent, confidence = "order_fulfillment", 0.89
-        else:
-            intent = "post_sales_support" if customer_tier in {"VIP", "PREMIUM"} else "pre_sales"
-            confidence = 0.65
-        return {
-            "detected_intent": intent,
-            "confidence_score": confidence,
-            "requires_human_review": confidence < 0.75,
-            "suggested_agent": {
-                "pre_sales": "pre_sales_specialist",
-                "order_fulfillment": "order_fulfillment_specialist",
-                "post_sales_support": "senior_support_agent",
-            }[intent],
-            "context_enrichment": {
-                "product_category_hint": self._extract_product_hint(text),
-                "urgency_level": "high" if "urgent" in text or "asap" in text else "normal",
-            },
-        }
-
-    def _extract_product_hint(self, text: str) -> str | None:
-        hints = ["camera", "thermos", "smart home", "security", "bluetooth", "wireless"]
-        for hint in hints:
-            if hint in text:
-                return hint.replace(" ", "_").title()
-        return None
+    def _run(
+        self,
+        inquiry_text: str,
+        has_order_id: bool = False,
+        customer_tier: str = "STANDARD",
+        language: str = "en",
+    ) -> dict[str, Any]:
+        return classify_intent(
+            inquiry_text=inquiry_text,
+            has_order_id=has_order_id,
+            customer_tier=customer_tier,
+            language=language,
+            config_context=self.config_context,
+            classifier=self.classifier,
+        )

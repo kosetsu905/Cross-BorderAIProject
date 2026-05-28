@@ -42,10 +42,11 @@ def _requires_approval(result: dict[str, Any]) -> bool:
     rma = result.get("rma_validation") or {}
     qa_status = str(result.get("qa_status") or "").upper()
     confidence = float(result.get("routing_confidence") or 1)
+    if _is_pre_sales(result):
+        return confidence < 0.75 or _has_pre_sales_hard_blocker(result)
     forced_review = bool(
         _requires_handoff(result)
         or result.get("escalation_flag")
-        or result.get("escalation_needed")
         or qa_status in {"REVIEW_REQUIRED", "REJECTED"}
         or confidence < 0.75
         or sentiment.get("customer_tier") in {"VIP", "PREMIUM"}
@@ -63,11 +64,34 @@ def _requires_approval(result: dict[str, Any]) -> bool:
 
 
 def _requires_handoff(result: dict[str, Any]) -> bool:
+    action = result.get("channel_recommended_action")
+    if _is_pre_sales(result):
+        return _has_pre_sales_hard_blocker(result)
     return bool(
         result.get("escalation_needed")
         or result.get("escalation_flag")
-        or result.get("channel_recommended_action") == "human_handoff"
+        or action == "human_handoff"
     )
+
+
+def _is_pre_sales(result: dict[str, Any]) -> bool:
+    return str(result.get("detected_intent") or "").lower() == "pre_sales"
+
+
+def _has_pre_sales_hard_blocker(result: dict[str, Any]) -> bool:
+    if result.get("escalation_flag") or result.get("channel_recommended_action") == "human_handoff":
+        return True
+    hard_flags = {
+        "LOW_ROUTING_CONFIDENCE",
+        "HUMAN_HANDOFF",
+        "POLICY_GAP",
+        "BILLING_DISPUTE",
+        "UNSAFE_RESPONSE",
+        "VIP_REVIEW",
+        "NEGATIVE_SENTIMENT",
+    }
+    compliance_flags = {str(flag).upper() for flag in result.get("compliance_flags") or []}
+    return bool(hard_flags.intersection(compliance_flags))
 
 
 def _handoff_notification_sent(payload: dict[str, Any] | None) -> bool:

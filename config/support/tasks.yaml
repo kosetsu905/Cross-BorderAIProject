@@ -4,6 +4,13 @@ pre_sales_consultation:
     Conversation history, if provided: {conversation_history}
     Product lookup context: {pre_sales_context}
     Provide a clear, helpful response that answers feature, compatibility, variant, and use-case questions using verified product specs.
+    If pre_sales_context.catalog_product_offer is present, quote only its catalog unit_price and carton facts as the current known catalog data.
+    Never invent discount tiers, reduced unit prices, wholesale rates, or negotiated offers that are not explicitly present in the provided context.
+    If the customer asks for a discount, explain that the catalog price is the verified reference and that any discount requires sales approval.
+    Treat catalog text such as "Please contact me for a discount" as a request-review path, not as permission to quote a discount.
+    mock_fallback data is not customer-facing evidence; never use mock_fallback variants, SKUs, prices, compatibility claims, or features in the customer reply.
+    Never invent SKUs, variants, prices, compatibility claims, certifications, or feature claims that are not explicitly present in PIM or catalog context.
+    If only catalog packaging and price facts are available, say that detailed feature specifications are not listed in the catalog.
     Recommend the best fit for {use_case_if_provided} when enough information is available, and ask a concise clarifying question otherwise.
     Include clear next steps such as add to cart, check size guide, confirm compatibility, or contact for bulk pricing.
     Avoid over-promising unverified features, integrations, certifications, or delivery timelines.
@@ -50,6 +57,7 @@ quality_assurance_review:
     Ensure it is comprehensive, accurate, culturally appropriate, channel-optimized for {channel}, and aligned with brand voice.
     Verify:
     - Pre-sales: no over-promising; unverified features or delivery timelines are clearly qualified.
+    - Pre-sales: remove or rewrite any SKU, variant, price, compatibility claim, or feature not present in real PIM or catalog context; do not escalate solely because you rewrote unsupported product facts.
     - Order: status is based on provided order context; no guessed timelines; clear escalation path.
     - Post-sales: policy-compliant; empathetic tone; actionable next steps; human handoff preserved when required.
     The final output must be a CustomerServiceOutput-compatible JSON object with:
