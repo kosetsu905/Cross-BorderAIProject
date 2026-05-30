@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tools.custom.analytics_tools import CompetitorBenchmarkTool, EcomPlatformMetricsTool
 from utils.crew_result import serialize_crew_result
 from utils.workflow_progress import attach_task_progress
+from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "analytics"
@@ -216,6 +217,7 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
+    agents_config = augment_agents_config(agents_config, workflow='analytics')
     tasks_config = _load_yaml_config("tasks.yaml")
 
     collector = Agent(

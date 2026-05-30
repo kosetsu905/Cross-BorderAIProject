@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from utils.crew_result import serialize_crew_result
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
+from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "content"
@@ -311,6 +312,7 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     normalized_inputs = _normalize_inputs(inputs)
 
     agents_config = _load_yaml_config("agents.yaml")
+    agents_config = augment_agents_config(agents_config, workflow='content')
     tasks_config = _load_yaml_config("tasks.yaml")
     languages = [str(language).strip() for language in normalized_inputs.get("target_languages", []) if str(language).strip()]
     if not languages:

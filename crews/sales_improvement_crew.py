@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tools.custom.sales_tools import CRMFunnelTool, CROHeuristicsTool, PricingIntelTool
 from utils.crew_result import serialize_crew_result
 from utils.workflow_progress import attach_task_progress
+from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "sales_improvement"
@@ -128,6 +129,7 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
     config_context = config_context or {}
 
     agents_config = _load_yaml_config("agents.yaml")
+    agents_config = augment_agents_config(agents_config, workflow='sales_improvement')
     tasks_config = _load_yaml_config("tasks.yaml")
 
     funnel_analyst = Agent(

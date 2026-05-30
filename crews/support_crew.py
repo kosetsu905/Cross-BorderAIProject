@@ -32,6 +32,7 @@ from tools.custom.support_rag_tools import (
 from utils.crew_result import serialize_crew_result
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
+from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
@@ -534,6 +535,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     }
 
     agents_config = _load_yaml_config("agents.yaml")
+    agents_config = augment_agents_config(agents_config, workflow='support')
     tasks_config = _load_yaml_config("tasks.yaml")
 
     pre_sales_agent = Agent(

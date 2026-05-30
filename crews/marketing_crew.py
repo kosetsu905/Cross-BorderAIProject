@@ -16,6 +16,7 @@ from tools.integrations.cross_platform_ads_tools import (
 from utils.crew_result import serialize_crew_result
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
+from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "marketing"
@@ -463,6 +464,7 @@ def run_marketing_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     normalized_inputs = _normalize_inputs(inputs)
 
     agents_config = _load_yaml_config("agents.yaml")
+    agents_config = augment_agents_config(agents_config, workflow='marketing')
     tasks_config = _load_yaml_config("tasks.yaml")
     markets = _split_csv(normalized_inputs.get("target_markets"))
     if not markets:
