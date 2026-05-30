@@ -168,6 +168,13 @@ def _send_gmail_auto_reply(
         return delivery, _raw_payload(delivery, "text", job_id)
 
     headers = _latest_inbound_headers(conversation_id, db)
+    draft_payload = conversation.draft_payload if isinstance(conversation.draft_payload, dict) else {}
+    language_plan = (
+        draft_payload.get("language_plan")
+        or draft_payload.get("detected_language")
+        or (draft_payload.get("sentiment_analysis") or {}).get("language_detected")
+        or "English"
+    )
     delivery = send_gmail_reply_message(
         access_token=str(access_token),
         sender=str(getattr(config, "gmail_sender_email")),
@@ -178,7 +185,9 @@ def _send_gmail_auto_reply(
         in_reply_to=headers.get("message-id"),
         references=headers.get("references"),
     )
-    return delivery, _raw_payload(delivery, "text", job_id)
+    raw = _raw_payload(delivery, "text", job_id)
+    raw["language_plan"] = language_plan
+    return delivery, raw
 
 
 async def _send_whatsapp_auto_reply(

@@ -464,6 +464,8 @@ def _email_delivery_status(
             "error": "Gmail access token or refresh-token credentials, sender email, and customer email are required.",
         }
 
+    language_plan = result.get("language_plan") or result.get("language_detected") or "English"
+
     return send_gmail_message(
         access_token=str(access_token),
         sender=str(sender),
