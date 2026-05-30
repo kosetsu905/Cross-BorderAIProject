@@ -15,7 +15,9 @@ from crews.support_crew import (
     _attach_catalog_knowledge_context,
     _attach_customer_service_context,
     _build_automation_context,
+    _catalog_display_name,
     _normalize_inputs,
+    _response_language_guard,
 )
 from models import WorkflowType
 from runtime_config import load_runtime_config
@@ -119,6 +121,8 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
             self.assertTrue(result["final_response"])
             self.assertEqual(result["qa_status"], "APPROVED")
             self.assertFalse(result["escalation_needed"])
+            self.assertEqual(result["detected_language"], "en")
+            self.assertEqual(result["language_plan"], "English")
 
         checks = [
             pre_result["detected_intent"] == "pre_sales",
@@ -724,6 +728,246 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertIn("sales team", result["final_response"])
         self.assertIn("review any discount request", result["final_response"])
 
+    def test_attach_customer_service_context_rewrites_catalog_prices_in_japanese(self) -> None:
+        def japanese_rewriter(**kwargs):
+            facts = kwargs["structured_facts"]
+            return (
+                f"こんにちは。\n\n{facts['product_name']}について確認済みのカタログ情報をお伝えします。\n"
+                f"現在のカタログ単価: {facts['unit_price']}\n"
+                f"カートン入数: {facts['carton_quantity']}\n"
+                "割引リクエストは、営業チームによる確認が必要です。"
+            )
+
+        inputs = _normalize_inputs(
+            {
+                "customer": "Yuki",
+                "person": "Yuki",
+                "inquiry": "M90 PRO wireless earphonesの割引価格を教えてください。",
+                "product_category": "M90 PRO wireless earphones",
+                "channel": "gmail",
+                "session_id": "sess-pricing-ja",
+            }
+        )
+        pre_sales_context = {
+            "data_source": "mock_fallback",
+            "product_found": True,
+            "catalog_product_offer": {
+                "status": "found",
+                "product_found": True,
+                "product_name": "M90 PRO wireless earphones",
+                "unit_price": "$2.39",
+                "carton_quantity": "100 PCS",
+                "carton_size": "43.5X24X51cm",
+                "carton_weight": "14.1Kg",
+                "discount_policy": "Discounts require sales approval.",
+                "source": "catalog.pdf",
+                "heading": "Page 1",
+                "evidence": ["M90 PRO wireless", "1 carton Contains 100 PCS $2.39"],
+                "data_source": "local_pdf_catalog",
+            },
+            "pricing_guardrails": ["Do not invent discount tiers."],
+        }
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "Buy 1: $12.99/ea\nBuy 2: $12.34/ea",
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context={
+                "sentiment_analysis": {"requires_human_handoff": False},
+                "rma_validation": None,
+                "logistics_output": None,
+                "escalation_flag": False,
+                "compliance_tags": [],
+            },
+            router_result={"detected_intent": "pre_sales", "confidence_score": 0.98},
+            pre_sales_context=pre_sales_context,
+            order_context={"data_source": "mock_order_db", "order_found": False},
+            config_context={"response_language_rewriter": japanese_rewriter},
+        )
+
+        self.assertEqual(result["detected_language"], "ja")
+        self.assertEqual(result["language_plan"], "Japanese")
+        self.assertIn("$2.39", result["final_response"])
+        self.assertIn("現在のカタログ単価", result["final_response"])
+        self.assertIn("割引リクエスト", result["final_response"])
+        self.assertNotIn("$12.99", result["final_response"])
+        self.assertNotIn("Buy 1", result["final_response"])
+        self.assertNotIn("Thanks for your interest", result["final_response"])
+        self.assertNotIn("sales team", result["final_response"])
+
+    def test_attach_customer_service_context_rewrites_catalog_prices_in_french(self) -> None:
+        def french_rewriter(**kwargs):
+            facts = kwargs["structured_facts"]
+            return (
+                f"Bonjour,\n\nVoici les informations catalogue verifiees pour {facts['product_name']}.\n"
+                f"Prix unitaire catalogue actuel : {facts['unit_price']}\n"
+                f"Quantite par carton : {facts['carton_quantity']}\n"
+                "Toute demande de remise doit etre examinee par l'equipe commerciale."
+            )
+
+        inputs = _normalize_inputs(
+            {
+                "customer": "Claire",
+                "person": "Claire",
+                "inquiry": "Bonjour. Je souhaite acheter la D18 Smart Watch. Pourriez-vous me donner plus de détails ?",
+                "product_category": "D18 Smart Watch",
+                "channel": "gmail",
+                "session_id": "sess-pricing-fr",
+            }
+        )
+        pre_sales_context = {
+            "data_source": "mock_fallback",
+            "product_found": True,
+            "catalog_product_offer": {
+                "status": "found",
+                "product_found": True,
+                "product_name": "D18 Smart watch /ctn Dz09 smart watch 1 carton contains: 100 pieces $6.20 Please contact me for a discount",
+                "unit_price": "$1.68",
+                "carton_quantity": "100 PCS",
+                "carton_size": "42.5×31.7×26",
+                "single_product_size": "12.2×8×2.9",
+                "single_product_weight": "40g",
+                "source": "catalog.pdf",
+                "heading": "Page 1",
+                "evidence": ["D18 Smart watch /ctn Dz09 smart watch 1 carton contains: 100 pieces $6.20 Please contact me for a discount"],
+                "data_source": "local_pdf_catalog",
+            },
+        }
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "Buy 1: $12.99/ea\nBuy 2: $12.34/ea",
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context={
+                "sentiment_analysis": {"requires_human_handoff": False},
+                "rma_validation": None,
+                "logistics_output": None,
+                "escalation_flag": False,
+                "compliance_tags": [],
+            },
+            router_result={"detected_intent": "pre_sales", "confidence_score": 0.98},
+            pre_sales_context=pre_sales_context,
+            order_context={"data_source": "mock_order_db", "order_found": False},
+            config_context={"response_language_rewriter": french_rewriter},
+        )
+
+        self.assertEqual(result["detected_language"], "fr")
+        self.assertEqual(result["language_plan"], "French")
+        self.assertIn("$1.68", result["final_response"])
+        self.assertIn("Prix unitaire catalogue actuel", result["final_response"])
+        self.assertNotIn("Hello", result["final_response"])
+        self.assertNotIn("Thank you for your interest", result["final_response"])
+        self.assertNotIn("current catalog unit price", result["final_response"])
+        self.assertNotIn("1 carton contains", result["final_response"])
+        self.assertNotIn("Please contact me for a discount", result["final_response"])
+
+    def test_response_language_guard_uses_generic_rewriter_for_supported_languages(self) -> None:
+        samples = {
+            "es": "Hola, gracias. El precio verificado es $1.68.",
+            "de": "Hallo, danke. Der gepruefte Preis ist $1.68.",
+            "pt": "Ola, obrigado. O preco verificado e $1.68.",
+            "it": "Ciao, grazie. Il prezzo verificato e $1.68.",
+            "ko": "안녕하세요. 확인된 가격은 $1.68입니다.",
+            "ru": "Здравствуйте. Подтвержденная цена: $1.68.",
+            "ar": "مرحبا. السعر المؤكد هو $1.68.",
+        }
+        for language, rewritten in samples.items():
+            with self.subTest(language=language):
+                result = _response_language_guard(
+                    response="Hello, the verified price is $1.68.",
+                    inputs={
+                        "detected_language": language,
+                        "language_plan": language,
+                        "channel": "gmail",
+                        "inquiry_text": "customer inquiry",
+                    },
+                    structured_facts={"unit_price": "$1.68"},
+                    config_context={"response_language_rewriter": lambda **_: rewritten},
+                )
+
+                self.assertEqual(result["response"], rewritten)
+                self.assertFalse(result["requires_review"])
+
+    def test_language_guard_requires_review_when_rewrite_stays_wrong_language(self) -> None:
+        calls = []
+
+        def english_rewriter(**kwargs):
+            calls.append(kwargs)
+            return "Hello, the verified catalog price is $1.68."
+
+        inputs = _normalize_inputs(
+            {
+                "customer": "Yuki",
+                "person": "Yuki",
+                "inquiry": "こんにちは。D18 Smart Watch を購入したいのですが、詳細を教えていただけますか。",
+                "product_category": "D18 Smart Watch",
+                "channel": "gmail",
+                "session_id": "sess-language-fail",
+            }
+        )
+        pre_sales_context = {
+            "data_source": "mock_fallback",
+            "product_found": True,
+            "catalog_product_offer": {
+                "status": "found",
+                "product_found": True,
+                "product_name": "D18 Smart watch /ctn Dz09 smart watch 1 carton contains: 100 pieces $6.20 Please contact me for a discount",
+                "unit_price": "$1.68",
+                "carton_quantity": "100 PCS",
+                "carton_size": "42.5×31.7×26",
+                "single_product_size": "12.2×8×2.9",
+                "single_product_weight": "40g",
+                "source": "catalog.pdf",
+                "heading": "Page 1",
+                "evidence": ["D18 Smart watch /ctn Dz09 smart watch 1 carton contains: 100 pieces $6.20 Please contact me for a discount"],
+                "data_source": "local_pdf_catalog",
+            },
+        }
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "Buy 1: $12.99/ea",
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context={
+                "sentiment_analysis": {"requires_human_handoff": False},
+                "rma_validation": None,
+                "logistics_output": None,
+                "escalation_flag": False,
+                "compliance_tags": [],
+            },
+            router_result={"detected_intent": "pre_sales", "confidence_score": 0.98},
+            pre_sales_context=pre_sales_context,
+            order_context={"data_source": "mock_order_db", "order_found": False},
+            config_context={"response_language_rewriter": english_rewriter},
+        )
+
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(result["qa_status"], "REVIEW_REQUIRED")
+        self.assertIn("LANGUAGE_MISMATCH_REVIEW", result["compliance_flags"])
+        self.assertTrue(result["assumptions"])
+
+    def test_catalog_display_name_removes_catalog_noise(self) -> None:
+        display_name = _catalog_display_name(
+            {
+                "product_name": (
+                    "D18 Smart watch /ctn Dz09 smart watch 1 carton contains: "
+                    "100 pieces $6.20 Please contact me for a discount"
+                )
+            },
+            {"product_category": "D18 Smart Watch"},
+        )
+
+        self.assertEqual(display_name, "D18 Smart Watch")
+
     def test_attach_customer_service_context_removes_unverified_catalog_variants_and_features(self) -> None:
         inputs = _normalize_inputs(
             {
@@ -1001,6 +1245,40 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
 
         self.assertEqual(conversation.status, "draft_ready")
         self.assertFalse(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+
+    def test_sync_job_result_requires_approval_for_language_mismatch_review(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "session_id": "conv-1",
+                    "detected_intent": "pre_sales",
+                    "routing_confidence": 0.95,
+                    "final_response": "Hello, the verified catalog price is available.",
+                    "qa_status": "REVIEW_REQUIRED",
+                    "escalation_needed": False,
+                    "compliance_flags": ["LANGUAGE_MISMATCH_REVIEW"],
+                    "pre_sales_response": {"product_found": True},
+                },
+            },
+        )
+
+        self.assertEqual(conversation.status, "draft_ready")
+        self.assertTrue(conversation.requires_approval)
         self.assertFalse(conversation.escalation_flag)
 
     def test_sync_job_result_requires_approval_for_low_confidence_pre_sales_without_handoff(self) -> None:

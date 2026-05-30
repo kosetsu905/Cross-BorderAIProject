@@ -551,10 +551,12 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         store = SupportInboxStore(FakeSupportSession(conversation, [db_record]), session_manager=manager)  # type: ignore[arg-type]
 
         inputs = store.build_support_inputs(conversation, message)  # type: ignore[arg-type]
+        stored = manager.load_session("conv-1")
 
         self.assertEqual(inputs["conversation_history"][0]["message_id"], "redis-msg")
-        self.assertEqual(inputs["detected_language"], "ja")
-        self.assertEqual(inputs["language_plan"], "Japanese")
+        self.assertEqual(inputs["detected_language"], "en")
+        self.assertEqual(inputs["language_plan"], "English")
+        self.assertEqual(stored["language_preference"], "en")
 
     def test_build_support_inputs_falls_back_to_db_history_without_redis(self) -> None:
         conversation = SimpleNamespace(
@@ -617,7 +619,7 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertEqual(inputs["language_plan"], "Chinese")
         self.assertEqual(stored["language_preference"], "zh")
 
-    def test_build_support_inputs_prefers_existing_session_language(self) -> None:
+    def test_build_support_inputs_prefers_current_message_language(self) -> None:
         manager = SessionManager(redis_url=None, ttl_seconds=3600, history_limit=5, redis_client=FakeRedis())
         manager.update_language_preference("conv-1", "ja")
         conversation = SimpleNamespace(
@@ -637,9 +639,37 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         store = SupportInboxStore(FakeSupportSession(conversation), session_manager=manager)  # type: ignore[arg-type]
 
         inputs = store.build_support_inputs(conversation, message)  # type: ignore[arg-type]
+        stored = manager.load_session("conv-1")
+
+        self.assertEqual(inputs["detected_language"], "zh")
+        self.assertEqual(inputs["language_plan"], "Chinese")
+        self.assertEqual(stored["language_preference"], "zh")
+
+    def test_build_support_inputs_current_japanese_overrides_english_session(self) -> None:
+        manager = SessionManager(redis_url=None, ttl_seconds=3600, history_limit=5, redis_client=FakeRedis())
+        manager.update_language_preference("conv-1", "en")
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            channel_thread_id="thread-1",
+            customer_display_name="Yuki",
+            customer_handle="yuki@example.com",
+            customer_handle_masked="yu***@example.com",
+        )
+        message = SimpleNamespace(
+            channel_message_id="msg-1",
+            text="この商品の割引はありますか？",
+            attachments=[],
+            locale=None,
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation), session_manager=manager)  # type: ignore[arg-type]
+
+        inputs = store.build_support_inputs(conversation, message)  # type: ignore[arg-type]
+        stored = manager.load_session("conv-1")
 
         self.assertEqual(inputs["detected_language"], "ja")
         self.assertEqual(inputs["language_plan"], "Japanese")
+        self.assertEqual(stored["language_preference"], "ja")
 
     def test_record_outbound_message_appends_to_redis_session_history(self) -> None:
         manager = SessionManager(redis_url=None, ttl_seconds=3600, history_limit=5, redis_client=FakeRedis())

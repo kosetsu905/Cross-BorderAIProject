@@ -50,7 +50,13 @@ def _requires_approval(result: dict[str, Any]) -> bool:
     qa_status = str(result.get("qa_status") or "").upper()
     confidence = float(result.get("routing_confidence") or 1)
     if _is_pre_sales(result):
-        return confidence < 0.75 or _has_pre_sales_hard_blocker(result)
+        compliance_flags = {str(flag).upper() for flag in result.get("compliance_flags") or []}
+        return (
+            confidence < 0.75
+            or "LANGUAGE_MISMATCH_REVIEW" in compliance_flags
+            or qa_status == "REJECTED"
+            or _has_pre_sales_hard_blocker(result)
+        )
     forced_review = bool(
         _requires_handoff(result)
         or result.get("escalation_flag")
@@ -204,7 +210,13 @@ class SupportInboxStore:
         display_name = conversation.customer_display_name or conversation.customer_handle_masked or "Channel Customer"
         inquiry_text = message.text or "[Customer sent an attachment or unsupported message.]"
         session_language = session_state.get("language_preference") if isinstance(session_state, dict) else None
-        detected_language = getattr(message, "locale", None) or session_language or LanguageDetector.detect(inquiry_text)
+        message_locale = getattr(message, "locale", None)
+        detected_language = (
+            message_locale
+            or (LanguageDetector.detect(inquiry_text) if inquiry_text.strip() else None)
+            or session_language
+            or "en"
+        )
         language_plan = LanguageDetector.get_crewai_language_plan(str(detected_language))
         inputs = {
             "customer": display_name,

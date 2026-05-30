@@ -3,6 +3,7 @@ from typing import Any
 import json
 import re
 
+import httpx
 import yaml
 from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
@@ -105,6 +106,8 @@ class CustomerServiceOutput(BaseModel):
 
     session_id: str = Field(..., description="Unique conversation identifier")
     customer_context: "CustomerContextOutput" = Field(..., description="Customer name, tier, language, and channel")
+    detected_language: str = Field("en", description="Detected ISO language code for the latest customer message")
+    language_plan: str = Field("English", description="Human-readable response language for CrewAI prompts")
     detected_intent: str = Field(..., description="pre_sales | order_fulfillment | post_sales_support")
     routing_confidence: float = Field(..., ge=0, le=1)
     pre_sales_response: "PreSalesResponseOutput | None" = None
@@ -592,6 +595,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         router_result=router_result,
         pre_sales_context=pre_sales_context,
         order_context=order_context,
+        config_context=config_context,
     )
 
 
@@ -842,6 +846,8 @@ def _handoff_customer_service_output(
     return {
         "session_id": inputs.get("session_id", "unknown"),
         "customer_context": _customer_context(inputs),
+        "detected_language": str(inputs.get("detected_language") or "en"),
+        "language_plan": str(inputs.get("language_plan") or "English"),
         "detected_intent": router_result["detected_intent"],
         "routing_confidence": router_result["confidence_score"],
         "pre_sales_response": None,
@@ -870,7 +876,9 @@ def _attach_customer_service_context(
     router_result: dict[str, Any],
     pre_sales_context: dict[str, Any],
     order_context: dict[str, Any],
+    config_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    config_context = config_context or {}
     normalized = dict(result)
     usage_metrics = normalized.pop(INTERNAL_USAGE_KEY, None)
     intent = router_result["detected_intent"]
@@ -883,6 +891,14 @@ def _attach_customer_service_context(
     )
     normalized["session_id"] = str(normalized.get("session_id") or inputs.get("session_id") or "unknown")
     normalized["customer_context"] = normalized.get("customer_context") or _customer_context(inputs)
+    normalized["detected_language"] = str(normalized.get("detected_language") or inputs.get("detected_language") or "en")
+    normalized["language_plan"] = str(
+        normalized.get("language_plan")
+        or inputs.get("language_plan")
+        or LanguageDetector.get_crewai_language_plan(normalized["detected_language"])
+    )
+    if isinstance(normalized["customer_context"], dict):
+        normalized["customer_context"]["language"] = normalized["language_plan"]
     normalized["detected_intent"] = normalized.get("detected_intent") or intent
     normalized["routing_confidence"] = float(normalized.get("routing_confidence") or router_result["confidence_score"])
     normalized["final_response"] = str(final_response)
@@ -903,6 +919,7 @@ def _attach_customer_service_context(
             normalized["final_response"],
             normalized["pre_sales_response"],
             inputs,
+            config_context,
         )
         if normalized["final_response"] != str(final_response):
             flags = list(normalized.get("compliance_flags") or [])
@@ -929,6 +946,22 @@ def _attach_customer_service_context(
             else None
         )
     )
+    language_guard = _response_language_guard(
+        response=normalized["final_response"],
+        inputs=inputs,
+        structured_facts=_language_guard_facts(normalized),
+        config_context=config_context,
+    )
+    normalized["final_response"] = language_guard["response"]
+    if language_guard["requires_review"]:
+        flags = list(normalized.get("compliance_flags") or [])
+        if "LANGUAGE_MISMATCH_REVIEW" not in flags:
+            flags.append("LANGUAGE_MISMATCH_REVIEW")
+        normalized["compliance_flags"] = flags
+        normalized["qa_status"] = "REVIEW_REQUIRED"
+        assumptions = list(normalized.get("assumptions") or [])
+        assumptions.append("Final response language could not be verified against the latest customer message.")
+        normalized["assumptions"] = assumptions
     normalized["escalation_needed"] = _customer_service_escalation_needed(
         normalized,
         intent,
@@ -1001,6 +1034,7 @@ def _guard_pre_sales_catalog_pricing(
     final_response: str,
     pre_sales_response: dict[str, Any] | None,
     inputs: dict[str, Any],
+    config_context: dict[str, Any],
 ) -> str:
     if not pre_sales_response:
         return final_response
@@ -1040,44 +1074,228 @@ def _guard_pre_sales_catalog_pricing(
     ):
         return final_response
 
-    product_name = str(offer.get("product_name") or inputs.get("product_category") or "the product")
-    carton_quantity = offer.get("carton_quantity")
-    carton_size = offer.get("carton_size")
-    carton_weight = offer.get("carton_weight")
-    single_product_size = offer.get("single_product_size")
-    single_product_weight = offer.get("single_product_weight")
-    channel = str(inputs.get("channel") or "email").lower()
-    facts = [f"current catalog unit price: {unit_price}"]
-    if carton_quantity:
-        facts.append(f"carton quantity: {carton_quantity}")
-    if carton_size:
-        facts.append(f"carton size: {carton_size}")
-    if carton_weight:
-        facts.append(f"carton weight: {carton_weight}")
-    if single_product_size:
-        facts.append(f"single product size: {single_product_size}")
-    if single_product_weight:
-        facts.append(f"single product weight: {single_product_weight}")
-    details_note = (
-        "The catalog lists these packaging/specification facts but does not list battery life, audio performance, "
-        "Bluetooth version, variants, or SKU options for this matched item."
+    facts_payload = _catalog_facts_payload(offer, inputs)
+    safe_draft = _safe_catalog_response_draft(
+        channel=str(inputs.get("channel") or "email").lower(),
+        facts=facts_payload,
     )
+    rewritten = _rewrite_response_language(
+        response=safe_draft,
+        inputs=inputs,
+        structured_facts=facts_payload,
+        config_context=config_context,
+    )
+    return rewritten or safe_draft
 
+
+def _catalog_facts_payload(offer: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product_name": _catalog_display_name(offer, inputs),
+        "unit_price": offer.get("unit_price"),
+        "carton_quantity": offer.get("carton_quantity"),
+        "carton_size": offer.get("carton_size"),
+        "carton_weight": offer.get("carton_weight"),
+        "single_product_size": offer.get("single_product_size"),
+        "single_product_weight": offer.get("single_product_weight"),
+        "missing_specs_note": (
+            "The catalog lists packaging/specification facts but does not list battery life, audio performance, "
+            "Bluetooth version, variants, or SKU options for this matched item."
+        ),
+        "discount_policy": "Discount requests require sales approval before quoting any reduced price.",
+    }
+
+
+def _catalog_display_name(offer: dict[str, Any], inputs: dict[str, Any]) -> str:
+    product_category = _clean_catalog_product_name(str(inputs.get("product_category") or ""))
+    inquiry_name = _clean_catalog_product_name(
+        str(_product_name_from_inquiry(str(inputs.get("inquiry_text") or inputs.get("inquiry") or "")) or "")
+    )
+    offer_name = _clean_catalog_product_name(str(offer.get("product_name") or ""))
+    if offer_name and product_category and _is_more_specific_catalog_name(offer_name, product_category):
+        return offer_name
+    for cleaned in (product_category, inquiry_name, offer_name):
+        if cleaned:
+            return cleaned
+    return "the matched product"
+
+
+def _product_name_from_inquiry(inquiry_text: str) -> str | None:
+    match = re.search(r"\b[A-Z][A-Za-z0-9]*(?:\s+[A-Z0-9][A-Za-z0-9]*){1,5}\b", inquiry_text)
+    return match.group(0) if match else None
+
+
+def _clean_catalog_product_name(value: str) -> str:
+    cleaned = re.sub(r"(?:1|one)\s+carton\s+contains?\s*:?\s*[0-9]+\s*(?:pcs|pcs\.|pieces)?", "", value, flags=re.I)
+    cleaned = re.sub(r"please\s+contact\s+me\s+for\s+a\s+discount\.?", "", cleaned, flags=re.I)
+    cleaned = PRICE_VALUE_RE.sub("", cleaned)
+    cleaned = re.split(r"\bbox\s+gauge\b|\bweight\b|\bsingle\s+product\b", cleaned, maxsplit=1, flags=re.I)[0]
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" /,.-")
+    return cleaned
+
+
+def _is_more_specific_catalog_name(candidate: str, baseline: str) -> bool:
+    if re.search(r"\d", baseline):
+        return False
+    baseline_tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", baseline)}
+    candidate_tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", candidate)}
+    extra_tokens = candidate_tokens - baseline_tokens
+    return bool(baseline_tokens and baseline_tokens.issubset(candidate_tokens) and any(re.search(r"\d", token) for token in extra_tokens))
+
+
+def _safe_catalog_response_draft(*, channel: str, facts: dict[str, Any]) -> str:
+    fact_lines = [
+        f"current catalog unit price: {facts['unit_price']}",
+        *(f"{label}: {facts[key]}" for key, label in (
+            ("carton_quantity", "carton quantity"),
+            ("carton_size", "carton size"),
+            ("carton_weight", "carton weight"),
+            ("single_product_size", "single product size"),
+            ("single_product_weight", "single product weight"),
+        ) if facts.get(key)),
+    ]
+    details_note = str(facts["missing_specs_note"])
     if channel in {"whatsapp", "webchat", "social"}:
         return (
-            f"Thanks for your interest. I found a catalog match: {product_name}. The verified catalog details are: "
-            f"{'; '.join(facts)}. {details_note} You can reply to confirm this is the item you want, and sales can help "
-            "with the purchase or review any discount request."
+            f"Thanks for your interest. I found a catalog match: {facts['product_name']}. "
+            f"The verified catalog details are: {'; '.join(fact_lines)}. {details_note} "
+            "You can reply to confirm this is the item you want, and sales can help with the purchase "
+            "or review any discount request."
         )
-
     return (
         f"Hello,\n\n"
-        f"Thank you for your interest. I found a catalog match: {product_name}.\n\n"
+        f"Thank you for your interest. I found a catalog match: {facts['product_name']}.\n\n"
         "The verified catalog details I have are:\n"
-        + "\n".join(f"- {fact}" for fact in facts)
+        + "\n".join(f"- {fact}" for fact in fact_lines)
         + f"\n\n{details_note} You can reply to confirm this is the item you want, and our sales team can help with the purchase"
         " or review any discount request.\n\nBest,\nCustomer Service Team"
     )
+
+
+def _response_language_guard(
+    *,
+    response: str,
+    inputs: dict[str, Any],
+    structured_facts: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    target_language = _normalize_language_code(str(inputs.get("detected_language") or "en"))
+    if _response_matches_language(response, target_language):
+        return {"response": response, "requires_review": False}
+
+    rewritten = _rewrite_response_language(
+        response=response,
+        inputs=inputs,
+        structured_facts=structured_facts,
+        config_context=config_context,
+    )
+    if rewritten and _response_matches_language(rewritten, target_language):
+        return {"response": rewritten, "requires_review": False}
+    return {"response": rewritten or response, "requires_review": True}
+
+
+def _language_guard_facts(result: dict[str, Any]) -> dict[str, Any]:
+    pre_sales = result.get("pre_sales_response")
+    if isinstance(pre_sales, dict) and isinstance(pre_sales.get("catalog_product_offer"), dict):
+        return {"catalog_product_offer": pre_sales["catalog_product_offer"]}
+    return {
+        "detected_intent": result.get("detected_intent"),
+        "pre_sales_response": result.get("pre_sales_response"),
+        "order_response": result.get("order_response"),
+        "support_response": result.get("support_response"),
+    }
+
+
+def _rewrite_response_language(
+    *,
+    response: str,
+    inputs: dict[str, Any],
+    structured_facts: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str | None:
+    target_language = str(inputs.get("language_plan") or LanguageDetector.get_crewai_language_plan(str(inputs.get("detected_language") or "en")))
+    rewriter = config_context.get("response_language_rewriter")
+    if callable(rewriter):
+        rewritten = rewriter(
+            response=response,
+            target_language=target_language,
+            detected_language=str(inputs.get("detected_language") or "en"),
+            channel=str(inputs.get("channel") or "email"),
+            inquiry_text=str(inputs.get("inquiry_text") or inputs.get("inquiry") or ""),
+            structured_facts=structured_facts,
+        )
+        return str(rewritten).strip() if rewritten else None
+
+    api_key = config_context.get("openai_api_key")
+    if not api_key:
+        return None
+    try:
+        payload = {
+            "model": config_context.get("openai_model_name") or "gpt-4o-mini",
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Rewrite the customer-service response in the target language only. "
+                        "Preserve product model names, prices, quantities, sizes, and weights exactly. "
+                        "Do not add facts, discounts, SKUs, variants, or claims not present in structured_facts. "
+                        "Return JSON with a single key: response."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "target_language": target_language,
+                            "detected_language": inputs.get("detected_language"),
+                            "channel": inputs.get("channel"),
+                            "customer_inquiry": inputs.get("inquiry_text") or inputs.get("inquiry"),
+                            "structured_facts": structured_facts,
+                            "response_to_rewrite": response,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0,
+        }
+        llm_response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=20,
+        )
+        llm_response.raise_for_status()
+        content = llm_response.json()["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        rewritten = parsed.get("response")
+        return str(rewritten).strip() if rewritten else None
+    except Exception:
+        return None
+
+
+def _response_matches_language(response: str, target_language: str) -> bool:
+    normalized_target = _normalize_language_code(target_language)
+    if normalized_target == "en":
+        return True
+    detected = LanguageDetector.detect(_strip_catalog_invariants(response), fallback="")
+    return _normalize_language_code(detected) == normalized_target
+
+
+def _strip_catalog_invariants(response: str) -> str:
+    without_prices = PRICE_VALUE_RE.sub(" ", response)
+    without_models = re.sub(r"\b[A-Z0-9][A-Za-z0-9-]*(?:\s+[A-Z0-9][A-Za-z0-9-]*){0,4}\b", " ", without_prices)
+    return re.sub(r"\s+", " ", without_models).strip()
+
+
+def _normalize_language_code(language: str | None) -> str:
+    if not language:
+        return "en"
+    normalized = str(language).strip().lower().replace("_", "-")
+    language_names = {value.lower(): key for key, value in LanguageDetector.SUPPORTED_MAP.items()}
+    if normalized in language_names:
+        return language_names[normalized]
+    return normalized.split("-", 1)[0] or "en"
 
 
 def _data_sources_for_intent(intent: str, pre_sales_context: dict[str, Any], order_context: dict[str, Any]) -> list[str]:
