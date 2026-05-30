@@ -904,6 +904,38 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertFalse(conversation.requires_approval)
         self.assertFalse(conversation.escalation_flag)
 
+    def test_sync_job_result_does_not_downgrade_sent_conversation_to_draft_ready(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            draft_response="Already sent response.",
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="sent",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "session_id": "conv-1",
+                    "detected_intent": "pre_sales",
+                    "routing_confidence": 0.95,
+                    "final_response": "The catalog item is available.",
+                    "qa_status": "APPROVED",
+                    "escalation_needed": False,
+                },
+            },
+        )
+
+        self.assertEqual(conversation.status, "sent")
+        self.assertFalse(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+
     def test_sync_job_result_does_not_handoff_approved_pre_sales_even_if_model_flags_escalation(self) -> None:
         conversation = SimpleNamespace(
             conversation_id="conv-1",

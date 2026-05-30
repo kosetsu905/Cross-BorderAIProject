@@ -520,7 +520,7 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
     meta_cols = st.columns(4)
     meta_cols[0].metric("Status", conversation.get("status") or "n/a")
     meta_cols[1].metric("Channel", conversation.get("channel") or "n/a")
-    meta_cols[2].metric("Approval", "required" if conversation.get("requires_approval") else "optional")
+    meta_cols[2].metric("Approval", "required" if conversation.get("requires_approval") else "not required")
     meta_cols[3].metric("Escalation", "yes" if conversation.get("escalation_flag") else "no")
 
     messages = conversation.get("messages")
@@ -538,7 +538,10 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
         st.markdown("**Draft response**")
         edited = st.text_area("Approved message", value=str(draft), height=160)
         send_disabled = bool(conversation.get("escalation_flag"))
-        if st.button("Approve and send", disabled=send_disabled, width="stretch"):
+        send_label = "Approve and send" if conversation.get("requires_approval") else "Send manually"
+        if not conversation.get("requires_approval") and not conversation.get("escalation_flag"):
+            st.caption("Auto-send eligible. Use manual send only if provider auto-dispatch did not send.")
+        if st.button(send_label, disabled=send_disabled, width="stretch"):
             result, send_error = _request_json(
                 "POST",
                 api_base_url,

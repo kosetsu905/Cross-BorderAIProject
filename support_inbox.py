@@ -37,6 +37,13 @@ def _conversation_status_from_result(result: dict[str, Any]) -> str:
     return "processing"
 
 
+def _next_conversation_status(current_status: str | None, result: dict[str, Any]) -> str:
+    next_status = _conversation_status_from_result(result)
+    if current_status in {"sent", "send_failed"} and next_status == "draft_ready":
+        return current_status
+    return next_status
+
+
 def _requires_approval(result: dict[str, Any]) -> bool:
     sentiment = result.get("sentiment_analysis") or {}
     rma = result.get("rma_validation") or {}
@@ -282,7 +289,7 @@ class SupportInboxStore:
         conversation.draft_response = _draft_response_from_result(result) or conversation.draft_response
         conversation.requires_approval = _requires_approval(result)
         conversation.escalation_flag = _requires_handoff(result)
-        conversation.status = _conversation_status_from_result(result)
+        conversation.status = _next_conversation_status(conversation.status, result)
         if conversation.escalation_flag:
             if _handoff_notification_sent(previous_payload):
                 draft_payload["handoff_notification"] = previous_payload["handoff_notification"]
