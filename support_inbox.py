@@ -50,12 +50,13 @@ def _requires_approval(result: dict[str, Any]) -> bool:
     qa_status = str(result.get("qa_status") or "").upper()
     confidence = float(result.get("routing_confidence") or 1)
     if _is_pre_sales(result):
-        compliance_flags = {str(flag).upper() for flag in result.get("compliance_flags") or []}
         return (
             confidence < 0.75
             or qa_status == "REJECTED"
             or _has_pre_sales_hard_blocker(result)
         )
+    if _is_low_risk_order_fulfillment(result):
+        return False
     forced_review = bool(
         _requires_handoff(result)
         or result.get("escalation_flag")
@@ -79,6 +80,10 @@ def _requires_handoff(result: dict[str, Any]) -> bool:
     action = result.get("channel_recommended_action")
     if _is_pre_sales(result):
         return _has_pre_sales_hard_blocker(result)
+    if _is_low_risk_order_fulfillment(result):
+        return False
+    if _is_order_fulfillment(result) and _has_hard_compliance_blocker(result):
+        return True
     return bool(
         result.get("escalation_needed")
         or result.get("escalation_flag")
@@ -90,9 +95,39 @@ def _is_pre_sales(result: dict[str, Any]) -> bool:
     return str(result.get("detected_intent") or "").lower() == "pre_sales"
 
 
+def _is_order_fulfillment(result: dict[str, Any]) -> bool:
+    return str(result.get("detected_intent") or "").lower() == "order_fulfillment"
+
+
+def _is_low_risk_order_fulfillment(result: dict[str, Any]) -> bool:
+    if not _is_order_fulfillment(result):
+        return False
+    qa_status = str(result.get("qa_status") or "").upper()
+    confidence = float(result.get("routing_confidence") or 0)
+    if confidence < 0.75 or qa_status == "REJECTED":
+        return False
+    sentiment = result.get("sentiment_analysis") or {}
+    rma = result.get("rma_validation") or {}
+    if (
+        result.get("escalation_flag")
+        or result.get("channel_recommended_action") == "human_handoff"
+        or sentiment.get("customer_tier") in {"VIP", "PREMIUM"}
+        or float(sentiment.get("sentiment_score") or 0) < -0.25
+        or sentiment.get("intent_category") == "BILLING_ISSUE"
+        or (rma and not rma.get("eligible_for_return", True))
+        or _has_hard_compliance_blocker(result)
+    ):
+        return False
+    return True
+
+
 def _has_pre_sales_hard_blocker(result: dict[str, Any]) -> bool:
     if result.get("escalation_flag") or result.get("channel_recommended_action") == "human_handoff":
         return True
+    return _has_hard_compliance_blocker(result)
+
+
+def _has_hard_compliance_blocker(result: dict[str, Any]) -> bool:
     hard_flags = {
         "LOW_ROUTING_CONFIDENCE",
         "HUMAN_HANDOFF",

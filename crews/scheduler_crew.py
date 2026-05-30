@@ -14,8 +14,9 @@ from tools.custom.scheduler_tools import (
     TimezoneHolidayTool,
 )
 from utils.crew_result import serialize_crew_result
-from utils.workflow_progress import attach_task_progress
+from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "scheduler"
@@ -198,21 +199,26 @@ def run_scheduler_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='scheduler')
     tasks_config = _load_yaml_config("tasks.yaml")
+    llm = build_llm(config_context)
 
     calendar_manager = Agent(
         config=agents_config["global_calendar_manager"],
+        llm=llm,
         tools=[TimezoneHolidayTool(holiday_api_key=config_context.get("holiday_api_key"))],
     )
     campaign_planner = Agent(
         config=agents_config["campaign_alignment_planner"],
+        llm=llm,
         tools=_build_campaign_tools(config_context),
     )
     conflict_resolver = Agent(
         config=agents_config["conflict_resolution_optimizer"],
+        llm=llm,
         tools=[ConflictCheckerTool()],
     )
     notification_coordinator = Agent(
         config=agents_config["notification_coordinator"],
+        llm=llm,
         tools=[NotificationRouterTool()],
     )
 

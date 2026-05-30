@@ -24,6 +24,12 @@ order_status_handling:
     {customer} is inquiring about order {order_id_if_provided}: "{inquiry_text}".
     Conversation history, if provided: {conversation_history}
     Order/tracking context: {order_context}
+    If order_context.order_knowledge_results is present, treat those local knowledge-base PDF snippets as internal order/tracking evidence.
+    Use their facts to answer the email, but do not expose raw file paths or unsupported assumptions to the customer.
+    If order_context.local_tracking_record or order_context.tracking_record_found is present, prioritize that structured tracking record over order_found=false.
+    In that case, do not lead with "could not find an order" or similar wording. Explain in {language_plan} that the tracking record was found in the local tracking document, though it may not be linked to an internal order record.
+    Include the tracking number, reference number, last status, status date, booking date, origin, destination, pieces, service type, package contents, receiver name when present, and key tracking history.
+    If the customer provided a tracking number or reference number and order_context.tracking_lookup_status is "not_found", do not quote details from any other tracking record. Explain in {language_plan} that no exact local tracking record was found for the provided number, then ask the customer to verify the number or share a reference number, order ID, or purchase email.
     This is a post-purchase, pre-delivery inquiry. Verify order existence and current status from the provided context.
     Provide shipping or tracking information when available, explain delivery timelines, customs status, or delay reasons,
     and offer actionable options such as address modification, cancellation, carrier preferences, or escalation when eligible.

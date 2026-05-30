@@ -14,12 +14,15 @@ from crews.support_crew import (
     CustomerServiceOutput,
     _attach_catalog_knowledge_context,
     _attach_customer_service_context,
+    _attach_order_knowledge_context,
     _build_automation_context,
     _catalog_display_name,
     _normalize_inputs,
+    _normalize_order_response,
+    _parse_local_tracking_record,
 )
 from models import WorkflowType
-from runtime_config import load_runtime_config
+from runtime_config import apply_runtime_environment, load_runtime_config
 from services.pim_connector import PIMConnector, PIMQueryResult
 from scripts.train_intent_classifier import (
     INTENT_LABELS,
@@ -365,6 +368,243 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(context["catalog_product_offer"]["unit_price"], "$2.39")
         self.assertTrue(any("Do not invent discount tiers" in rule for rule in context["pricing_guardrails"]))
 
+    def test_order_context_includes_local_pdf_tracking_knowledge(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Maria",
+                "person": "Maria",
+                "inquiry": "Can you help me check tracking number C88943021?",
+                "order_id": "C88943021",
+                "customer_email": "maria@example.com",
+                "channel": "gmail",
+            }
+        )
+        context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+
+        _attach_order_knowledge_context(context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+        normalized = _normalize_order_response(context)
+
+        self.assertEqual(context["knowledge_data_source"], "local_order_knowledge_base")
+        self.assertTrue(context["tracking_record_found"])
+        self.assertTrue(context["order_knowledge_results"])
+        self.assertTrue(any("413440868" in item["source"] for item in context["order_knowledge_results"]))
+        self.assertEqual(normalized["knowledge_data_source"], "local_order_knowledge_base")
+        self.assertTrue(normalized["order_knowledge_results"])
+        self.assertEqual(normalized["tracking_lookup_status"], "found")
+
+    def test_local_tracking_pdf_extracts_tracking_number_details(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        load_knowledge_chunks.cache_clear()
+        chunks = load_knowledge_chunks(str(knowledge_dir))
+        content = next(chunk.content for chunk in chunks if "413440868" in chunk.source)
+
+        record = _parse_local_tracking_record(content, "413440868-Tracking-Details.pdf")
+
+        self.assertEqual(record["tracking_number"], "C88943021")
+        self.assertEqual(record["reference_number"], "120399587991")
+        self.assertEqual(record["last_status"], "Successfully Delivered")
+        self.assertEqual(record["last_status_date"], "13th May 2026")
+        self.assertEqual(record["booking_date"], "10th May 2026")
+        self.assertEqual(record["origin"], "Chennai")
+        self.assertEqual(record["destination"], "Mumbai 400063")
+        self.assertEqual(record["pieces"], 1)
+        self.assertEqual(record["service_type"], "Lite")
+        self.assertEqual(record["package_contents"], "Documents")
+        self.assertTrue(any(event["activity"] == "Successfully Delivered" for event in record["tracking_history"]))
+
+    def test_order_context_matches_local_pdf_by_reference_number(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "I want to track my package, the reference number is 120399587991.",
+                "channel": "gmail",
+            }
+        )
+        context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+
+        _attach_order_knowledge_context(context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+
+        self.assertTrue(context["tracking_record_found"])
+        self.assertEqual(context["local_tracking_record"]["tracking_number"], "C88943021")
+        self.assertEqual(context["local_tracking_record"]["reference_number"], "120399587991")
+
+    def test_order_context_wrong_tracking_number_does_not_expose_pdf_facts(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "I want to track my package, the tracking number is C99943021.",
+                "channel": "gmail",
+            }
+        )
+        context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+
+        _attach_order_knowledge_context(context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+
+        self.assertFalse(context["tracking_record_found"])
+        self.assertEqual(context["tracking_lookup_status"], "not_found")
+        self.assertEqual(context["tracking_lookup_query"], ["C99943021"])
+        self.assertNotIn("order_knowledge_results", context)
+        self.assertNotIn("local_tracking_record", context)
+
+    def test_order_context_wrong_reference_number_does_not_expose_pdf_facts(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "I want to track my package, the reference number is 120399587990.",
+                "channel": "gmail",
+            }
+        )
+        context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+
+        _attach_order_knowledge_context(context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+
+        self.assertFalse(context["tracking_record_found"])
+        self.assertEqual(context["tracking_lookup_status"], "not_found")
+        self.assertEqual(context["tracking_lookup_query"], ["120399587990"])
+        self.assertNotIn("order_knowledge_results", context)
+        self.assertNotIn("local_tracking_record", context)
+
+    def test_order_context_tracking_record_overrides_missing_order_framing(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "I want to track my package, the tracking number is C88943021. Please provide me more information.",
+                "channel": "gmail",
+                "session_id": "sess-tracking-local",
+            }
+        )
+        order_context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+        _attach_order_knowledge_context(order_context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "Unfortunately, we could not find an order associated with tracking number C88943021.",
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context={
+                "sentiment_analysis": {"requires_human_handoff": False},
+                "rma_validation": None,
+                "logistics_output": None,
+                "escalation_flag": False,
+                "compliance_tags": [],
+            },
+            router_result={"detected_intent": "order_fulfillment", "confidence_score": 0.95},
+            pre_sales_context={"data_source": "mock_fallback"},
+            order_context=order_context,
+        )
+
+        self.assertTrue(result["order_response"]["tracking_record_found"])
+        self.assertEqual(result["order_response"]["local_tracking_record"]["tracking_number"], "C88943021")
+        self.assertEqual(result["order_response"]["local_tracking_record"]["reference_number"], "120399587991")
+        self.assertIn("I found the tracking record", result["final_response"])
+        self.assertIn("Reference No.: 120399587991", result["final_response"])
+        self.assertIn("Successfully Delivered", result["final_response"])
+        self.assertNotIn("could not find an order", result["final_response"].lower())
+        self.assertIn("LOCAL_TRACKING_RECORD_REWRITTEN", result["compliance_flags"])
+
+    def test_order_tracking_wrong_number_rewrites_to_japanese_not_found_response(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "こんにちは。荷物の追跡を希望します。追跡番号はC99943021です。詳しい情報をお知らせください。",
+                "channel": "gmail",
+                "session_id": "sess-tracking-ja-miss",
+            }
+        )
+        order_context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+        _attach_order_knowledge_context(order_context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "According to our local tracking document, C88943021 was successfully delivered.",
+                "qa_status": "REVIEW_REQUIRED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context={
+                "sentiment_analysis": {"requires_human_handoff": False},
+                "rma_validation": None,
+                "logistics_output": None,
+                "escalation_flag": False,
+                "compliance_tags": [],
+            },
+            router_result={"detected_intent": "order_fulfillment", "confidence_score": 0.95},
+            pre_sales_context={"data_source": "mock_fallback"},
+            order_context=order_context,
+        )
+
+        self.assertEqual(result["detected_language"], "ja")
+        self.assertEqual(result["language_plan"], "Japanese")
+        self.assertFalse(result["order_response"]["tracking_record_found"])
+        self.assertEqual(result["order_response"]["tracking_lookup_status"], "not_found")
+        self.assertIn("C99943021", result["final_response"])
+        self.assertIn("見つかりませんでした", result["final_response"])
+        self.assertNotIn("C88943021", result["final_response"])
+        self.assertNotIn("120399587991", result["final_response"])
+        self.assertIn("LOCAL_TRACKING_RECORD_REWRITTEN", result["compliance_flags"])
+
+    def test_order_tracking_found_response_uses_japanese_safe_fallback(self) -> None:
+        knowledge_dir = Path(__file__).resolve().parents[1] / "docs" / "knowledge_base"
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "こんにちは。荷物の追跡を希望します。追跡番号はC88943021です。詳しい情報をお知らせください。",
+                "channel": "gmail",
+                "session_id": "sess-tracking-ja-hit",
+            }
+        )
+        order_context = {"order_found": False, "data_source": "mock_order_db"}
+        load_knowledge_chunks.cache_clear()
+        _attach_order_knowledge_context(order_context, inputs, {"support_knowledge_dir": str(knowledge_dir)})
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "Tracking C88943021 was successfully delivered.",
+                "qa_status": "REVIEW_REQUIRED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context={
+                "sentiment_analysis": {"requires_human_handoff": False},
+                "rma_validation": None,
+                "logistics_output": None,
+                "escalation_flag": False,
+                "compliance_tags": [],
+            },
+            router_result={"detected_intent": "order_fulfillment", "confidence_score": 0.95},
+            pre_sales_context={"data_source": "mock_fallback"},
+            order_context=order_context,
+        )
+
+        self.assertEqual(result["detected_language"], "ja")
+        self.assertEqual(result["language_plan"], "Japanese")
+        self.assertTrue(result["order_response"]["tracking_record_found"])
+        self.assertIn("C88943021", result["final_response"])
+        self.assertIn("120399587991", result["final_response"])
+        self.assertIn("Successfully Delivered", result["final_response"])
+        self.assertIn("こんにちは", result["final_response"])
+        self.assertNotIn("Thank you for reaching out", result["final_response"])
+
     def test_mock_fallback_context_does_not_expose_customer_facing_variants(self) -> None:
         inputs = _normalize_inputs(
             {
@@ -432,6 +672,75 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(config.intent_classifier_model_path, "artifacts/intent_classifier_v1/final")
         self.assertFalse(config.intent_router_llm_fallback_enabled)
         self.assertEqual(config.intent_router_confidence_threshold, 0.8)
+
+    def test_runtime_config_prefers_generic_llm_environment(self) -> None:
+        env = {
+            "LLM_PROVIDER": "openrouter",
+            "LLM_API_KEY": "openrouter-key",
+            "LLM_BASE_URL": "https://openrouter.ai/api/v1",
+            "LLM_MODEL_NAME": "openai/gpt-4o-mini",
+            "LLM_DISABLE_REASONING": "true",
+            "OPENAI_API_KEY": "openai-key",
+            "OPENAI_MODEL_NAME": "gpt-4o-mini",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_runtime_config()
+
+        self.assertEqual(config.llm_provider, "openrouter")
+        self.assertEqual(config.llm_api_key, "openrouter-key")
+        self.assertEqual(config.llm_base_url, "https://openrouter.ai/api/v1")
+        self.assertEqual(config.llm_model_name, "openai/gpt-4o-mini")
+        self.assertTrue(config.llm_disable_reasoning)
+        self.assertEqual(config.openai_api_key, "openai-key")
+        self.assertEqual(config.openai_model_name, "gpt-4o-mini")
+
+    def test_runtime_config_defaults_openrouter_base_url_by_provider(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "openrouter",
+                "LLM_API_KEY": "openrouter-key",
+                "LLM_MODEL_NAME": "openai/gpt-4o-mini",
+            },
+            clear=True,
+        ):
+            config = load_runtime_config()
+
+        self.assertEqual(config.llm_base_url, "https://openrouter.ai/api/v1")
+
+    def test_apply_runtime_environment_sets_openai_compatible_vars(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            apply_runtime_environment(
+                {
+                    "llm_api_key": "openrouter-key",
+                    "llm_model_name": "openai/gpt-4o-mini",
+                    "llm_base_url": "https://openrouter.ai/api/v1",
+                }
+            )
+
+            self.assertEqual(os.environ["OPENAI_API_KEY"], "openrouter-key")
+            self.assertEqual(os.environ["OPENAI_MODEL_NAME"], "openai/gpt-4o-mini")
+            self.assertEqual(os.environ["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
+            self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
+
+    def test_apply_runtime_environment_clears_base_url_when_unset(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_BASE": "https://openrouter.ai/api/v1",
+                "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+            },
+            clear=True,
+        ):
+            apply_runtime_environment(
+                {
+                    "llm_api_key": "openai-key",
+                    "llm_model_name": "gpt-4o-mini",
+                }
+            )
+
+            self.assertNotIn("OPENAI_API_BASE", os.environ)
+            self.assertNotIn("OPENAI_BASE_URL", os.environ)
 
     def test_intent_training_config_defaults(self) -> None:
         config = TrainingConfig()
@@ -554,6 +863,41 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(result["detected_intent"], "pre_sales")
         self.assertFalse(result["requires_human_review"])
         self.assertTrue(result["llm_fallback_used"])
+
+    @patch("services.intent_router.httpx.post")
+    def test_intent_router_llm_fallback_uses_openrouter_config(self, post_mock) -> None:
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"detected_intent": "pre_sales", "confidence_score": 0.91}'
+                            }
+                        }
+                    ]
+                }
+
+        post_mock.return_value = FakeResponse()
+
+        result = classify_intent(
+            "Can you help me choose?",
+            config_context={
+                "llm_api_key": "openrouter-key",
+                "llm_base_url": "https://openrouter.ai/api/v1",
+                "llm_model_name": "openai/gpt-4o-mini",
+            },
+        )
+
+        self.assertEqual(result["detected_intent"], "pre_sales")
+        post_mock.assert_called_once()
+        _, kwargs = post_mock.call_args
+        self.assertEqual(post_mock.call_args.args[0], "https://openrouter.ai/api/v1/chat/completions")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer openrouter-key")
+        self.assertEqual(kwargs["json"]["model"], "openai/gpt-4o-mini")
 
     def test_intent_router_low_confidence_without_llm_still_requires_review(self) -> None:
         result = classify_intent("hello there", config_context={"intent_router_llm_fallback_enabled": False})
@@ -1222,6 +1566,144 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(conversation.status, "handoff_required")
         self.assertTrue(conversation.requires_approval)
         self.assertTrue(conversation.escalation_flag)
+
+    def test_sync_job_result_auto_allows_high_confidence_order_fulfillment_review(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "session_id": "conv-1",
+                    "detected_intent": "order_fulfillment",
+                    "routing_confidence": 0.95,
+                    "final_response": "Tracking C88943021 was successfully delivered.",
+                    "qa_status": "REVIEW_REQUIRED",
+                    "escalation_needed": True,
+                    "compliance_flags": ["GDPR_COMPLIANT_REVIEW", "CCPA_OPT_OUT_AVAILABLE"],
+                    "order_response": {"tracking_record_found": True},
+                },
+            },
+        )
+
+        self.assertEqual(conversation.status, "draft_ready")
+        self.assertFalse(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+
+    def test_sync_job_result_requires_approval_for_low_confidence_order_fulfillment(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "session_id": "conv-1",
+                    "detected_intent": "order_fulfillment",
+                    "routing_confidence": 0.74,
+                    "final_response": "A specialist should review this tracking request.",
+                    "qa_status": "REVIEW_REQUIRED",
+                    "escalation_needed": True,
+                },
+            },
+        )
+
+        self.assertEqual(conversation.status, "handoff_required")
+        self.assertTrue(conversation.requires_approval)
+        self.assertTrue(conversation.escalation_flag)
+
+    def test_sync_job_result_handoffs_order_fulfillment_with_hard_flag(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-1",
+            {
+                "job_id": "job-1",
+                "workflow_type": "support",
+                "result": {
+                    "session_id": "conv-1",
+                    "detected_intent": "order_fulfillment",
+                    "routing_confidence": 0.95,
+                    "final_response": "A specialist will review this shipment.",
+                    "qa_status": "APPROVED",
+                    "escalation_needed": False,
+                    "compliance_flags": ["HUMAN_HANDOFF"],
+                },
+            },
+        )
+
+        self.assertEqual(conversation.status, "handoff_required")
+        self.assertTrue(conversation.requires_approval)
+        self.assertTrue(conversation.escalation_flag)
+
+    def test_sync_job_result_requires_approval_for_order_fulfillment_vip_billing_or_negative(self) -> None:
+        scenarios = [
+            {"customer_tier": "VIP", "sentiment_score": 0.2, "intent_category": "SHIPPING_INQUIRY"},
+            {"customer_tier": "STANDARD", "sentiment_score": -0.3, "intent_category": "SHIPPING_INQUIRY"},
+            {"customer_tier": "STANDARD", "sentiment_score": 0.2, "intent_category": "BILLING_ISSUE"},
+        ]
+        for index, sentiment in enumerate(scenarios):
+            with self.subTest(sentiment=sentiment):
+                conversation = SimpleNamespace(
+                    conversation_id=f"conv-{index}",
+                    channel="gmail",
+                    draft_response=None,
+                    draft_payload=None,
+                    requires_approval=False,
+                    escalation_flag=False,
+                    status="processing",
+                )
+                store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
+
+                store.sync_job_result(
+                    conversation.conversation_id,
+                    {
+                        "job_id": "job-1",
+                        "workflow_type": "support",
+                        "result": {
+                            "session_id": conversation.conversation_id,
+                            "detected_intent": "order_fulfillment",
+                            "routing_confidence": 0.95,
+                            "final_response": "Tracking C88943021 was successfully delivered.",
+                            "qa_status": "REVIEW_REQUIRED",
+                            "escalation_needed": True,
+                            "sentiment_analysis": sentiment,
+                        },
+                    },
+                )
+
+                self.assertTrue(conversation.requires_approval)
+                self.assertTrue(conversation.escalation_flag)
 
     def test_service_inquiry_endpoint_queues_support_job(self) -> None:
         class FakeOrchestrator:

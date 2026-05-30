@@ -7,9 +7,10 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 from utils.crew_result import serialize_crew_result
+from utils.llm_config import build_llm
+from utils.project_intelligence import augment_agents_config
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
-from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "content"
@@ -245,8 +246,10 @@ def _run_research_strategy(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
+    llm = build_llm(config_context)
     research_strategy_lead = Agent(
         config=agents_config["research_strategy_lead"],
+        llm=llm,
         tools=_build_search_tools(config_context),
     )
     research_strategy_task = Task(
@@ -271,8 +274,10 @@ def _run_language_generation(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
+    llm = build_llm(config_context)
     multilingual_editor = Agent(
         config=agents_config["multilingual_editor"],
+        llm=llm,
         tools=_build_creation_tools(config_context),
     )
     creation_qa_task = Task(

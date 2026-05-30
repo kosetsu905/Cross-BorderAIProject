@@ -8,8 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.sales_tools import CRMFunnelTool, CROHeuristicsTool, PricingIntelTool
 from utils.crew_result import serialize_crew_result
-from utils.workflow_progress import attach_task_progress
+from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "sales_improvement"
@@ -131,9 +132,11 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='sales_improvement')
     tasks_config = _load_yaml_config("tasks.yaml")
+    llm = build_llm(config_context)
 
     funnel_analyst = Agent(
         config=agents_config["funnel_analyst"],
+        llm=llm,
         tools=[
             CRMFunnelTool(
                 crm_api_token=config_context.get("crm_api_token"),
@@ -148,14 +151,17 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
     )
     cro_specialist = Agent(
         config=agents_config["cro_specialist"],
+        llm=llm,
         tools=[CROHeuristicsTool(), *_build_research_tools(config_context)],
     )
     pricing_strategist = Agent(
         config=agents_config["pricing_strategist"],
+        llm=llm,
         tools=[PricingIntelTool()],
     )
     playbook_coach = Agent(
         config=agents_config["playbook_coach"],
+        llm=llm,
     )
 
     funnel_task = Task(config=tasks_config["funnel_analysis"], agent=funnel_analyst)

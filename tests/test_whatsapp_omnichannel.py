@@ -1346,6 +1346,48 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertFalse(conversation.escalation_flag)
         send_gmail.assert_not_called()
 
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_records_disabled_gmail_for_high_confidence_order_fulfillment(self, session_local: Mock, send_gmail: Mock) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-1",
+            channel="gmail",
+            channel_thread_id="gmail-thread-1",
+            customer_handle="tonny@example.com",
+            customer_handle_masked="to***@example.com",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=True,
+            escalation_flag=False,
+            status="processing",
+        )
+        fake_session = FakeSupportSession(conversation)
+        session_local.return_value = FakeSessionContext(fake_session)
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result={
+                    "session_id": "conv-1",
+                    "detected_intent": "order_fulfillment",
+                    "routing_confidence": 0.95,
+                    "final_response": "Tracking C88943021 was successfully delivered.",
+                    "qa_status": "REVIEW_REQUIRED",
+                    "escalation_needed": True,
+                    "compliance_flags": ["GDPR_COMPLIANT_REVIEW", "CCPA_OPT_OUT_AVAILABLE"],
+                    "order_response": {"tracking_record_found": True},
+                },
+                config_context={"gmail_send_enabled": False},
+            )
+        )
+
+        self.assertEqual(result["status"], "disabled")
+        self.assertEqual(fake_session.added[-1].raw_payload["auto_dispatch"], True)
+        self.assertFalse(conversation.requires_approval)
+        self.assertFalse(conversation.escalation_flag)
+        send_gmail.assert_not_called()
+
     @patch("services.support_auto_dispatch.SessionLocal")
     @patch("services.support_auto_dispatch.send_gmail_reply_message")
     def test_auto_dispatch_skips_low_confidence_pre_sales(self, send_gmail: Mock, session_local: Mock) -> None:

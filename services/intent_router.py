@@ -10,6 +10,7 @@ import httpx
 
 from services.pim_connector import PIMConnector
 from tools.custom.support_rag_tools import DEFAULT_KNOWLEDGE_DIR, search_knowledge_base
+from utils.llm_config import llm_api_key, llm_chat_completions_url, llm_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,7 @@ class HybridIntentRouter:
     def _llm_enabled(self) -> bool:
         return bool(
             _bool_config(self.config_context, "intent_router_llm_fallback_enabled", True)
-            and self.config_context.get("openai_api_key")
+            and llm_api_key(self.config_context)
         )
 
     def _classify_with_llm(self, text: str, language: str) -> dict[str, Any] | None:
@@ -190,7 +191,7 @@ class HybridIntentRouter:
             return _normalize_llm_result(self.llm_client(text, self.config_context))
         try:
             payload = {
-                "model": self.config_context.get("openai_model_name") or "gpt-4o-mini",
+                "model": llm_model_name(self.config_context),
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {
@@ -206,9 +207,9 @@ class HybridIntentRouter:
                 "temperature": 0,
             }
             response = httpx.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_chat_completions_url(self.config_context),
                 headers={
-                    "Authorization": f"Bearer {self.config_context.get('openai_api_key')}",
+                    "Authorization": f"Bearer {llm_api_key(self.config_context)}",
                     "Content-Type": "application/json",
                 },
                 json=payload,

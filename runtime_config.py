@@ -4,6 +4,11 @@ from typing import Any
 
 
 RUNTIME_CONFIG_KEYS = {
+    "llm_provider",
+    "llm_api_key",
+    "llm_model_name",
+    "llm_base_url",
+    "llm_disable_reasoning",
     "openai_api_key",
     "openai_model_name",
     "crewai_memory_enabled",
@@ -80,6 +85,11 @@ RUNTIME_CONFIG_KEYS = {
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    llm_provider: str = "openai"
+    llm_api_key: str | None = None
+    llm_model_name: str = "gpt-4o-mini"
+    llm_base_url: str | None = None
+    llm_disable_reasoning: bool = False
     openai_api_key: str | None = None
     openai_model_name: str = "gpt-4o-mini"
     crewai_memory_enabled: bool = False
@@ -175,7 +185,18 @@ def _env(name: str, fallback: str | None = None) -> str | None:
 
 
 def load_runtime_config() -> RuntimeConfig:
+    llm_provider = os.getenv("LLM_PROVIDER", "openai")
+    llm_api_key = _env("LLM_API_KEY", "OPENAI_API_KEY")
+    llm_model_name = os.getenv("LLM_MODEL_NAME") or os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    llm_base_url = os.getenv("LLM_BASE_URL")
+    if not llm_base_url and llm_provider.lower() == "openrouter":
+        llm_base_url = "https://openrouter.ai/api/v1"
     return RuntimeConfig(
+        llm_provider=llm_provider,
+        llm_api_key=llm_api_key,
+        llm_model_name=llm_model_name,
+        llm_base_url=llm_base_url,
+        llm_disable_reasoning=_bool_env("LLM_DISABLE_REASONING", False),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model_name=os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini"),
         crewai_memory_enabled=_bool_env("CREWAI_MEMORY_ENABLED", False),
@@ -273,14 +294,22 @@ def _int_env(name: str, default: int) -> int:
 
 def apply_runtime_environment(config: RuntimeConfig | dict[str, Any]) -> None:
     context = config.as_context() if isinstance(config, RuntimeConfig) else config
+    llm_api_key = context.get("llm_api_key") or context.get("openai_api_key")
+    llm_model_name = context.get("llm_model_name") or context.get("openai_model_name")
+    llm_base_url = context.get("llm_base_url")
     env_map = {
-        "OPENAI_API_KEY": context.get("openai_api_key"),
-        "OPENAI_MODEL_NAME": context.get("openai_model_name"),
+        "OPENAI_API_KEY": llm_api_key,
+        "OPENAI_MODEL_NAME": llm_model_name,
         "SERPER_API_KEY": context.get("serper_api_key"),
     }
     for env_name, value in env_map.items():
         if value:
             os.environ[env_name] = str(value)
+    for env_name in ("OPENAI_API_BASE", "OPENAI_BASE_URL"):
+        if llm_base_url:
+            os.environ[env_name] = str(llm_base_url)
+        else:
+            os.environ.pop(env_name, None)
 
 
 def merge_runtime_context(

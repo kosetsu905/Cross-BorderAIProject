@@ -8,8 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.analytics_tools import CompetitorBenchmarkTool, EcomPlatformMetricsTool
 from utils.crew_result import serialize_crew_result
-from utils.workflow_progress import attach_task_progress
+from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
+from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "analytics"
@@ -219,9 +220,11 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='analytics')
     tasks_config = _load_yaml_config("tasks.yaml")
+    llm = build_llm(config_context)
 
     collector = Agent(
         config=agents_config["data_collector"],
+        llm=llm,
         tools=[
             EcomPlatformMetricsTool(
                 ecom_api_token=config_context.get("ecom_api_token"),
@@ -236,14 +239,17 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     )
     analyst = Agent(
         config=agents_config["data_analyst"],
+        llm=llm,
         tools=_build_analysis_tools(config_context),
     )
     researcher = Agent(
         config=agents_config["market_researcher"],
+        llm=llm,
         tools=_build_research_tools(config_context),
     )
     reporter = Agent(
         config=agents_config["report_generator"],
+        llm=llm,
         tools=_build_analysis_tools(config_context),
     )
 

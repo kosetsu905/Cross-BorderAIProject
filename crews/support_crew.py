@@ -28,16 +28,36 @@ from tools.custom.customer_service_tools import (
 from tools.custom.support_rag_tools import (
     SupportKnowledgeSearchTool,
     extract_catalog_product_offer,
+    load_knowledge_chunks,
     search_knowledge_base,
 )
 from utils.crew_result import serialize_crew_result
+from utils.llm_config import build_llm, llm_api_key, llm_chat_completions_url, llm_model_name
+from utils.project_intelligence import augment_agents_config
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
-from utils.project_intelligence import augment_agents_config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
 PRICE_VALUE_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?")
+TRACKING_IDENTIFIER_RE = re.compile(r"(?<![A-Z0-9])(?:[A-Z]{1,4}\d{6,}|\d{8,})(?![A-Z0-9])", re.IGNORECASE)
+TRACKING_NO_RE = re.compile(r"\bTracking\s+No\.?\s*([A-Z0-9-]+)", re.IGNORECASE)
+REFERENCE_NO_RE = re.compile(r"\bReference\s+No\.?\s*([A-Z0-9-]+)", re.IGNORECASE)
+LAST_STATUS_RE = re.compile(r"\bLast\s+Status(?!\s+Date)\s+(.+?)(?=\s+Booking\s+Date|\s+Shipment\s+Details|$)", re.IGNORECASE)
+LAST_STATUS_DATE_RE = re.compile(r"\bLast\s+Status\s+Date\s+(.+?)(?=\s+Reference\s+No\.?|\s+Last\s+Status\b|$)", re.IGNORECASE)
+BOOKING_DATE_RE = re.compile(r"\bBooking\s+Date\s+(.+?)(?=\s+Shipment\s+Details|\s+Destination\b|$)", re.IGNORECASE)
+ORIGIN_DESTINATION_RE = re.compile(r"\bOrigin\s+(.+?)\s+Destination\s+(.+?)(?=\s+Pincode|\s+No\.\s+of\s+pieces|$)", re.IGNORECASE)
+PIECES_SERVICE_RE = re.compile(r"\bNo\.\s+of\s+pieces\s+([0-9]+)\s+Service\s+Type\s+(.+?)(?=\s+Package\s+contents|$)", re.IGNORECASE)
+PACKAGE_CONTENTS_RE = re.compile(r"\bPackage\s+contents\s*([A-Za-z0-9 /_-]+?)(?=\s+Receiver\s+Details|\s+Receiver\s+Name|$)", re.IGNORECASE)
+RECEIVER_NAME_RE = re.compile(r"\bReceiver\s+Name\s+(.+?)(?=\s+Relationship|\s+Phone|\s+Shipment\s+Tracking\s+History|$)", re.IGNORECASE)
+TRACKING_EVENT_RE = re.compile(
+    r"(?P<date>[A-Z][a-z]{2},\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+'?\d{2})\|"
+    r"(?P<time>[0-9]{1,2}:[0-9]{2}\s+Hrs)\s+"
+    r"(?P<activity>.+?)\s+"
+    r"(?P<location>[A-Z][A-Za-z (),.'/-]+?)"
+    r"(?=\s+[A-Z][a-z]{2},\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+'?\d{2}\||$)",
+    re.IGNORECASE,
+)
 
 
 class EmailDeliveryResult(BaseModel):
@@ -215,11 +235,42 @@ class CustomsInfoOutput(BaseModel):
     note: str | None = None
 
 
+class TrackingEventOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: str | None = None
+    time: str | None = None
+    activity: str
+    location: str | None = None
+
+
+class LocalTrackingRecordOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tracking_number: str | None = None
+    reference_number: str | None = None
+    last_status: str | None = None
+    last_status_date: str | None = None
+    booking_date: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    service_type: str | None = None
+    pieces: int | None = None
+    package_contents: str | None = None
+    receiver_name: str | None = None
+    tracking_history: list[TrackingEventOutput] = Field(default_factory=list)
+    source: str | None = None
+    data_source: str = "local_tracking_pdf"
+
+
 class OrderResponseOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     order_found: bool | None = None
     order_verified: bool | None = None
+    tracking_record_found: bool | None = None
+    tracking_lookup_status: str | None = None
+    tracking_lookup_query: list[str] = Field(default_factory=list)
     order_id: str | None = None
     current_status: str | None = None
     status_explanation: str | None = None
@@ -233,6 +284,9 @@ class OrderResponseOutput(BaseModel):
     next_update_timeline: str | None = None
     error_message: str | None = None
     data_source: str | None = None
+    knowledge_data_source: str | None = None
+    order_knowledge_results: list[KnowledgeResultOutput] = Field(default_factory=list)
+    local_tracking_record: LocalTrackingRecordOutput | None = None
 
 
 class SupportResponseOutput(BaseModel):
@@ -515,6 +569,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         customer_email=normalized_inputs.get("customer_email"),
         region=normalized_inputs["region"],
     )
+    _attach_order_knowledge_context(order_context, normalized_inputs, config_context)
     crew_inputs = {
         **normalized_inputs,
         "response_type": router_result["detected_intent"],
@@ -540,24 +595,29 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='support')
     tasks_config = _load_yaml_config("tasks.yaml")
+    llm = build_llm(config_context)
 
     pre_sales_agent = Agent(
         config=agents_config["pre_sales_specialist"],
+        llm=llm,
         tools=[pre_sales_tool, *_build_search_tools(config_context)],
         allow_delegation=False,
     )
     order_agent = Agent(
         config=agents_config["order_fulfillment_specialist"],
+        llm=llm,
         tools=[OrderTrackingTool()],
         allow_delegation=False,
     )
     support_agent = Agent(
         config=agents_config["senior_support_agent"],
+        llm=llm,
         tools=[RMAAutomationTool(), *_build_support_tools(config_context)],
         allow_delegation=True,
     )
     qa_agent = Agent(
         config=agents_config["support_qa_specialist"],
+        llm=llm,
         allow_delegation=False,
     )
 
@@ -656,6 +716,288 @@ def _attach_catalog_knowledge_context(
     return pre_sales_context
 
 
+def _attach_order_knowledge_context(
+    order_context: dict[str, Any],
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    knowledge_dir = config_context.get("support_knowledge_dir") or str(BASE_DIR / "docs" / "knowledge_base")
+    identifiers = _tracking_identifiers_from_inputs(inputs)
+    if identifiers:
+        order_context["tracking_lookup_query"] = sorted(identifiers)
+        order_context["tracking_lookup_status"] = "not_found"
+        order_context["tracking_record_found"] = False
+    query = " ".join(
+        item
+        for item in [
+            str(inputs.get("order_id") or ""),
+            str(inputs.get("order_id_if_provided") or ""),
+            str(inputs.get("customer_email") or ""),
+            str(inputs.get("inquiry_text") or ""),
+            " ".join(
+                str(attachment.get("filename") or "")
+                for attachment in inputs.get("attachments", [])
+                if isinstance(attachment, dict)
+            ),
+        ]
+        if item.strip() and item.strip() != "ORDER-NOT-PROVIDED"
+    )
+    if not query.strip():
+        return order_context
+
+    results = search_knowledge_base(query, knowledge_dir=knowledge_dir, top_k=5)
+    candidate_order_results = [
+        result
+        for result in results
+        if _looks_like_order_knowledge_result(result)
+    ]
+    local_record = _extract_local_tracking_record(candidate_order_results, inputs)
+    if identifiers and not local_record:
+        exact_result = _find_exact_tracking_result(identifiers, knowledge_dir)
+        if exact_result:
+            candidate_order_results = [exact_result]
+            local_record = _parse_local_tracking_record(
+                str(exact_result.get("content") or ""),
+                str(exact_result.get("source") or ""),
+            )
+    order_results = candidate_order_results if not identifiers else []
+    if local_record:
+        order_results = [
+            result
+            for result in candidate_order_results
+            if str(result.get("source") or "") == str(local_record.get("source") or "")
+        ] or candidate_order_results[:1]
+    if not order_results:
+        return order_context
+
+    order_context["order_knowledge_results"] = order_results
+    order_context["knowledge_data_source"] = "local_order_knowledge_base"
+    if local_record:
+        order_context["tracking_record_found"] = True
+        order_context["tracking_lookup_status"] = "found"
+        order_context["local_tracking_record"] = local_record
+        order_context["current_status"] = local_record.get("last_status") or order_context.get("current_status")
+        order_context["status_explanation"] = _local_tracking_status_explanation(local_record)
+        order_context["tracking_info"] = {
+            "carrier": "DTDC",
+            "tracking_number": local_record.get("tracking_number"),
+            "tracking_url": None,
+            "last_update": local_record.get("last_status_date"),
+        }
+        order_context["delivery_estimate"] = local_record.get("last_status_date")
+        order_context["available_actions"] = [
+            "Share the local tracking record details with the customer.",
+            "Escalate to operations only if the customer disputes the delivery scan or needs proof of delivery.",
+        ]
+    if not order_context.get("order_found"):
+        order_context["data_source"] = "local_order_knowledge_base"
+        if local_record:
+            order_context["error_message"] = None
+            order_context["suggested_actions"] = [
+                "Use the local tracking document facts as the customer-facing answer.",
+                "Mention that the tracking record is available even if it is not linked to an internal order record.",
+            ]
+        else:
+            order_context["status_explanation"] = (
+                "Order details were not found in the commerce tracking system, "
+                "but related local order/tracking knowledge base documents were found."
+            )
+            order_context["suggested_actions"] = [
+                "Use the local order/tracking document facts in the customer reply.",
+                "Escalate to operations if any delivery status, address, or carrier detail remains unclear.",
+            ]
+    return order_context
+
+
+def _find_exact_tracking_result(identifiers: set[str], knowledge_dir: str) -> dict[str, Any] | None:
+    if not identifiers:
+        return None
+    chunks = load_knowledge_chunks(str(Path(knowledge_dir)))
+    for chunk in chunks:
+        if not str(chunk.source).lower().endswith(".pdf"):
+            continue
+        record = _parse_local_tracking_record(chunk.content, chunk.source)
+        if not record:
+            continue
+        record_identifiers = {
+            str(record.get("tracking_number") or "").upper(),
+            str(record.get("reference_number") or "").upper(),
+        }
+        if identifiers.intersection(record_identifiers):
+            return {
+                "score": 1.0,
+                "source": chunk.source,
+                "heading": chunk.heading,
+                "content": chunk.content,
+            }
+    return None
+
+
+def _looks_like_order_knowledge_result(result: dict[str, Any]) -> bool:
+    source = str(result.get("source") or "").lower()
+    heading = str(result.get("heading") or "").lower()
+    content = str(result.get("content") or "").lower()
+    haystack = f"{source}\n{heading}\n{content}"
+    order_terms = {
+        "order",
+        "tracking",
+        "shipment",
+        "shipping",
+        "delivery",
+        "carrier",
+        "parcel",
+        "package",
+        "logistics",
+        "consignee",
+    }
+    return source.endswith(".pdf") and any(term in haystack for term in order_terms)
+
+
+def _extract_local_tracking_record(
+    order_results: list[dict[str, Any]],
+    inputs: dict[str, Any],
+) -> dict[str, Any] | None:
+    identifiers = _tracking_identifiers_from_inputs(inputs)
+    if not identifiers:
+        return None
+    for result in order_results:
+        content = str(result.get("content") or "")
+        record = _parse_local_tracking_record(content, str(result.get("source") or ""))
+        if not record:
+            continue
+        record_identifiers = {
+            str(record.get("tracking_number") or "").upper(),
+            str(record.get("reference_number") or "").upper(),
+        }
+        if identifiers and not identifiers.intersection(record_identifiers):
+            continue
+        return record
+    return None
+
+
+def _tracking_identifiers_from_inputs(inputs: dict[str, Any]) -> set[str]:
+    fields = [
+        inputs.get("order_id"),
+        inputs.get("order_id_if_provided"),
+        inputs.get("inquiry_text"),
+        inputs.get("inquiry"),
+    ]
+    identifiers: set[str] = set()
+    for field in fields:
+        text = str(field or "")
+        if not text or text == "ORDER-NOT-PROVIDED":
+            continue
+        identifiers.update(match.group(0).upper() for match in TRACKING_IDENTIFIER_RE.finditer(text))
+    return identifiers
+
+
+def _parse_local_tracking_record(content: str, source: str | None = None) -> dict[str, Any] | None:
+    text = _single_line(content)
+    tracking_number = _first_match(TRACKING_NO_RE, text)
+    reference_number = _first_match(REFERENCE_NO_RE, text)
+    if not tracking_number and not reference_number:
+        return None
+    pieces = _first_match(PIECES_SERVICE_RE, text, group=1)
+    return {
+        "tracking_number": tracking_number,
+        "reference_number": reference_number,
+        "last_status": _clean_tracking_value(_first_match(LAST_STATUS_RE, text)),
+        "last_status_date": _normalize_tracking_date(_first_match(LAST_STATUS_DATE_RE, text)),
+        "booking_date": _normalize_tracking_date(_first_match(BOOKING_DATE_RE, text)),
+        "origin": _clean_tracking_value(_first_match(ORIGIN_DESTINATION_RE, text, group=1)),
+        "destination": _clean_tracking_value(_first_match(ORIGIN_DESTINATION_RE, text, group=2)),
+        "service_type": _clean_tracking_value(_first_match(PIECES_SERVICE_RE, text, group=2)),
+        "pieces": int(pieces) if pieces and pieces.isdigit() else None,
+        "package_contents": _clean_tracking_value(_first_match(PACKAGE_CONTENTS_RE, text)),
+        "receiver_name": _clean_tracking_value(_first_match(RECEIVER_NAME_RE, text)),
+        "tracking_history": _tracking_events(text),
+        "source": source,
+        "data_source": "local_tracking_pdf",
+    }
+
+
+def _single_line(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _first_match(pattern: re.Pattern[str], text: str, group: int = 1) -> str | None:
+    match = pattern.search(text)
+    if not match:
+        return None
+    return str(match.group(group)).strip()
+
+
+def _clean_tracking_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"\s+", " ", value).strip(" .|")
+    return cleaned or None
+
+
+def _normalize_tracking_date(value: str | None) -> str | None:
+    cleaned = _clean_tracking_value(value)
+    if not cleaned:
+        return None
+    match = re.match(r"(.+?)\s+([A-Za-z]+)'?(\d{2})$", cleaned)
+    if not match:
+        return cleaned
+    day, month, year = match.groups()
+    return f"{day} {month.title()} 20{year}"
+
+
+def _tracking_events(text: str) -> list[dict[str, str | None]]:
+    events: list[dict[str, str | None]] = []
+    for match in TRACKING_EVENT_RE.finditer(text):
+        activity, location = _split_tracking_activity_location(
+            f"{match.group('activity')} {match.group('location')}"
+        )
+        if not activity:
+            continue
+        events.append(
+            {
+                "date": _normalize_tracking_date(match.group("date")),
+                "time": _clean_tracking_value(match.group("time")),
+                "activity": activity,
+                "location": location,
+            }
+        )
+    return events
+
+
+def _split_tracking_activity_location(value: str) -> tuple[str | None, str | None]:
+    cleaned = _clean_tracking_value(value)
+    if not cleaned:
+        return None, None
+    known_activities = [
+        "Successfully Delivered",
+        "Out For Delivery",
+        "Received At Facility",
+        "Processed & Forwarded To Hub",
+        "Received At Hub",
+        "Processed & Forwarded To Facility",
+        "Booked At Facility",
+    ]
+    for activity in known_activities:
+        if cleaned.lower().startswith(activity.lower()):
+            location = _clean_tracking_value(cleaned[len(activity) :])
+            return activity, location
+    parts = cleaned.split(" ", 1)
+    return parts[0], parts[1] if len(parts) > 1 else None
+
+
+def _local_tracking_status_explanation(record: dict[str, Any]) -> str:
+    tracking_number = record.get("tracking_number") or "the provided tracking number"
+    status = record.get("last_status") or "a tracking update"
+    status_date = record.get("last_status_date")
+    destination = record.get("destination")
+    details = [f"Local tracking record {tracking_number} shows {status}"]
+    if destination:
+        details.append(f"for destination {destination}")
+    if status_date:
+        details.append(f"with last status date {status_date}")
+    return " ".join(details) + "."
+
+
 def _customer_context(inputs: dict[str, Any]) -> dict[str, str]:
     return {
         "name": str(inputs.get("customer") or "Customer"),
@@ -724,6 +1066,49 @@ def _knowledge_outputs(value: Any) -> list[dict[str, Any]]:
             }
         )
     return results
+
+
+def _tracking_event_outputs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    events: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        activity = str(item.get("activity") or "").strip()
+        if not activity:
+            continue
+        events.append(
+            {
+                "date": item.get("date"),
+                "time": item.get("time"),
+                "activity": activity,
+                "location": item.get("location"),
+            }
+        )
+    return events
+
+
+def _local_tracking_record_output(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    pieces = value.get("pieces")
+    return {
+        "tracking_number": value.get("tracking_number"),
+        "reference_number": value.get("reference_number"),
+        "last_status": value.get("last_status"),
+        "last_status_date": value.get("last_status_date"),
+        "booking_date": value.get("booking_date"),
+        "origin": value.get("origin"),
+        "destination": value.get("destination"),
+        "service_type": value.get("service_type"),
+        "pieces": int(pieces) if isinstance(pieces, (int, str)) and str(pieces).isdigit() else None,
+        "package_contents": value.get("package_contents"),
+        "receiver_name": value.get("receiver_name"),
+        "tracking_history": _tracking_event_outputs(value.get("tracking_history")),
+        "source": value.get("source"),
+        "data_source": str(value.get("data_source") or "local_tracking_pdf"),
+    }
 
 
 def _apply_authoritative_pre_sales_context(
@@ -806,6 +1191,11 @@ def _normalize_order_response(value: Any) -> dict[str, Any] | None:
     return {
         "order_found": value.get("order_found") if isinstance(value.get("order_found"), bool) else None,
         "order_verified": value.get("order_verified") if isinstance(value.get("order_verified"), bool) else None,
+        "tracking_record_found": value.get("tracking_record_found")
+        if isinstance(value.get("tracking_record_found"), bool)
+        else None,
+        "tracking_lookup_status": value.get("tracking_lookup_status"),
+        "tracking_lookup_query": _string_list(value.get("tracking_lookup_query")),
         "order_id": value.get("order_id"),
         "current_status": value.get("current_status"),
         "status_explanation": value.get("status_explanation"),
@@ -819,6 +1209,9 @@ def _normalize_order_response(value: Any) -> dict[str, Any] | None:
         "next_update_timeline": value.get("next_update_timeline"),
         "error_message": value.get("error_message"),
         "data_source": value.get("data_source"),
+        "knowledge_data_source": value.get("knowledge_data_source"),
+        "order_knowledge_results": _knowledge_outputs(value.get("order_knowledge_results")),
+        "local_tracking_record": _local_tracking_record_output(value.get("local_tracking_record")),
     }
 
 
@@ -933,6 +1326,20 @@ def _attach_customer_service_context(
     normalized["order_response"] = _normalize_order_response(
         normalized.get("order_response") or (order_context if intent == "order_fulfillment" else None)
     )
+    if intent == "order_fulfillment":
+        _apply_authoritative_order_context(normalized["order_response"], order_context)
+        guarded_order_response = _guard_order_tracking_response(
+            normalized["final_response"],
+            normalized["order_response"],
+            inputs,
+            config_context,
+        )
+        if guarded_order_response != normalized["final_response"]:
+            normalized["final_response"] = guarded_order_response
+            flags = list(normalized.get("compliance_flags") or [])
+            if "LOCAL_TRACKING_RECORD_REWRITTEN" not in flags:
+                flags.append("LOCAL_TRACKING_RECORD_REWRITTEN")
+            normalized["compliance_flags"] = flags
     normalized["support_response"] = _normalize_support_response(
         normalized.get("support_response")
         or (
@@ -955,6 +1362,301 @@ def _attach_customer_service_context(
     if usage_metrics:
         validated[INTERNAL_USAGE_KEY] = usage_metrics
     return validated
+
+
+def _apply_authoritative_order_context(
+    order_response: dict[str, Any] | None,
+    order_context: dict[str, Any],
+) -> None:
+    if not isinstance(order_response, dict):
+        return
+    if order_context.get("tracking_lookup_status"):
+        order_response["tracking_lookup_status"] = order_context.get("tracking_lookup_status")
+    if order_context.get("tracking_lookup_query"):
+        order_response["tracking_lookup_query"] = _string_list(order_context.get("tracking_lookup_query"))
+    if order_context.get("tracking_record_found") is False:
+        order_response["tracking_record_found"] = False
+        order_response["local_tracking_record"] = None
+    local_record = _local_tracking_record_output(order_context.get("local_tracking_record"))
+    if not local_record:
+        return
+    order_response["tracking_record_found"] = True
+    order_response["local_tracking_record"] = local_record
+    order_response["knowledge_data_source"] = order_context.get("knowledge_data_source") or "local_order_knowledge_base"
+    order_response["order_knowledge_results"] = _knowledge_outputs(order_context.get("order_knowledge_results"))
+    order_response["current_status"] = local_record.get("last_status") or order_response.get("current_status")
+    order_response["status_explanation"] = _local_tracking_status_explanation(local_record)
+    order_response["tracking_info"] = order_response.get("tracking_info") or {
+        "carrier": "DTDC",
+        "tracking_number": local_record.get("tracking_number"),
+        "tracking_url": None,
+        "last_update": local_record.get("last_status_date"),
+    }
+    order_response["delivery_estimate"] = local_record.get("last_status_date") or order_response.get("delivery_estimate")
+    order_response["error_message"] = None
+
+
+def _guard_order_tracking_response(
+    final_response: str,
+    order_response: dict[str, Any] | None,
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    if not isinstance(order_response, dict):
+        return final_response
+    lookup_query = {item.upper() for item in _string_list(order_response.get("tracking_lookup_query"))}
+    response_identifiers = {match.group(0).upper() for match in TRACKING_IDENTIFIER_RE.finditer(final_response)}
+    response_mentions_wrong_identifier = bool(lookup_query and (response_identifiers - lookup_query))
+    response_language_mismatch = _response_language_mismatch(final_response, inputs)
+    if order_response.get("tracking_record_found") is False:
+        if (
+            str(order_response.get("tracking_lookup_status") or "") == "not_found"
+            and (response_mentions_wrong_identifier or not lookup_query.issubset(response_identifiers) or response_language_mismatch)
+        ):
+            return _safe_tracking_not_found_response(
+                tracking_queries=sorted(lookup_query),
+                inputs=inputs,
+                config_context=config_context,
+            )
+        return final_response
+    if not order_response.get("tracking_record_found"):
+        return final_response
+    local_record = order_response.get("local_tracking_record")
+    if not isinstance(local_record, dict):
+        return final_response
+    missing_tracking_number = bool(
+        local_record.get("tracking_number") and str(local_record["tracking_number"]) not in final_response
+    )
+    missing_reference_number = bool(
+        local_record.get("reference_number") and str(local_record["reference_number"]) not in final_response
+    )
+    missing_status = bool(local_record.get("last_status") and str(local_record["last_status"]) not in final_response)
+    frames_as_missing_order = bool(
+        re.search(
+            r"\b(?:could not|couldn't|cannot|can't|unable to|not able to)\s+find\s+(?:an?\s+)?order\b|"
+            r"\border\s+(?:was\s+)?not\s+found\b|"
+            r"\bno\s+order\s+(?:was\s+)?(?:found|associated)\b",
+            final_response,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not (
+        missing_tracking_number
+        or missing_reference_number
+        or missing_status
+        or frames_as_missing_order
+        or response_mentions_wrong_identifier
+        or response_language_mismatch
+    ):
+        return final_response
+    return _safe_local_tracking_response(local_record, inputs, config_context)
+
+
+def _response_language_mismatch(response: str, inputs: dict[str, Any]) -> bool:
+    target_language = str(inputs.get("language_plan") or "").lower()
+    if not target_language or target_language == "english":
+        return False
+    detected = LanguageDetector.detect(response)
+    expected = _normalize_language_code(str(inputs.get("detected_language") or ""))
+    return bool(expected and detected != expected)
+
+
+def _safe_local_tracking_response(
+    record: dict[str, Any],
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    lines = [
+        "Hello,",
+        "",
+        "Thank you for reaching out. I found the tracking record in our local tracking document.",
+        "",
+        "Here are the details I found:",
+        *_local_tracking_fact_lines(record),
+    ]
+    history_lines = _local_tracking_history_lines(record)
+    if history_lines:
+        lines.extend(["", "Tracking history:", *history_lines])
+    lines.extend(
+        [
+            "",
+            "This tracking record is available locally, though it may not be linked to an internal order record. "
+            "If you need proof of delivery or want us to investigate a delivery dispute, please reply and we can escalate it to operations.",
+            "",
+            "Best regards,",
+            "Customer Service Team",
+        ]
+    )
+    response = "\n".join(lines)
+    return _localize_order_safe_response(
+        response=response,
+        inputs=inputs,
+        structured_facts={"tracking_record": record, "response_type": "tracking_found"},
+        config_context=config_context,
+        fallback_factory=lambda language: _deterministic_tracking_found_response(record, language),
+    )
+
+
+def _safe_tracking_not_found_response(
+    *,
+    tracking_queries: list[str],
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    query_text = ", ".join(tracking_queries) or str(inputs.get("order_id_if_provided") or "the provided tracking number")
+    response = (
+        "Hello,\n\n"
+        f"Thank you for reaching out. I could not find a local tracking record that exactly matches {query_text}.\n\n"
+        "Please double-check the tracking number or share the reference number, order ID, or purchase email, "
+        "and we will check again.\n\n"
+        "Best regards,\n"
+        "Customer Service Team"
+    )
+    return _localize_order_safe_response(
+        response=response,
+        inputs=inputs,
+        structured_facts={"tracking_queries": tracking_queries, "response_type": "tracking_not_found"},
+        config_context=config_context,
+        fallback_factory=lambda language: _deterministic_tracking_not_found_response(tracking_queries, language),
+    )
+
+
+def _localize_order_safe_response(
+    *,
+    response: str,
+    inputs: dict[str, Any],
+    structured_facts: dict[str, Any],
+    config_context: dict[str, Any],
+    fallback_factory: Any,
+) -> str:
+    rewritten = _rewrite_response_language(
+        response=response,
+        inputs=inputs,
+        structured_facts=structured_facts,
+        config_context=config_context,
+    )
+    if rewritten:
+        return rewritten
+    language = str(inputs.get("language_plan") or LanguageDetector.get_crewai_language_plan(str(inputs.get("detected_language") or "en")))
+    return str(fallback_factory(language))
+
+
+def _deterministic_tracking_found_response(record: dict[str, Any], language: str) -> str:
+    if str(language).lower() != "japanese":
+        return _deterministic_tracking_found_response_en(record)
+    fact_lines = _local_tracking_fact_lines(record)
+    history_lines = _local_tracking_history_lines(record)
+    translated_labels = {
+        "Tracking No.": "追跡番号",
+        "Reference No.": "参照番号",
+        "Last Status": "最新ステータス",
+        "Last Status Date": "最新ステータス日",
+        "Booking Date": "受付日",
+        "Origin": "発送元",
+        "Destination": "宛先",
+        "Pieces": "個数",
+        "Service Type": "サービス種別",
+        "Package contents": "荷物内容",
+        "Receiver Name": "受取人名",
+    }
+    localized_facts = []
+    for line in fact_lines:
+        label, _, value = line.removeprefix("- ").partition(": ")
+        localized_facts.append(f"- {translated_labels.get(label, label)}: {value}")
+    lines = [
+        "こんにちは。",
+        "",
+        "お問い合わせありがとうございます。社内の追跡資料で一致する追跡記録を確認しました。",
+        "",
+        "確認できた情報は以下の通りです。",
+        *localized_facts,
+    ]
+    if history_lines:
+        lines.extend(["", "追跡履歴:", *history_lines])
+    lines.extend(
+        [
+            "",
+            "この追跡記録は社内資料で確認できていますが、社内注文レコードとは紐づいていない場合があります。配達証明や調査が必要な場合は、このメールにご返信ください。",
+            "",
+            "よろしくお願いいたします。",
+            "カスタマーサービスチーム",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _deterministic_tracking_found_response_en(record: dict[str, Any]) -> str:
+    lines = [
+        "Hello,",
+        "",
+        "Thank you for reaching out. I found the tracking record in our local tracking document.",
+        "",
+        "Here are the details I found:",
+        *_local_tracking_fact_lines(record),
+    ]
+    history_lines = _local_tracking_history_lines(record)
+    if history_lines:
+        lines.extend(["", "Tracking history:", *history_lines])
+    lines.extend(
+        [
+            "",
+            "This tracking record is available locally, though it may not be linked to an internal order record. If you need proof of delivery or want us to investigate a delivery dispute, please reply and we can escalate it to operations.",
+            "",
+            "Best regards,",
+            "Customer Service Team",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _deterministic_tracking_not_found_response(tracking_queries: list[str], language: str) -> str:
+    query_text = ", ".join(tracking_queries) or "the provided tracking number"
+    if str(language).lower() == "japanese":
+        return (
+            "こんにちは。\n\n"
+            f"お問い合わせありがとうございます。追跡番号 {query_text} と完全に一致する社内追跡記録は見つかりませんでした。\n\n"
+            "追跡番号をご確認いただくか、参照番号、注文番号、または購入時のメールアドレスをお知らせください。再度確認いたします。\n\n"
+            "よろしくお願いいたします。\n"
+            "カスタマーサービスチーム"
+        )
+    return (
+        "Hello,\n\n"
+        f"Thank you for reaching out. I could not find a local tracking record that exactly matches {query_text}.\n\n"
+        "Please double-check the tracking number or share the reference number, order ID, or purchase email, and we will check again.\n\n"
+        "Best regards,\n"
+        "Customer Service Team"
+    )
+
+
+def _local_tracking_fact_lines(record: dict[str, Any]) -> list[str]:
+    fields = [
+        ("Tracking No.", record.get("tracking_number")),
+        ("Reference No.", record.get("reference_number")),
+        ("Last Status", record.get("last_status")),
+        ("Last Status Date", record.get("last_status_date")),
+        ("Booking Date", record.get("booking_date")),
+        ("Origin", record.get("origin")),
+        ("Destination", record.get("destination")),
+        ("Pieces", record.get("pieces")),
+        ("Service Type", record.get("service_type")),
+        ("Package contents", record.get("package_contents")),
+        ("Receiver Name", record.get("receiver_name")),
+    ]
+    return [f"- {label}: {value}" for label, value in fields if value not in {None, ""}]
+
+
+def _local_tracking_history_lines(record: dict[str, Any]) -> list[str]:
+    history = record.get("tracking_history")
+    if not isinstance(history, list):
+        return []
+    lines: list[str] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        date_time = " ".join(str(value) for value in [item.get("date"), item.get("time")] if value)
+        location = f" - {item['location']}" if item.get("location") else ""
+        lines.append(f"- {date_time}: {item.get('activity')}{location}".strip())
+    return lines
 
 
 def _customer_service_escalation_needed(
@@ -1175,12 +1877,12 @@ def _rewrite_response_language(
         )
         return str(rewritten).strip() if rewritten else None
 
-    api_key = config_context.get("openai_api_key")
+    api_key = llm_api_key(config_context)
     if not api_key:
         return None
     try:
         payload = {
-            "model": config_context.get("openai_model_name") or "gpt-4o-mini",
+            "model": llm_model_name(config_context),
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -1210,7 +1912,7 @@ def _rewrite_response_language(
             "temperature": 0,
         }
         llm_response = httpx.post(
-            "https://api.openai.com/v1/chat/completions",
+            llm_chat_completions_url(config_context),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
             timeout=20,

@@ -120,6 +120,21 @@ OPENAI_INPUT_COST_PER_1M_TOKENS=0
 OPENAI_OUTPUT_COST_PER_1M_TOKENS=0
 ```
 
+OpenAI-compatible providers can be configured with the generic `LLM_*` variables. These take precedence over the legacy `OPENAI_*` variables while preserving backwards compatibility:
+
+```env
+LLM_PROVIDER=openrouter
+LLM_API_KEY=your_openrouter_key
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL_NAME=openai/gpt-4o-mini
+LLM_DISABLE_REASONING=false
+CREWAI_MEMORY_ENABLED=false
+```
+
+Use `.env.example` as a safe template. Keep real `.env` values local and rotate any key that has been shared, pasted into logs, or committed.
+
+Reasoning/thinking models on OpenRouter, such as Qwen3 and DeepSeek R1 variants, are automatically run with reasoning output disabled so CrewAI can parse normal structured responses. Set `LLM_DISABLE_REASONING=true` to force this compatibility mode for another model.
+
 `CREWAI_MEMORY_ENABLED` defaults to `false`. Turn it on only after your OpenAI account/key can use the embeddings endpoint required by CrewAI memory.
 `OPENAI_INPUT_COST_PER_1M_TOKENS` and `OPENAI_OUTPUT_COST_PER_1M_TOKENS` are optional cost-estimation rates. Leave them at `0` to track tokens and duration without estimating dollars.
 
