@@ -53,7 +53,6 @@ def _requires_approval(result: dict[str, Any]) -> bool:
         compliance_flags = {str(flag).upper() for flag in result.get("compliance_flags") or []}
         return (
             confidence < 0.75
-            or "LANGUAGE_MISMATCH_REVIEW" in compliance_flags
             or qa_status == "REJECTED"
             or _has_pre_sales_hard_blocker(result)
         )

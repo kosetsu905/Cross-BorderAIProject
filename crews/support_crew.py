@@ -946,22 +946,6 @@ def _attach_customer_service_context(
             else None
         )
     )
-    language_guard = _response_language_guard(
-        response=normalized["final_response"],
-        inputs=inputs,
-        structured_facts=_language_guard_facts(normalized),
-        config_context=config_context,
-    )
-    normalized["final_response"] = language_guard["response"]
-    if language_guard["requires_review"]:
-        flags = list(normalized.get("compliance_flags") or [])
-        if "LANGUAGE_MISMATCH_REVIEW" not in flags:
-            flags.append("LANGUAGE_MISMATCH_REVIEW")
-        normalized["compliance_flags"] = flags
-        normalized["qa_status"] = "REVIEW_REQUIRED"
-        assumptions = list(normalized.get("assumptions") or [])
-        assumptions.append("Final response language could not be verified against the latest customer message.")
-        normalized["assumptions"] = assumptions
     normalized["escalation_needed"] = _customer_service_escalation_needed(
         normalized,
         intent,
@@ -1171,40 +1155,6 @@ def _safe_catalog_response_draft(*, channel: str, facts: dict[str, Any]) -> str:
     )
 
 
-def _response_language_guard(
-    *,
-    response: str,
-    inputs: dict[str, Any],
-    structured_facts: dict[str, Any],
-    config_context: dict[str, Any],
-) -> dict[str, Any]:
-    target_language = _normalize_language_code(str(inputs.get("detected_language") or "en"))
-    if _response_matches_language(response, target_language):
-        return {"response": response, "requires_review": False}
-
-    rewritten = _rewrite_response_language(
-        response=response,
-        inputs=inputs,
-        structured_facts=structured_facts,
-        config_context=config_context,
-    )
-    if rewritten and _response_matches_language(rewritten, target_language):
-        return {"response": rewritten, "requires_review": False}
-    return {"response": rewritten or response, "requires_review": True}
-
-
-def _language_guard_facts(result: dict[str, Any]) -> dict[str, Any]:
-    pre_sales = result.get("pre_sales_response")
-    if isinstance(pre_sales, dict) and isinstance(pre_sales.get("catalog_product_offer"), dict):
-        return {"catalog_product_offer": pre_sales["catalog_product_offer"]}
-    return {
-        "detected_intent": result.get("detected_intent"),
-        "pre_sales_response": result.get("pre_sales_response"),
-        "order_response": result.get("order_response"),
-        "support_response": result.get("support_response"),
-    }
-
-
 def _rewrite_response_language(
     *,
     response: str,
@@ -1272,20 +1222,6 @@ def _rewrite_response_language(
         return str(rewritten).strip() if rewritten else None
     except Exception:
         return None
-
-
-def _response_matches_language(response: str, target_language: str) -> bool:
-    normalized_target = _normalize_language_code(target_language)
-    if normalized_target == "en":
-        return True
-    detected = LanguageDetector.detect(_strip_catalog_invariants(response), fallback="")
-    return _normalize_language_code(detected) == normalized_target
-
-
-def _strip_catalog_invariants(response: str) -> str:
-    without_prices = PRICE_VALUE_RE.sub(" ", response)
-    without_models = re.sub(r"\b[A-Z0-9][A-Za-z0-9-]*(?:\s+[A-Z0-9][A-Za-z0-9-]*){0,4}\b", " ", without_prices)
-    return re.sub(r"\s+", " ", without_models).strip()
 
 
 def _normalize_language_code(language: str | None) -> str:

@@ -17,7 +17,6 @@ from crews.support_crew import (
     _build_automation_context,
     _catalog_display_name,
     _normalize_inputs,
-    _response_language_guard,
 )
 from models import WorkflowType
 from runtime_config import load_runtime_config
@@ -867,94 +866,6 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertNotIn("1 carton contains", result["final_response"])
         self.assertNotIn("Please contact me for a discount", result["final_response"])
 
-    def test_response_language_guard_uses_generic_rewriter_for_supported_languages(self) -> None:
-        samples = {
-            "es": "Hola, gracias. El precio verificado es $1.68.",
-            "de": "Hallo, danke. Der gepruefte Preis ist $1.68.",
-            "pt": "Ola, obrigado. O preco verificado e $1.68.",
-            "it": "Ciao, grazie. Il prezzo verificato e $1.68.",
-            "ko": "안녕하세요. 확인된 가격은 $1.68입니다.",
-            "ru": "Здравствуйте. Подтвержденная цена: $1.68.",
-            "ar": "مرحبا. السعر المؤكد هو $1.68.",
-        }
-        for language, rewritten in samples.items():
-            with self.subTest(language=language):
-                result = _response_language_guard(
-                    response="Hello, the verified price is $1.68.",
-                    inputs={
-                        "detected_language": language,
-                        "language_plan": language,
-                        "channel": "gmail",
-                        "inquiry_text": "customer inquiry",
-                    },
-                    structured_facts={"unit_price": "$1.68"},
-                    config_context={"response_language_rewriter": lambda **_: rewritten},
-                )
-
-                self.assertEqual(result["response"], rewritten)
-                self.assertFalse(result["requires_review"])
-
-    def test_language_guard_requires_review_when_rewrite_stays_wrong_language(self) -> None:
-        calls = []
-
-        def english_rewriter(**kwargs):
-            calls.append(kwargs)
-            return "Hello, the verified catalog price is $1.68."
-
-        inputs = _normalize_inputs(
-            {
-                "customer": "Yuki",
-                "person": "Yuki",
-                "inquiry": "こんにちは。D18 Smart Watch を購入したいのですが、詳細を教えていただけますか。",
-                "product_category": "D18 Smart Watch",
-                "channel": "gmail",
-                "session_id": "sess-language-fail",
-            }
-        )
-        pre_sales_context = {
-            "data_source": "mock_fallback",
-            "product_found": True,
-            "catalog_product_offer": {
-                "status": "found",
-                "product_found": True,
-                "product_name": "D18 Smart watch /ctn Dz09 smart watch 1 carton contains: 100 pieces $6.20 Please contact me for a discount",
-                "unit_price": "$1.68",
-                "carton_quantity": "100 PCS",
-                "carton_size": "42.5×31.7×26",
-                "single_product_size": "12.2×8×2.9",
-                "single_product_weight": "40g",
-                "source": "catalog.pdf",
-                "heading": "Page 1",
-                "evidence": ["D18 Smart watch /ctn Dz09 smart watch 1 carton contains: 100 pieces $6.20 Please contact me for a discount"],
-                "data_source": "local_pdf_catalog",
-            },
-        }
-
-        result = _attach_customer_service_context(
-            result={
-                "final_response": "Buy 1: $12.99/ea",
-                "qa_status": "APPROVED",
-                "escalation_needed": False,
-            },
-            inputs=inputs,
-            automation_context={
-                "sentiment_analysis": {"requires_human_handoff": False},
-                "rma_validation": None,
-                "logistics_output": None,
-                "escalation_flag": False,
-                "compliance_tags": [],
-            },
-            router_result={"detected_intent": "pre_sales", "confidence_score": 0.98},
-            pre_sales_context=pre_sales_context,
-            order_context={"data_source": "mock_order_db", "order_found": False},
-            config_context={"response_language_rewriter": english_rewriter},
-        )
-
-        self.assertGreaterEqual(len(calls), 2)
-        self.assertEqual(result["qa_status"], "REVIEW_REQUIRED")
-        self.assertIn("LANGUAGE_MISMATCH_REVIEW", result["compliance_flags"])
-        self.assertTrue(result["assumptions"])
-
     def test_catalog_display_name_removes_catalog_noise(self) -> None:
         display_name = _catalog_display_name(
             {
@@ -1245,40 +1156,6 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
 
         self.assertEqual(conversation.status, "draft_ready")
         self.assertFalse(conversation.requires_approval)
-        self.assertFalse(conversation.escalation_flag)
-
-    def test_sync_job_result_requires_approval_for_language_mismatch_review(self) -> None:
-        conversation = SimpleNamespace(
-            conversation_id="conv-1",
-            channel="gmail",
-            draft_response=None,
-            draft_payload=None,
-            requires_approval=False,
-            escalation_flag=False,
-            status="processing",
-        )
-        store = SupportInboxStore(FakeSupportSession(conversation))  # type: ignore[arg-type]
-
-        store.sync_job_result(
-            "conv-1",
-            {
-                "job_id": "job-1",
-                "workflow_type": "support",
-                "result": {
-                    "session_id": "conv-1",
-                    "detected_intent": "pre_sales",
-                    "routing_confidence": 0.95,
-                    "final_response": "Hello, the verified catalog price is available.",
-                    "qa_status": "REVIEW_REQUIRED",
-                    "escalation_needed": False,
-                    "compliance_flags": ["LANGUAGE_MISMATCH_REVIEW"],
-                    "pre_sales_response": {"product_found": True},
-                },
-            },
-        )
-
-        self.assertEqual(conversation.status, "draft_ready")
-        self.assertTrue(conversation.requires_approval)
         self.assertFalse(conversation.escalation_flag)
 
     def test_sync_job_result_requires_approval_for_low_confidence_pre_sales_without_handoff(self) -> None:
