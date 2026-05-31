@@ -85,6 +85,7 @@ PROGRESS_BY_EVENT = {
 ACTIVE_STATUSES = {"pending", "running"}
 WORKFLOW_PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
     "support": {
+        "llm_profile": "openrouter_gpt4o_mini",
         "gmail_access_token": "",
         "gmail_client_id": "",
         "gmail_client_secret": "",
@@ -599,7 +600,7 @@ def main() -> None:
             "Provider credentials JSON",
             key="provider_credentials_json",
             height=120,
-            help="Optional request-scoped provider credentials. Leave empty JSON for normal .env behavior.",
+            help="Optional request-scoped provider settings. For support, use llm_profile to select a server-side LLM profile.",
         )
 
         if st.button("Submit workflow", type="primary", width="stretch"):

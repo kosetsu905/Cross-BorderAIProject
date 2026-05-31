@@ -9,7 +9,7 @@ from celery.result import AsyncResult
 from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowType
-from runtime_config import RuntimeConfig, apply_runtime_environment, merge_runtime_context
+from runtime_config import RuntimeConfig, apply_runtime_environment, resolve_workflow_runtime_context
 from utils.result_cache import build_workflow_cache_key, cache_enabled, cache_ttl_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
@@ -144,7 +144,11 @@ class MasterOrchestrator:
         if workflow_type not in self._crews:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        config_context = resolve_workflow_runtime_context(
+            self._runtime_config,
+            workflow_type,
+            provider_credentials,
+        )
         cached_job_id = _maybe_create_cached_job(
             self._job_store,
             workflow_type,
@@ -308,7 +312,11 @@ class CeleryOrchestrator:
         if task_name is None:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        config_context = merge_runtime_context(self._runtime_config, provider_credentials)
+        config_context = resolve_workflow_runtime_context(
+            self._runtime_config,
+            workflow_type,
+            provider_credentials,
+        )
         cached_job_id = _maybe_create_cached_job(
             self._job_store,
             workflow_type,

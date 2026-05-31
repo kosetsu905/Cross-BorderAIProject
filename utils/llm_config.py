@@ -64,7 +64,7 @@ def _should_disable_reasoning(config_context: dict[str, Any]) -> bool:
     return any(marker in normalized_model_name for marker in OPENROUTER_REASONING_MODEL_MARKERS)
 
 
-def _reasoning_compat_params(config_context: dict[str, Any]) -> dict[str, Any]:
+def llm_reasoning_compat_params(config_context: dict[str, Any]) -> dict[str, Any]:
     if not _should_disable_reasoning(config_context):
         return {}
 
@@ -80,5 +80,5 @@ def build_llm(config_context: dict[str, Any]) -> LLM:
         api_key=llm_api_key(config_context),
         base_url=base_url,
         api_base=base_url,
-        **_reasoning_compat_params(config_context),
+        **llm_reasoning_compat_params(config_context),
     )

@@ -89,10 +89,46 @@ SHIPPING_KEYWORDS = ("shipping", "delivery", "track", "tracking", "where is", "d
 PRODUCT_USAGE_KEYWORDS = ("how to", "setup", "install", "use", "manual", "instructions")
 BILLING_KEYWORDS = ("charge", "billing", "invoice", "payment")
 ESCALATION_KEYWORDS = ("manager", "supervisor", "legal", "chargeback")
-DEFECT_KEYWORDS = ("damaged", "defective", "broken", "wrong item", "incorrect item")
-USED_OR_OPENED_KEYWORDS = ("used", "worn", "opened", "seal broken", "removed tag")
-CHANGE_OF_MIND_KEYWORDS = ("don't like", "do not like", "changed my mind", "change of mind", "wrong size", "wrong color")
-HYGIENE_SENSITIVE_KEYWORDS = ("earring", "ear ring", "earrings", "piercing", "underwear", "swimwear")
+DEFECT_KEYWORDS = ("damaged", "defective", "faulty", "broken", "wrong item", "incorrect item")
+USED_OR_OPENED_KEYWORDS = (
+    "used",
+    "wear",
+    "wearing",
+    "worn",
+    "tried on",
+    "opened",
+    "open box",
+    "seal broken",
+    "removed tag",
+)
+CHANGE_OF_MIND_KEYWORDS = (
+    "don't like",
+    "do not like",
+    "not like",
+    "not pretty",
+    "changed my mind",
+    "change of mind",
+    "buyer remorse",
+    "buyer's remorse",
+    "wrong size",
+    "wrong color",
+)
+HYGIENE_SENSITIVE_KEYWORDS = (
+    "earring",
+    "ear ring",
+    "earrings",
+    "piercing",
+    "bra",
+    "bras",
+    "brassiere",
+    "underwear",
+    "lingerie",
+    "swimwear",
+    "bodysuit",
+    "intimate",
+)
+PLACEHOLDER_ORDER_IDS = {"", "ORDER-NOT-PROVIDED", "NOT PROVIDED"}
+PLACEHOLDER_ITEM_SKUS = {"", "SKU-NOT-PROVIDED", "NOT PROVIDED"}
 
 
 def detect_language(text: str, fallback: str | None = None) -> str:
@@ -100,7 +136,10 @@ def detect_language(text: str, fallback: str | None = None) -> str:
 
 
 def _has_any(text: str, keywords: tuple[str, ...]) -> bool:
-    return any(keyword in text for keyword in keywords)
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text)
+        for keyword in keywords
+    )
 
 
 def _is_minor_packaging_issue(text: str) -> bool:
@@ -227,7 +266,10 @@ def process_rma_request(
         reason = f"Return window expired: {delivered_days_ago} days since delivery exceeds {return_window} days."
     elif hygiene_sensitive and used_or_opened and not defect_reason:
         eligible = False
-        reason = "Hygiene-sensitive items such as earrings are not eligible for change-of-mind returns after opening or use unless defective."
+        reason = (
+            "Hygiene-sensitive or intimate items such as earrings, underwear, lingerie, and swimwear are "
+            "not eligible for change-of-mind returns after opening or use unless faulty, damaged, or incorrect."
+        )
     elif used_or_opened and _has_any(reason_text, CHANGE_OF_MIND_KEYWORDS) and not defect_reason:
         eligible = False
         reason = "Used or opened items are not eligible for change-of-mind returns under the standard return policy."
@@ -252,6 +294,9 @@ def process_rma_request(
     ).model_dump()
 
     if not eligible:
+        return {"rma_validation": rma, "logistics_output": None}
+
+    if order_id.upper() in PLACEHOLDER_ORDER_IDS or item_sku.upper() in PLACEHOLDER_ITEM_SKUS:
         return {"rma_validation": rma, "logistics_output": None}
 
     carrier = _carrier_for_region(region)

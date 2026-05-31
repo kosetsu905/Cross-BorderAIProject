@@ -1,14 +1,27 @@
+import json
 import os
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import asdict, dataclass, field as dataclass_field
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+LLM_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 RUNTIME_CONFIG_KEYS = {
     "llm_provider",
+    "llm_profile",
     "llm_api_key",
     "llm_model_name",
     "llm_base_url",
     "llm_disable_reasoning",
+    "llm_profiles",
+    "support_qa_mode",
+    "support_llm_profile",
     "openai_api_key",
     "openai_model_name",
     "crewai_memory_enabled",
@@ -28,6 +41,9 @@ RUNTIME_CONFIG_KEYS = {
     "support_session_redis_url",
     "support_session_ttl_seconds",
     "support_session_history_limit",
+    "support_serper_pre_sales_enabled",
+    "support_serper_order_fulfillment_enabled",
+    "support_serper_post_sales_enabled",
     "holiday_api_key",
     "google_ads_developer_token",
     "google_ads_access_token",
@@ -83,13 +99,49 @@ RUNTIME_CONFIG_KEYS = {
 }
 
 
+class LLMProfileConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    llm_provider: str = Field(..., min_length=1)
+    llm_model_name: str = Field(..., min_length=1)
+    llm_base_url: str | None = Field(default=None, min_length=1)
+    llm_api_key_env: str | None = Field(default=None, min_length=1)
+    llm_disable_reasoning: bool | None = None
+
+    @field_validator("llm_provider", "llm_model_name", "llm_base_url", "llm_api_key_env", mode="before")
+    @classmethod
+    def _strip_string(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _normalize_provider(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def _normalize_base_url(cls, value: str | None) -> str | None:
+        return value.rstrip("/") if value else value
+
+    @field_validator("llm_api_key_env")
+    @classmethod
+    def _validate_api_key_env(cls, value: str | None) -> str | None:
+        if value and not ENV_NAME_RE.fullmatch(value):
+            raise ValueError("llm_api_key_env must be a valid environment variable name")
+        return value
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     llm_provider: str = "openai"
+    llm_profile: str | None = None
     llm_api_key: str | None = None
     llm_model_name: str = "gpt-4o-mini"
     llm_base_url: str | None = None
     llm_disable_reasoning: bool = False
+    llm_profiles: dict[str, LLMProfileConfig] = dataclass_field(default_factory=dict)
+    support_qa_mode: str = "full_llm"
+    support_llm_profile: str | None = None
     openai_api_key: str | None = None
     openai_model_name: str = "gpt-4o-mini"
     crewai_memory_enabled: bool = False
@@ -109,6 +161,9 @@ class RuntimeConfig:
     support_session_redis_url: str | None = None
     support_session_ttl_seconds: int = 86400
     support_session_history_limit: int = 20
+    support_serper_pre_sales_enabled: bool = False
+    support_serper_order_fulfillment_enabled: bool = False
+    support_serper_post_sales_enabled: bool = False
     holiday_api_key: str | None = None
     google_ads_developer_token: str | None = None
     google_ads_access_token: str | None = None
@@ -163,7 +218,118 @@ class RuntimeConfig:
     serper_deep_read_max_chars: int = 4000
 
     def as_context(self) -> dict[str, Any]:
-        return asdict(self)
+        context = asdict(self)
+        context["llm_profiles"] = {
+            name: profile.model_dump(exclude_none=True)
+            if isinstance(profile, LLMProfileConfig)
+            else dict(profile)
+            for name, profile in self.llm_profiles.items()
+        }
+        return context
+
+
+def _normalize_profile_name(profile_name: str) -> str:
+    normalized = profile_name.strip()
+    if not LLM_PROFILE_NAME_RE.fullmatch(normalized):
+        raise ValueError(
+            "LLM profile names must be 1-64 characters and contain only letters, numbers, underscores, or hyphens."
+        )
+    return normalized
+
+
+def parse_llm_profiles(raw_json: str | None) -> dict[str, LLMProfileConfig]:
+    if not raw_json or not raw_json.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid LLM_PROFILES_JSON: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM_PROFILES_JSON must be a JSON object keyed by profile name.")
+
+    profiles: dict[str, LLMProfileConfig] = {}
+    for raw_name, raw_profile in parsed.items():
+        if not isinstance(raw_name, str):
+            raise ValueError("LLM profile names must be strings.")
+        profile_name = _normalize_profile_name(raw_name)
+        if profile_name in profiles:
+            raise ValueError(f"Duplicate LLM profile name after normalization: {profile_name}")
+        if not isinstance(raw_profile, dict):
+            raise ValueError(f"LLM profile '{profile_name}' must be a JSON object.")
+        profiles[profile_name] = LLMProfileConfig.model_validate(raw_profile)
+    return profiles
+
+
+def _profile_from_context(context: dict[str, Any], profile_name: str) -> LLMProfileConfig:
+    profiles = context.get("llm_profiles") or {}
+    if profile_name not in profiles:
+        available = ", ".join(sorted(str(name) for name in profiles)) or "none"
+        raise ValueError(f"Unknown LLM profile '{profile_name}'. Available profiles: {available}.")
+    profile = profiles[profile_name]
+    if isinstance(profile, LLMProfileConfig):
+        return profile
+    if isinstance(profile, dict):
+        return LLMProfileConfig.model_validate(profile)
+    raise ValueError(f"LLM profile '{profile_name}' has an invalid configuration.")
+
+
+def _resolved_profile_api_key(profile_name: str, profile: LLMProfileConfig) -> str | None:
+    if not profile.llm_api_key_env:
+        return None
+    api_key = os.getenv(profile.llm_api_key_env)
+    if not api_key:
+        raise ValueError(
+            f"LLM profile '{profile_name}' references missing or empty environment variable "
+            f"'{profile.llm_api_key_env}'."
+        )
+    return api_key
+
+
+def apply_llm_profile_context(
+    config_context: dict[str, Any],
+    profile_name: str,
+) -> dict[str, Any]:
+    normalized_name = _normalize_profile_name(profile_name)
+    profile = _profile_from_context(config_context, normalized_name)
+    context = dict(config_context)
+    context["llm_profile"] = normalized_name
+    context["llm_provider"] = profile.llm_provider
+    context["llm_model_name"] = profile.llm_model_name
+    context["llm_base_url"] = (
+        profile.llm_base_url
+        if profile.llm_base_url
+        else DEFAULT_OPENROUTER_BASE_URL if profile.llm_provider == "openrouter" else None
+    )
+    api_key = _resolved_profile_api_key(normalized_name, profile)
+    if api_key:
+        context["llm_api_key"] = api_key
+    if profile.llm_disable_reasoning is not None:
+        context["llm_disable_reasoning"] = profile.llm_disable_reasoning
+    return context
+
+
+def resolve_workflow_runtime_context(
+    base_context: RuntimeConfig | dict[str, Any],
+    workflow_type: Any,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = base_context.as_context() if isinstance(base_context, RuntimeConfig) else dict(base_context)
+    workflow_value = workflow_type.value if hasattr(workflow_type, "value") else str(workflow_type)
+
+    if workflow_value == "support" and context.get("support_llm_profile"):
+        context = apply_llm_profile_context(context, str(context["support_llm_profile"]))
+
+    request_profile = (overrides or {}).get("llm_profile")
+    direct_overrides = {
+        key: value
+        for key, value in (overrides or {}).items()
+        if key != "llm_profile"
+    }
+    context = merge_runtime_context(context, direct_overrides)
+
+    if request_profile not in (None, ""):
+        context = apply_llm_profile_context(context, str(request_profile))
+    return context
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -190,13 +356,29 @@ def load_runtime_config() -> RuntimeConfig:
     llm_model_name = os.getenv("LLM_MODEL_NAME") or os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini")
     llm_base_url = os.getenv("LLM_BASE_URL")
     if not llm_base_url and llm_provider.lower() == "openrouter":
-        llm_base_url = "https://openrouter.ai/api/v1"
+        llm_base_url = DEFAULT_OPENROUTER_BASE_URL
+    llm_profiles = parse_llm_profiles(os.getenv("LLM_PROFILES_JSON"))
+    support_llm_profile = os.getenv("SUPPORT_LLM_PROFILE")
+    support_llm_profile = _normalize_profile_name(support_llm_profile) if support_llm_profile else None
+    if support_llm_profile:
+        apply_llm_profile_context(
+            {
+                "llm_profiles": {
+                    name: profile.model_dump(exclude_none=True)
+                    for name, profile in llm_profiles.items()
+                }
+            },
+            support_llm_profile,
+        )
     return RuntimeConfig(
         llm_provider=llm_provider,
         llm_api_key=llm_api_key,
         llm_model_name=llm_model_name,
         llm_base_url=llm_base_url,
         llm_disable_reasoning=_bool_env("LLM_DISABLE_REASONING", False),
+        llm_profiles=llm_profiles,
+        support_qa_mode=_support_qa_mode_env(),
+        support_llm_profile=support_llm_profile,
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model_name=os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini"),
         crewai_memory_enabled=_bool_env("CREWAI_MEMORY_ENABLED", False),
@@ -216,6 +398,9 @@ def load_runtime_config() -> RuntimeConfig:
         support_session_redis_url=_env("SUPPORT_SESSION_REDIS_URL", "CELERY_BROKER_URL"),
         support_session_ttl_seconds=_int_env("SUPPORT_SESSION_TTL_SECONDS", 86400),
         support_session_history_limit=_int_env("SUPPORT_SESSION_HISTORY_LIMIT", 20),
+        support_serper_pre_sales_enabled=_bool_env("SUPPORT_SERPER_PRE_SALES_ENABLED", False),
+        support_serper_order_fulfillment_enabled=_bool_env("SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED", False),
+        support_serper_post_sales_enabled=_bool_env("SUPPORT_SERPER_POST_SALES_ENABLED", False),
         holiday_api_key=os.getenv("HOLIDAY_API_KEY"),
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
         google_ads_access_token=os.getenv("GOOGLE_ADS_ACCESS_TOKEN"),
@@ -290,6 +475,13 @@ def _int_env(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)) or default)
     except ValueError:
         return default
+
+
+def _support_qa_mode_env() -> str:
+    value = os.getenv("SUPPORT_QA_MODE", "full_llm").strip().lower()
+    if value not in {"full_llm", "adaptive_fast"}:
+        raise ValueError("SUPPORT_QA_MODE must be 'full_llm' or 'adaptive_fast'.")
+    return value
 
 
 def apply_runtime_environment(config: RuntimeConfig | dict[str, Any]) -> None:

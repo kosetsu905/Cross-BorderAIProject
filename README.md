@@ -131,6 +131,59 @@ LLM_DISABLE_REASONING=false
 CREWAI_MEMORY_ENABLED=false
 ```
 
+Customer service can switch models with server-side named LLM profiles, so operators can choose OpenAI or OpenRouter models without editing the active global model variables:
+
+```env
+OPENAI_API_KEY=your_openai_key
+OPENROUTER_API_KEY=your_openrouter_key
+LLM_PROFILES_JSON={"openai_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"},"openrouter_gpt4o_mini":{"llm_provider":"openrouter","llm_model_name":"openai/gpt-4o-mini","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_API_KEY","llm_disable_reasoning":false}}
+SUPPORT_LLM_PROFILE=openai_gpt4o_mini
+SUPPORT_QA_MODE=full_llm
+```
+
+`SUPPORT_LLM_PROFILE` applies to Gmail, WhatsApp, `/api/v1/service/inquiry`, and normal `support` workflow jobs. A single request can override it by passing only the profile name:
+
+```json
+{
+  "workflow_type": "support",
+  "inputs": {
+    "customer": "Maria",
+    "person": "Maria",
+    "inquiry": "I need help with a return."
+  },
+  "provider_credentials": {
+    "llm_profile": "openrouter_gpt4o_mini"
+  }
+}
+```
+
+For `/api/v1/service/inquiry`, pass the same selector as a top-level field:
+
+```json
+{
+  "customer": "Maria",
+  "inquiry": "The item arrived damaged. Can I return it?",
+  "channel": "whatsapp",
+  "llm_profile": "openrouter_gpt4o_mini"
+}
+```
+
+The same endpoint also accepts request-scoped provider credentials without storing them in support inputs:
+
+```json
+{
+  "customer": "Maria",
+  "inquiry": "Which camera works with HomeKit?",
+  "channel": "whatsapp",
+  "provider_credentials": {
+    "serper_api_key": "request_scoped_serper_key",
+    "support_serper_pre_sales_enabled": true
+  }
+}
+```
+
+For faster Qwen3-14B post-sales support, set `SUPPORT_QA_MODE=adaptive_fast`. Low-risk post-sales tickets will skip the second LLM QA pass and use deterministic/Pydantic validation plus the existing RMA and compliance guards. High-risk tickets still run the full LLM QA path.
+
 Use `.env.example` as a safe template. Keep real `.env` values local and rotate any key that has been shared, pasted into logs, or committed.
 
 Reasoning/thinking models on OpenRouter, such as Qwen3 and DeepSeek R1 variants, are automatically run with reasoning output disabled so CrewAI can parse normal structured responses. Set `LLM_DISABLE_REASONING=true` to force this compatibility mode for another model.
@@ -143,6 +196,9 @@ Optional shared services:
 ```env
 API_BEARER_TOKEN=optional_local_api_token
 SERPER_API_KEY=optional_serper_key
+SUPPORT_SERPER_PRE_SALES_ENABLED=false
+SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED=false
+SUPPORT_SERPER_POST_SALES_ENABLED=false
 WORKFLOW_BACKEND=local
 DATABASE_URL=postgresql+psycopg://crossborder:crossborder@localhost:5432/crossborder_ai
 CELERY_BROKER_URL=redis://localhost:6379/0
@@ -168,6 +224,7 @@ Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS`
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
 Marketing runs one shared strategy/channel-planning task and then generates market-specific creative/compliance packages in parallel. `MARKETING_MARKET_CONCURRENCY` controls the maximum number of market workers.
 Analytics competitive research can optionally deep-read Serper result URLs. When `SERPER_DEEP_READ_ENABLED=true`, `CompetitorBenchmarkTool` reads up to `SERPER_DEEP_READ_MAX_PAGES` pages per market with `SERPER_DEEP_READ_CONCURRENCY` workers and passes source excerpts to CrewAI.
+Customer Service keeps external Serper search off by default for faster support responses. Set `SUPPORT_SERPER_PRE_SALES_ENABLED=true`, `SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED=true`, or `SUPPORT_SERPER_POST_SALES_ENABLED=true` together with `SERPER_API_KEY` to enable live search only for that stage.
 
 Optional workflow data providers:
 
@@ -286,6 +343,10 @@ Example shape:
     "amazon_sp_api_endpoint": "https://sellingpartnerapi-na.amazon.com",
     "amazon_sp_api_access_token": "request_scoped_amazon_access_token",
     "amazon_marketplace_ids": "ATVPDKIKX0DER",
+    "serper_api_key": "request_scoped_serper_key",
+    "support_serper_pre_sales_enabled": false,
+    "support_serper_order_fulfillment_enabled": false,
+    "support_serper_post_sales_enabled": false,
     "gmail_access_token": "request_scoped_gmail_access_token",
     "gmail_client_id": "request_scoped_google_oauth_client_id",
     "gmail_client_secret": "request_scoped_google_oauth_client_secret",
@@ -319,7 +380,7 @@ Gmail and WhatsApp support can also use the omni-channel inbox flow instead of w
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\support_inbox.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\custom\whatsapp_tools.py .\tools\integrations\cross_platform_ads_tools.py
+python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\support_inbox.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\custom\support_search_tools.py .\tools\custom\whatsapp_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```

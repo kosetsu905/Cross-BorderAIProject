@@ -1,5 +1,6 @@
 import asyncio
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,11 +17,16 @@ from crews.support_crew import (
     _attach_customer_service_context,
     _attach_order_knowledge_context,
     _build_automation_context,
+    _build_support_tools,
     _catalog_display_name,
     _normalize_inputs,
     _normalize_order_response,
     _parse_local_tracking_record,
+    _rewrite_response_language,
+    _should_skip_support_llm_qa,
+    run_support_crew,
 )
+from job_store import InMemoryJobStore
 from models import WorkflowType
 from runtime_config import apply_runtime_environment, load_runtime_config
 from services.pim_connector import PIMConnector, PIMQueryResult
@@ -35,8 +41,11 @@ from services.intent_router import classify_intent
 from support_inbox import SupportInboxStore
 from tests.test_whatsapp_omnichannel import FakeSupportSession
 from utils.usage_tracking import INTERNAL_USAGE_KEY
+from utils.workflow_progress import WorkflowProgressRecorder
 from tools.custom.customer_service_tools import IntentRouterTool, OrderTrackingTool, PreSalesProductKnowledgeTool
+from tools.custom.support_automation_tools import process_rma_request
 from tools.custom.support_rag_tools import extract_catalog_product_offer, load_knowledge_chunks, search_knowledge_base
+from tools.custom.support_search_tools import build_support_external_search_tools
 
 
 class FakePIMResponse:
@@ -139,6 +148,426 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         ]
 
         self.assertTrue(all(checks), f"Customer Service offline validation failed: {checks}")
+
+    def test_rma_denies_worn_hygiene_sensitive_earrings(self) -> None:
+        result = process_rma_request(
+            order_id="ORDER-NOT-PROVIDED",
+            item_sku="SKU-NOT-PROVIDED",
+            return_reason=(
+                "Hello, I bought an earring, and I have already wear it, but I think "
+                "it's not pretty. Therefore I want to refund it."
+            ),
+            detected_language="en",
+            order_history={},
+        )
+
+        self.assertFalse(result["rma_validation"]["eligible_for_return"])
+        self.assertIsNone(result["logistics_output"])
+        self.assertIn("Hygiene-sensitive", result["rma_validation"]["eligibility_reason"])
+
+    def test_rma_denies_tried_on_intimate_change_of_mind_item(self) -> None:
+        result = process_rma_request(
+            order_id="ORD-US-2026-1001",
+            item_sku="UNDERWEAR-BLK",
+            return_reason="I tried on the underwear and changed my mind. I want to return it.",
+            detected_language="en",
+            order_history={"days_since_delivery": 3, "item_condition": "unopened", "region": "US"},
+        )
+
+        self.assertFalse(result["rma_validation"]["eligible_for_return"])
+        self.assertIsNone(result["logistics_output"])
+
+    def test_rma_denies_worn_bra_change_of_mind_item(self) -> None:
+        result = process_rma_request(
+            order_id="ORD-US-2026-1004",
+            item_sku="BRA-BLK",
+            return_reason=(
+                "Hello,I bought a bra, and I have already worn it, but I think "
+                "it's not pretty. Therefore I want to refund it."
+            ),
+            detected_language="en",
+            order_history={"days_since_delivery": 3, "item_condition": "unopened", "region": "US"},
+        )
+
+        self.assertFalse(result["rma_validation"]["eligible_for_return"])
+        self.assertIsNone(result["logistics_output"])
+        self.assertIn("Hygiene-sensitive", result["rma_validation"]["eligibility_reason"])
+
+    def test_rma_allows_defective_hygiene_sensitive_item_with_real_order_details(self) -> None:
+        result = process_rma_request(
+            order_id="ORD-US-2026-1002",
+            item_sku="EARRING-GOLD",
+            return_reason="The earring is broken and defective.",
+            detected_language="en",
+            order_history={"days_since_delivery": 3, "item_condition": "defective", "region": "US"},
+        )
+
+        self.assertTrue(result["rma_validation"]["eligible_for_return"])
+        self.assertIsNotNone(result["logistics_output"])
+        self.assertEqual(result["rma_validation"]["return_shipping_responsibility"], "BRAND")
+
+    def test_rma_allows_unopened_regular_change_of_mind_return_with_customer_shipping(self) -> None:
+        result = process_rma_request(
+            order_id="ORD-US-2026-1003",
+            item_sku="PHONE-CASE",
+            return_reason="I changed my mind and want to return this unopened phone case.",
+            detected_language="en",
+            order_history={"days_since_delivery": 6, "item_condition": "unopened", "region": "US"},
+        )
+
+        self.assertTrue(result["rma_validation"]["eligible_for_return"])
+        self.assertEqual(result["rma_validation"]["return_shipping_responsibility"], "CUSTOMER")
+
+    def test_rma_placeholder_order_does_not_generate_customer_visible_label(self) -> None:
+        result = process_rma_request(
+            order_id="ORDER-NOT-PROVIDED",
+            item_sku="SKU-NOT-PROVIDED",
+            return_reason="I changed my mind and the item is unopened.",
+            detected_language="en",
+            order_history={"days_since_delivery": 4, "item_condition": "unopened", "region": "US"},
+        )
+
+        self.assertTrue(result["rma_validation"]["eligible_for_return"])
+        self.assertIsNone(result["logistics_output"])
+
+    def test_post_sales_guard_rewrites_ineligible_rma_fake_label_response(self) -> None:
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": (
+                    "Hello, I bought an earring, and I have already wear it, but I think "
+                    "it's not pretty. Therefore I want to refund it."
+                ),
+                "channel": "gmail",
+                "session_id": "sess-rma-denial",
+            }
+        )
+        automation_context = _build_automation_context(inputs)
+
+        result = _attach_customer_service_context(
+            result={
+                "final_response": (
+                    "Since your item falls within our 30-day return window, we can proceed with the return. "
+                    "Please print the prepaid return label: "
+                    "https://labels.example.local/easypost/return/ORDER-NOT-PROVIDED_SKU-NOT-PROVIDED.pdf"
+                ),
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context=automation_context,
+            router_result={"detected_intent": "post_sales_support", "confidence_score": 0.94},
+            pre_sales_context={},
+            order_context={},
+        )
+
+        self.assertFalse(automation_context["rma_validation"]["eligible_for_return"])
+        self.assertIn("RMA_POLICY_RESPONSE_REWRITTEN", result["compliance_flags"])
+        self.assertNotIn("labels.example.local", result["final_response"])
+        self.assertNotIn("proceed with the return", result["final_response"].lower())
+        self.assertIn("not able to approve", result["final_response"])
+
+    def test_adaptive_fast_support_qa_skips_second_llm_for_low_risk_post_sales(self) -> None:
+        task_counts: list[int] = []
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, verbose=False, memory=False):
+                task_counts.append(len(tasks))
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(
+                    json_dict={
+                        "final_response": (
+                            "We can help with the damaged item. Please print the prepaid return label: "
+                            "https://labels.example.local/easypost/return/ORDER-NOT-PROVIDED_SKU-NOT-PROVIDED.pdf"
+                        ),
+                        "qa_status": "APPROVED",
+                        "escalation_needed": False,
+                    }
+                )
+
+        with patch("crews.support_crew.Crew", FakeCrew):
+            result = run_support_crew(
+                {
+                    "customer": "Alex",
+                    "person": "Alex",
+                    "inquiry": "I want to return an unopened item.",
+                    "channel": "gmail",
+                },
+                {"support_qa_mode": "adaptive_fast"},
+            )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertEqual(task_counts, [1])
+        self.assertEqual(result["detected_intent"], "post_sales_support")
+        self.assertIn("LLM_QA_SKIPPED_ADAPTIVE_FAST", result["compliance_flags"])
+        self.assertNotIn("labels.example.local", result["final_response"])
+        self.assertEqual(result["qa_status"], "REVIEW_REQUIRED")
+
+    def test_adaptive_fast_support_qa_maps_stage_fields_for_worn_bra_refund(self) -> None:
+        task_counts: list[int] = []
+        inquiry = (
+            "Hello,I bought a bra, and I have already worn it, but I think "
+            "it's not pretty. Therefore I want to refund it."
+        )
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, verbose=False, memory=False):
+                task_counts.append(len(tasks))
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(
+                    json_dict={
+                        "response_type": "post_sales_support",
+                        "issue_category": "worn_intimate_apparel_return",
+                        "resolution_steps": ["Explain the worn intimate apparel return exclusion."],
+                        "policy_reference": "Return policy: hygiene-sensitive items exclusion.",
+                        "compensation_offered": "none",
+                        "follow_up_required": True,
+                        "final_response": (
+                            "Since your item falls within our 30-day return window, we can proceed with the return. "
+                            "Please print the prepaid return label: "
+                            "https://labels.example.local/easypost/return/ORDER-NOT-PROVIDED_SKU-NOT-PROVIDED.pdf"
+                        ),
+                    }
+                )
+
+        with patch("crews.support_crew.Crew", FakeCrew):
+            result = run_support_crew(
+                {
+                    "customer": "Gmail Customer",
+                    "person": "Gmail Customer",
+                    "inquiry": inquiry,
+                    "channel": "gmail",
+                },
+                {"support_qa_mode": "adaptive_fast"},
+            )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertEqual(task_counts, [1])
+        self.assertEqual(result["detected_intent"], "post_sales_support")
+        self.assertEqual(result["qa_status"], "REVIEW_REQUIRED")
+        self.assertIn("RMA_POLICY_RESPONSE_REWRITTEN", result["compliance_flags"])
+        self.assertNotIn("labels.example.local", result["final_response"])
+        self.assertIn("not able to approve", result["final_response"])
+        self.assertIn("worn_intimate_apparel_return", result["support_response"]["internal_notes"])
+        self.assertEqual(
+            result["support_response"]["resolution_steps"],
+            ["Explain the worn intimate apparel return exclusion."],
+        )
+
+    def test_adaptive_fast_support_qa_skips_second_llm_for_low_risk_pre_sales(self) -> None:
+        task_counts: list[int] = []
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, verbose=False, memory=False):
+                task_counts.append(len(tasks))
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(
+                    json_dict={
+                        "response_type": "pre_sales",
+                        "product_recommendation": "M90 PRO wireless earphones",
+                        "feature_explanation": "Catalog facts are available for carton pricing.",
+                        "comparison_summary": "Use the catalog unit price for current known pricing.",
+                        "next_steps": ["Confirm quantity", "Ask sales to review any discount request"],
+                        "confidence_level": 0.92,
+                        "requires_human_review": False,
+                        "final_response": (
+                            "Buy 1: $12.99/ea\n"
+                            "Buy 2: $12.34/ea\n"
+                            "SKU: HEADSET-BASIC includes noise isolation."
+                        ),
+                    }
+                )
+
+        with patch("crews.support_crew.Crew", FakeCrew):
+            result = run_support_crew(
+                {
+                    "customer": "Alex",
+                    "person": "Alex",
+                    "inquiry": "Please share M90 PRO wireless earphones bulk pricing.",
+                    "product_category": "M90 PRO wireless earphones",
+                    "channel": "gmail",
+                },
+                {"support_qa_mode": "adaptive_fast"},
+            )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertEqual(task_counts, [1])
+        self.assertEqual(result["detected_intent"], "pre_sales")
+        self.assertEqual(result["qa_status"], "APPROVED")
+        self.assertFalse(result["escalation_needed"])
+        self.assertIn("LLM_QA_SKIPPED_ADAPTIVE_FAST", result["compliance_flags"])
+        self.assertIn("UNVERIFIED_PRODUCT_FACT_REWRITTEN", result["compliance_flags"])
+        self.assertEqual(result["pre_sales_response"]["product_recommendation"], "M90 PRO wireless earphones")
+        self.assertEqual(
+            result["pre_sales_response"]["next_steps"],
+            ["Confirm quantity", "Ask sales to review any discount request"],
+        )
+        self.assertEqual(result["pre_sales_response"]["catalog_product_offer"]["status"], "found")
+        self.assertNotIn("$12.99", result["final_response"])
+        self.assertNotIn("HEADSET-BASIC", result["final_response"])
+        self.assertNotIn("noise isolation", result["final_response"].lower())
+
+    def test_adaptive_fast_support_qa_keeps_full_qa_for_unverified_pre_sales_context(self) -> None:
+        task_counts: list[int] = []
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, verbose=False, memory=False):
+                task_counts.append(len(tasks))
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(
+                    json_dict={
+                        "final_response": "A specialist can confirm this product before quoting details.",
+                        "qa_status": "REVIEW_REQUIRED",
+                        "escalation_needed": True,
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as knowledge_dir:
+            with patch("crews.support_crew.Crew", FakeCrew):
+                result = run_support_crew(
+                    {
+                        "customer": "Alex",
+                        "person": "Alex",
+                        "inquiry": "Please compare Foobar Quantum Adapter models for my shop.",
+                        "product_category": "Foobar Quantum Adapter",
+                        "channel": "gmail",
+                    },
+                    {
+                        "support_qa_mode": "adaptive_fast",
+                        "support_knowledge_dir": knowledge_dir,
+                    },
+                )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertEqual(task_counts, [2])
+        self.assertEqual(result["detected_intent"], "pre_sales")
+        self.assertNotIn("LLM_QA_SKIPPED_ADAPTIVE_FAST", result["compliance_flags"])
+
+    def test_adaptive_fast_support_qa_keeps_full_qa_for_pre_sales_risk_signals(self) -> None:
+        low_risk_context = {
+            "data_source": "akeneo",
+            "product_found": True,
+            "verified_features": ["Verified feature"],
+        }
+        base_inputs = {"attachments": []}
+        base_context = {
+            "sentiment_analysis": {
+                "requires_human_handoff": False,
+                "customer_tier": "STANDARD",
+                "sentiment_score": 0.1,
+                "sentiment_label": "NEUTRAL",
+                "intent_category": "GENERAL",
+            },
+            "escalation_flag": False,
+            "compliance_tags": [],
+        }
+        scenarios = [
+            (
+                "vip",
+                base_inputs,
+                {
+                    **base_context,
+                    "sentiment_analysis": {
+                        **base_context["sentiment_analysis"],
+                        "customer_tier": "VIP",
+                    },
+                },
+                {"detected_intent": "pre_sales", "confidence_score": 0.95},
+            ),
+            (
+                "negative",
+                base_inputs,
+                {
+                    **base_context,
+                    "sentiment_analysis": {
+                        **base_context["sentiment_analysis"],
+                        "sentiment_score": -0.4,
+                    },
+                },
+                {"detected_intent": "pre_sales", "confidence_score": 0.95},
+            ),
+            (
+                "low_confidence",
+                base_inputs,
+                base_context,
+                {"detected_intent": "pre_sales", "confidence_score": 0.84},
+            ),
+            (
+                "handoff",
+                base_inputs,
+                {
+                    **base_context,
+                    "sentiment_analysis": {
+                        **base_context["sentiment_analysis"],
+                        "requires_human_handoff": True,
+                    },
+                },
+                {"detected_intent": "pre_sales", "confidence_score": 0.95},
+            ),
+            (
+                "attachments",
+                {"attachments": [{"filename": "quote.pdf"}]},
+                base_context,
+                {"detected_intent": "pre_sales", "confidence_score": 0.95},
+            ),
+            (
+                "hard_flag",
+                base_inputs,
+                {**base_context, "compliance_tags": ["POLICY_GAP"]},
+                {"detected_intent": "pre_sales", "confidence_score": 0.95},
+            ),
+        ]
+
+        for name, inputs, automation_context, router_result in scenarios:
+            with self.subTest(name=name):
+                self.assertFalse(
+                    _should_skip_support_llm_qa(
+                        inputs=inputs,
+                        automation_context=automation_context,
+                        router_result=router_result,
+                        pre_sales_context=low_risk_context,
+                        config_context={"support_qa_mode": "adaptive_fast"},
+                    )
+                )
+
+    def test_adaptive_fast_support_qa_keeps_full_qa_for_vip_post_sales(self) -> None:
+        task_counts: list[int] = []
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, verbose=False, memory=False):
+                task_counts.append(len(tasks))
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(
+                    json_dict={
+                        "final_response": "A human support lead should review this VIP refund request.",
+                        "qa_status": "REVIEW_REQUIRED",
+                        "escalation_needed": True,
+                    }
+                )
+
+        with patch("crews.support_crew.Crew", FakeCrew):
+            result = run_support_crew(
+                {
+                    "customer": "Enterprise Buyer",
+                    "person": "Alex",
+                    "customer_email": "alex@enterprise.com",
+                    "inquiry": "I need a refund for a damaged item.",
+                    "channel": "gmail",
+                    "order_history": {"lifetime_value": 6000},
+                },
+                {"support_qa_mode": "adaptive_fast"},
+            )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertEqual(task_counts, [2])
+        self.assertNotIn("LLM_QA_SKIPPED_ADAPTIVE_FAST", result["compliance_flags"])
+        self.assertTrue(result["escalation_needed"])
 
     def test_pim_mock_fallback_returns_standard_result(self) -> None:
         with patch.dict(os.environ, {"PIM_AKENEO_BASE_URL": "", "PIM_AKENEO_API_KEY": ""}, clear=False):
@@ -640,6 +1069,72 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(result["pre_sales_response"]["compatibility_info"], [])
         self.assertEqual(result["pre_sales_response"]["variant_options"], [])
 
+    def test_runtime_config_reads_support_serper_stage_switches(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            default_config = load_runtime_config()
+
+        self.assertFalse(default_config.support_serper_pre_sales_enabled)
+        self.assertFalse(default_config.support_serper_order_fulfillment_enabled)
+        self.assertFalse(default_config.support_serper_post_sales_enabled)
+
+        env = {
+            "SUPPORT_SERPER_PRE_SALES_ENABLED": "true",
+            "SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED": "1",
+            "SUPPORT_SERPER_POST_SALES_ENABLED": "yes",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = load_runtime_config()
+
+        self.assertTrue(config.support_serper_pre_sales_enabled)
+        self.assertTrue(config.support_serper_order_fulfillment_enabled)
+        self.assertTrue(config.support_serper_post_sales_enabled)
+
+    def test_support_external_search_tools_default_disabled_even_with_serper_key(self) -> None:
+        config_context = {"serper_api_key": "serper-key"}
+
+        self.assertEqual(build_support_external_search_tools("pre_sales", config_context), [])
+        self.assertEqual(build_support_external_search_tools("order_fulfillment", config_context), [])
+        self.assertEqual(build_support_external_search_tools("post_sales_support", config_context), [])
+
+    def test_support_external_search_tools_are_stage_specific(self) -> None:
+        class FakeSerperTool:
+            pass
+
+        config_context = {
+            "serper_api_key": "serper-key",
+            "support_serper_pre_sales_enabled": True,
+            "support_serper_order_fulfillment_enabled": False,
+            "support_serper_post_sales_enabled": True,
+        }
+
+        with patch("tools.custom.support_search_tools.SerperDevTool", FakeSerperTool):
+            pre_sales_tools = build_support_external_search_tools("pre_sales", config_context)
+            order_tools = build_support_external_search_tools("order_fulfillment", config_context)
+            post_sales_tools = build_support_external_search_tools("post_sales_support", config_context)
+
+        self.assertEqual([type(tool) for tool in pre_sales_tools], [FakeSerperTool])
+        self.assertEqual(order_tools, [])
+        self.assertEqual([type(tool) for tool in post_sales_tools], [FakeSerperTool])
+
+    def test_support_external_search_tools_need_serper_key(self) -> None:
+        config_context = {
+            "support_serper_pre_sales_enabled": True,
+            "support_serper_order_fulfillment_enabled": True,
+            "support_serper_post_sales_enabled": True,
+        }
+
+        self.assertEqual(build_support_external_search_tools("pre_sales", config_context), [])
+        self.assertEqual(build_support_external_search_tools("order_fulfillment", config_context), [])
+        self.assertEqual(build_support_external_search_tools("post_sales_support", config_context), [])
+
+    def test_post_sales_support_tools_keep_local_knowledge_before_optional_search(self) -> None:
+        search_tool = object()
+        with patch("crews.support_crew.build_support_external_search_tools", return_value=[search_tool]):
+            tools = _build_support_tools({})
+
+        self.assertEqual(tools[0].name, "Support Knowledge Base Search")
+        self.assertIs(tools[1], search_tool)
+
     def test_runtime_config_reads_pim_environment(self) -> None:
         env = {
             "PIM_BACKEND": "plytix",
@@ -898,6 +1393,96 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertEqual(post_mock.call_args.args[0], "https://openrouter.ai/api/v1/chat/completions")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer openrouter-key")
         self.assertEqual(kwargs["json"]["model"], "openai/gpt-4o-mini")
+
+    @patch("services.intent_router.httpx.post")
+    def test_intent_router_llm_fallback_disables_qwen3_reasoning(self, post_mock) -> None:
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"detected_intent": "post_sales_support", "confidence_score": 0.9}'
+                            }
+                        }
+                    ]
+                }
+
+        post_mock.return_value = FakeResponse()
+
+        result = classify_intent(
+            "Can you help me with this?",
+            config_context={
+                "llm_api_key": "openrouter-key",
+                "llm_base_url": "https://openrouter.ai/api/v1",
+                "llm_model_name": "qwen/qwen3-14b",
+                "llm_provider": "openrouter",
+            },
+        )
+
+        self.assertEqual(result["detected_intent"], "post_sales_support")
+        _, kwargs = post_mock.call_args
+        self.assertEqual(kwargs["json"]["reasoning_effort"], "none")
+
+    @patch("crews.support_crew.httpx.post")
+    def test_response_language_rewriter_disables_qwen3_reasoning(self, post_mock) -> None:
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "choices": [
+                        {"message": {"content": '{"response": "Bonjour"}'}}
+                    ]
+                }
+
+        post_mock.return_value = FakeResponse()
+
+        response = _rewrite_response_language(
+            response="Hello",
+            inputs={
+                "detected_language": "fr",
+                "language_plan": "French",
+                "channel": "gmail",
+                "inquiry_text": "Bonjour",
+            },
+            structured_facts={"response_type": "test"},
+            config_context={
+                "llm_api_key": "openrouter-key",
+                "llm_base_url": "https://openrouter.ai/api/v1",
+                "llm_model_name": "qwen/qwen3-14b",
+                "llm_provider": "openrouter",
+            },
+        )
+
+        self.assertEqual(response, "Bonjour")
+        _, kwargs = post_mock.call_args
+        self.assertEqual(kwargs["json"]["reasoning_effort"], "none")
+
+    def test_workflow_progress_records_task_duration(self) -> None:
+        store = InMemoryJobStore()
+        store.create_job("job-1", WorkflowType.SUPPORT, {})
+        recorder = WorkflowProgressRecorder(
+            job_id="job-1",
+            workflow_type="support",
+            job_store=store,
+            backend="local",
+        )
+
+        recorder.task_started(0, 1, "inquiry_resolution", "Senior Support")
+        recorder.task_completed(0, 1, "inquiry_resolution", "Senior Support")
+
+        completed_events = [
+            event for event in store.get_job_events("job-1")
+            if event["event_type"] == "task_completed"
+        ]
+        self.assertTrue(completed_events)
+        self.assertIn("duration_seconds", completed_events[-1]["payload"])
+        self.assertIsNotNone(completed_events[-1]["payload"]["duration_seconds"])
 
     def test_intent_router_low_confidence_without_llm_still_requires_review(self) -> None:
         result = classify_intent("hello there", config_context={"intent_router_llm_fallback_enabled": False})

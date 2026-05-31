@@ -10,7 +10,12 @@ import httpx
 
 from services.pim_connector import PIMConnector
 from tools.custom.support_rag_tools import DEFAULT_KNOWLEDGE_DIR, search_knowledge_base
-from utils.llm_config import llm_api_key, llm_chat_completions_url, llm_model_name
+from utils.llm_config import (
+    llm_api_key,
+    llm_chat_completions_url,
+    llm_model_name,
+    llm_reasoning_compat_params,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +210,7 @@ class HybridIntentRouter:
                     {"role": "user", "content": f"Language: {language}\nInquiry: {text[:1200]}"},
                 ],
                 "temperature": 0,
+                **llm_reasoning_compat_params(self.config_context),
             }
             response = httpx.post(
                 llm_chat_completions_url(self.config_context),

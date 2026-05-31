@@ -6,8 +6,7 @@ import re
 import httpx
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from services.language_detector import LanguageDetector
 from tools.custom.gmail_tools import resolve_gmail_access_token, send_gmail_message
@@ -31,8 +30,15 @@ from tools.custom.support_rag_tools import (
     load_knowledge_chunks,
     search_knowledge_base,
 )
+from tools.custom.support_search_tools import build_support_external_search_tools
 from utils.crew_result import serialize_crew_result
-from utils.llm_config import build_llm, llm_api_key, llm_chat_completions_url, llm_model_name
+from utils.llm_config import (
+    build_llm,
+    llm_api_key,
+    llm_chat_completions_url,
+    llm_model_name,
+    llm_reasoning_compat_params,
+)
 from utils.project_intelligence import augment_agents_config
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
@@ -40,6 +46,14 @@ from utils.workflow_progress import attach_task_progress
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "support"
 PRICE_VALUE_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?")
+RETURN_LABEL_URL_RE = re.compile(r"https?://[^\s)\]]*(?:labels\.example\.local|/return/)[^\s)\]]*", re.IGNORECASE)
+RMA_UNSUPPORTED_CLAIM_RE = re.compile(
+    r"\b(?:prepaid\s+return\s+label|return\s+label|tracking\s+number|"
+    r"we\s+can\s+proceed\s+with\s+the\s+return|proceed\s+with\s+the\s+return|"
+    r"initiate\s+a\s+refund|refund\s+to\s+your\s+original\s+payment|"
+    r"drop\s+off\s+the\s+package|pack\s+the\s+item|pack\s+the\s+earrings)\b",
+    re.IGNORECASE,
+)
 TRACKING_IDENTIFIER_RE = re.compile(r"(?<![A-Z0-9])(?:[A-Z]{1,4}\d{6,}|\d{8,})(?![A-Z0-9])", re.IGNORECASE)
 TRACKING_NO_RE = re.compile(r"\bTracking\s+No\.?\s*([A-Z0-9-]+)", re.IGNORECASE)
 REFERENCE_NO_RE = re.compile(r"\bReference\s+No\.?\s*([A-Z0-9-]+)", re.IGNORECASE)
@@ -58,6 +72,18 @@ TRACKING_EVENT_RE = re.compile(
     r"(?=\s+[A-Z][a-z]{2},\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+'?\d{2}\||$)",
     re.IGNORECASE,
 )
+SUPPORT_QA_MODE_ADAPTIVE_FAST = "adaptive_fast"
+ADAPTIVE_FAST_QA_FLAG = "LLM_QA_SKIPPED_ADAPTIVE_FAST"
+SUPPORT_HARD_COMPLIANCE_FLAGS = {
+    "LOW_ROUTING_CONFIDENCE",
+    "HUMAN_HANDOFF",
+    "HUMAN_HANDOFF_REQUIRED",
+    "POLICY_GAP",
+    "BILLING_DISPUTE",
+    "UNSAFE_RESPONSE",
+    "VIP_REVIEW",
+    "NEGATIVE_SENTIMENT",
+}
 
 
 class EmailDeliveryResult(BaseModel):
@@ -302,6 +328,7 @@ class SupportResponseOutput(BaseModel):
 
 
 CustomerServiceOutput.model_rebuild()
+CUSTOMER_SERVICE_OUTPUT_FIELDS = set(CustomerServiceOutput.model_fields)
 
 
 def _load_yaml_config(file_name: str) -> dict[str, Any]:
@@ -311,16 +338,13 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 
 
 def _build_support_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [
+    return [
         SupportKnowledgeSearchTool(
             knowledge_dir=config_context.get("support_knowledge_dir")
             or str(BASE_DIR / "docs" / "knowledge_base")
         ),
-        ScrapeWebsiteTool(),
+        *build_support_external_search_tools("post_sales_support", config_context),
     ]
-    if config_context.get("serper_api_key"):
-        tools.insert(0, SerperDevTool())
-    return tools
 
 
 def _fallback_customer_email(inputs: dict[str, Any]) -> str:
@@ -600,13 +624,13 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     pre_sales_agent = Agent(
         config=agents_config["pre_sales_specialist"],
         llm=llm,
-        tools=[pre_sales_tool, *_build_search_tools(config_context)],
+        tools=[pre_sales_tool, *build_support_external_search_tools("pre_sales", config_context)],
         allow_delegation=False,
     )
     order_agent = Agent(
         config=agents_config["order_fulfillment_specialist"],
         llm=llm,
-        tools=[OrderTrackingTool()],
+        tools=[OrderTrackingTool(), *build_support_external_search_tools("order_fulfillment", config_context)],
         allow_delegation=False,
     )
     support_agent = Agent(
@@ -627,27 +651,42 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         "post_sales_support": ("inquiry_resolution", support_agent),
     }
     stage_task_name, stage_agent = task_by_intent[router_result["detected_intent"]]
+    skip_llm_qa = _should_skip_support_llm_qa(
+        inputs=normalized_inputs,
+        automation_context=automation_context,
+        router_result=router_result,
+        pre_sales_context=pre_sales_context,
+        config_context=config_context,
+    )
     stage_task = Task(
         config=tasks_config[stage_task_name],
         agent=stage_agent,
     )
-    qa_task = Task(
-        config=tasks_config["quality_assurance_review"],
-        agent=qa_agent,
-        context=[stage_task],
-        output_pydantic=CustomerServiceOutput,
-    )
-    tasks = [stage_task, qa_task]
-    attach_task_progress(config_context, "support", tasks, [stage_task_name, "quality_assurance_review"])
+    tasks = [stage_task]
+    agents = [stage_agent]
+    task_names = [stage_task_name]
+    if not skip_llm_qa:
+        qa_task = Task(
+            config=tasks_config["quality_assurance_review"],
+            agent=qa_agent,
+            context=[stage_task],
+            output_pydantic=CustomerServiceOutput,
+        )
+        tasks.append(qa_task)
+        agents.append(qa_agent)
+        task_names.append("quality_assurance_review")
+    attach_task_progress(config_context, "support", tasks, task_names)
 
     support_crew = Crew(
-        agents=[stage_agent, qa_agent],
+        agents=agents,
         tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )
 
     result = _serialize_crew_result(support_crew.kickoff(inputs=crew_inputs))
+    if skip_llm_qa:
+        result = _apply_adaptive_fast_qa_defaults(result, automation_context, router_result)
     return _attach_customer_service_context(
         result=result,
         inputs=normalized_inputs,
@@ -659,11 +698,92 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     )
 
 
-def _build_search_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool()]
-    if config_context.get("serper_api_key"):
-        tools.insert(0, SerperDevTool())
-    return tools
+def _should_skip_support_llm_qa(
+    *,
+    inputs: dict[str, Any],
+    automation_context: dict[str, Any],
+    router_result: dict[str, Any],
+    pre_sales_context: dict[str, Any],
+    config_context: dict[str, Any],
+) -> bool:
+    if str(config_context.get("support_qa_mode") or "full_llm").lower() != SUPPORT_QA_MODE_ADAPTIVE_FAST:
+        return False
+    if float(router_result.get("confidence_score") or 0) < 0.85:
+        return False
+
+    detected_intent = str(router_result.get("detected_intent") or "")
+    sentiment = automation_context.get("sentiment_analysis") or {}
+    if automation_context.get("escalation_flag") or sentiment.get("requires_human_handoff"):
+        return False
+    if sentiment.get("customer_tier") in {"VIP", "PREMIUM"}:
+        return False
+    if float(sentiment.get("sentiment_score") or 0) < -0.25:
+        return False
+    if sentiment.get("sentiment_label") in {"ANGRY", "FRUSTRATED"}:
+        return False
+    if sentiment.get("intent_category") == "BILLING_ISSUE":
+        return False
+    if inputs.get("attachments"):
+        return False
+
+    compliance_flags = {str(flag).upper() for flag in automation_context.get("compliance_tags") or []}
+    if SUPPORT_HARD_COMPLIANCE_FLAGS.intersection(compliance_flags):
+        return False
+
+    if detected_intent == "post_sales_support":
+        return True
+    if detected_intent == "pre_sales":
+        return _has_verified_pre_sales_context(pre_sales_context)
+    return False
+
+
+def _has_verified_pre_sales_context(pre_sales_context: dict[str, Any]) -> bool:
+    offer = pre_sales_context.get("catalog_product_offer")
+    if isinstance(offer, dict) and offer.get("status") == "found":
+        return True
+    if pre_sales_context.get("catalog_knowledge_results"):
+        return True
+
+    data_source = str(pre_sales_context.get("data_source") or "").lower()
+    if data_source and data_source != "mock_fallback":
+        return bool(pre_sales_context.get("product_found"))
+    return False
+
+
+def _apply_adaptive_fast_qa_defaults(
+    result: dict[str, Any],
+    automation_context: dict[str, Any],
+    router_result: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized["qa_status"] = _adaptive_fast_qa_status(automation_context, router_result)
+    normalized.setdefault("recommended_follow_up", "Follow up if the customer replies.")
+    normalized.setdefault("escalation_needed", False)
+
+    flags = list(normalized.get("compliance_flags") or automation_context.get("compliance_tags") or [])
+    if ADAPTIVE_FAST_QA_FLAG not in flags:
+        flags.append(ADAPTIVE_FAST_QA_FLAG)
+    normalized["compliance_flags"] = flags
+
+    assumptions = list(normalized.get("assumptions") or [])
+    assumptions.append(
+        f"Low-risk {router_result.get('detected_intent')} LLM QA was skipped by SUPPORT_QA_MODE=adaptive_fast."
+    )
+    normalized["assumptions"] = assumptions
+    return normalized
+
+
+def _adaptive_fast_qa_status(automation_context: dict[str, Any], router_result: dict[str, Any]) -> str:
+    if router_result.get("detected_intent") == "pre_sales":
+        return "APPROVED"
+    sentiment = automation_context.get("sentiment_analysis") or {}
+    rma = automation_context.get("rma_validation")
+    if sentiment.get("intent_category") == "RMA_REQUEST":
+        if not isinstance(rma, dict) or not rma.get("eligible_for_return"):
+            return "REVIEW_REQUIRED"
+        if automation_context.get("logistics_output") is None:
+            return "REVIEW_REQUIRED"
+    return "APPROVED"
 
 
 def _build_pre_sales_tool(config_context: dict[str, Any]) -> PreSalesProductKnowledgeTool:
@@ -1272,7 +1392,7 @@ def _attach_customer_service_context(
     config_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config_context = config_context or {}
-    normalized = dict(result)
+    normalized = _expand_raw_json_result(dict(result))
     usage_metrics = normalized.pop(INTERNAL_USAGE_KEY, None)
     intent = router_result["detected_intent"]
     final_response = (
@@ -1280,6 +1400,7 @@ def _attach_customer_service_context(
         or normalized.get("drafted_response")
         or normalized.get("response")
         or normalized.get("body")
+        or normalized.get("raw")
         or "Thank you for reaching out. We are reviewing your request and will follow up shortly."
     )
     normalized["session_id"] = str(normalized.get("session_id") or inputs.get("session_id") or "unknown")
@@ -1303,7 +1424,12 @@ def _attach_customer_service_context(
     normalized["data_sources"] = normalized.get("data_sources") or _data_sources_for_intent(intent, pre_sales_context, order_context)
     normalized["assumptions"] = normalized.get("assumptions") or []
     normalized["pre_sales_response"] = _normalize_pre_sales_response(
-        normalized.get("pre_sales_response") or (pre_sales_context if intent == "pre_sales" else None)
+        normalized.get("pre_sales_response")
+        or (
+            _pre_sales_response_payload(normalized, pre_sales_context)
+            if intent == "pre_sales"
+            else None
+        )
     )
     if intent == "pre_sales":
         _apply_authoritative_pre_sales_context(normalized["pre_sales_response"], pre_sales_context)
@@ -1343,25 +1469,120 @@ def _attach_customer_service_context(
     normalized["support_response"] = _normalize_support_response(
         normalized.get("support_response")
         or (
-            {
-                "policy_reference": "Return/RMA policy, warranty eligibility, and logistics guidance checked.",
-                "sentiment_analysis": automation_context["sentiment_analysis"],
-                "rma_validation": automation_context["rma_validation"],
-                "logistics_output": automation_context["logistics_output"],
-            }
+            _post_sales_support_response_payload(normalized, automation_context)
             if intent == "post_sales_support"
             else None
         )
     )
+    if intent == "post_sales_support":
+        guarded_support_response = _guard_post_sales_rma_response(
+            normalized["final_response"],
+            automation_context.get("rma_validation"),
+            automation_context.get("logistics_output"),
+            inputs,
+            config_context,
+        )
+        if guarded_support_response != normalized["final_response"]:
+            normalized["final_response"] = guarded_support_response
+            flags = list(normalized.get("compliance_flags") or [])
+            if "RMA_POLICY_RESPONSE_REWRITTEN" not in flags:
+                flags.append("RMA_POLICY_RESPONSE_REWRITTEN")
+            normalized["compliance_flags"] = flags
     normalized["escalation_needed"] = _customer_service_escalation_needed(
         normalized,
         intent,
         automation_context,
     )
-    validated = CustomerServiceOutput.model_validate(normalized).model_dump()
+    normalized = _strip_customer_service_extra_fields(normalized)
+    validated = _validate_customer_service_output(normalized)
     if usage_metrics:
         validated[INTERNAL_USAGE_KEY] = usage_metrics
     return validated
+
+
+def _pre_sales_response_payload(
+    normalized: dict[str, Any],
+    pre_sales_context: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(pre_sales_context)
+    for key in (
+        "product_recommendation",
+        "feature_explanation",
+        "comparison_summary",
+        "next_steps",
+        "confidence_level",
+        "requires_human_review",
+    ):
+        value = normalized.get(key)
+        if value not in (None, "", []):
+            payload[key] = value
+    return payload
+
+
+def _post_sales_support_response_payload(
+    normalized: dict[str, Any],
+    automation_context: dict[str, Any],
+) -> dict[str, Any]:
+    stage_notes = _post_sales_stage_notes(normalized)
+    return {
+        "policy_reference": normalized.get("policy_reference")
+        or "Return/RMA policy, warranty eligibility, and logistics guidance checked.",
+        "sentiment_analysis": automation_context["sentiment_analysis"],
+        "rma_validation": automation_context["rma_validation"],
+        "logistics_output": automation_context["logistics_output"],
+        "resolution_steps": _string_list(normalized.get("resolution_steps")),
+        "internal_notes": stage_notes or normalized.get("internal_notes"),
+        "qa_notes": normalized.get("qa_notes"),
+    }
+
+
+def _post_sales_stage_notes(normalized: dict[str, Any]) -> str | None:
+    notes = []
+    for key, label in (
+        ("response_type", "response_type"),
+        ("issue_category", "issue_category"),
+        ("compensation_offered", "compensation_offered"),
+        ("follow_up_required", "follow_up_required"),
+    ):
+        value = normalized.get(key)
+        if value not in (None, "", []):
+            notes.append(f"{label}={value}")
+    return "; ".join(notes) if notes else None
+
+
+def _strip_customer_service_extra_fields(normalized: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in normalized.items()
+        if key in CUSTOMER_SERVICE_OUTPUT_FIELDS
+    }
+
+
+def _validate_customer_service_output(normalized: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return CustomerServiceOutput.model_validate(normalized).model_dump()
+    except ValidationError as exc:
+        field_errors = [
+            f"{'.'.join(str(part) for part in error.get('loc', ()))}:{error.get('type')}"
+            for error in exc.errors(include_url=False)
+        ]
+        raise ValueError(
+            "CustomerServiceOutput validation failed for fields "
+            f"{field_errors}; payload_keys={sorted(normalized)}"
+        ) from exc
+
+
+def _expand_raw_json_result(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("raw")
+    if not isinstance(raw, str):
+        return result
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return result
+    if not isinstance(parsed, dict):
+        return result
+    return {**parsed, **{key: value for key, value in result.items() if key != "raw"}}
 
 
 def _apply_authoritative_order_context(
@@ -1450,6 +1671,100 @@ def _guard_order_tracking_response(
     ):
         return final_response
     return _safe_local_tracking_response(local_record, inputs, config_context)
+
+
+def _guard_post_sales_rma_response(
+    final_response: str,
+    rma_validation: dict[str, Any] | None,
+    logistics_output: dict[str, Any] | None,
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    if not isinstance(rma_validation, dict):
+        if logistics_output is None and _contains_unsupported_rma_claim(final_response):
+            return _safe_rma_pending_details_response(inputs, config_context)
+        return final_response
+
+    if rma_validation.get("eligible_for_return") is False:
+        return _safe_rma_denial_response(rma_validation, inputs, config_context)
+
+    if logistics_output is None and _contains_unsupported_rma_claim(final_response):
+        return _safe_rma_pending_details_response(inputs, config_context)
+
+    if RETURN_LABEL_URL_RE.search(final_response):
+        return _safe_rma_pending_details_response(inputs, config_context)
+
+    return final_response
+
+
+def _contains_unsupported_rma_claim(response: str) -> bool:
+    return bool(RETURN_LABEL_URL_RE.search(response) or RMA_UNSUPPORTED_CLAIM_RE.search(response))
+
+
+def _safe_rma_denial_response(
+    rma_validation: dict[str, Any],
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    reason = str(
+        rma_validation.get("eligibility_reason")
+        or "The item is not eligible under our return policy."
+    )
+    response = (
+        "Hello,\n\n"
+        "Thank you for reaching out. I checked our return policy for this request.\n\n"
+        f"We are not able to approve a return or refund for this item based on the details provided. {reason} "
+        "Our policy requires returned items to be unused and unworn, and hygiene-sensitive or intimate items "
+        "cannot be returned after they have been opened or worn unless they are faulty, damaged, or incorrect.\n\n"
+        "Because this return is not eligible, I cannot provide a return label or refund approval. If the item is "
+        "faulty, damaged, or not the item you ordered, please reply with the order number and clear photos so a "
+        "support lead can review it.\n\n"
+        "Best regards,\n"
+        "Customer Service Team"
+    )
+    return _localize_rma_safe_response(
+        response=response,
+        inputs=inputs,
+        structured_facts={"rma_validation": rma_validation, "response_type": "rma_denial"},
+        config_context=config_context,
+    )
+
+
+def _safe_rma_pending_details_response(
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    response = (
+        "Hello,\n\n"
+        "Thank you for reaching out. We need to verify the order details and return eligibility before any return "
+        "label, carrier details, or refund approval can be provided.\n\n"
+        "Please reply with your order number, delivery date, item condition, and the reason for the return. If the "
+        "item is faulty, damaged, or incorrect, please also include clear photos.\n\n"
+        "Best regards,\n"
+        "Customer Service Team"
+    )
+    return _localize_rma_safe_response(
+        response=response,
+        inputs=inputs,
+        structured_facts={"response_type": "rma_pending_details"},
+        config_context=config_context,
+    )
+
+
+def _localize_rma_safe_response(
+    *,
+    response: str,
+    inputs: dict[str, Any],
+    structured_facts: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    rewritten = _rewrite_response_language(
+        response=response,
+        inputs=inputs,
+        structured_facts=structured_facts,
+        config_context=config_context,
+    )
+    return rewritten or response
 
 
 def _response_language_mismatch(response: str, inputs: dict[str, Any]) -> bool:
@@ -1910,6 +2225,7 @@ def _rewrite_response_language(
                 },
             ],
             "temperature": 0,
+            **llm_reasoning_compat_params(config_context),
         }
         llm_response = httpx.post(
             llm_chat_completions_url(config_context),

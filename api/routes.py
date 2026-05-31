@@ -1,14 +1,15 @@
 import asyncio
 import time
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from api.auth import verify_bearer_token
 from database import get_db_session
 from db_models import SupportConversationRecord
-from models import JobEventResponse, JobResponse, JobStatus, WorkflowRequest, WorkflowType
+from models import JobEventResponse, JobResponse, JobStatus, ProviderCredentials, WorkflowRequest, WorkflowType
 from runtime_config import load_runtime_config
 from services.whatsapp_provider import get_whatsapp_provider
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
@@ -30,6 +31,33 @@ from tools.custom.whatsapp_tools import (
 
 AuthDependency = Annotated[None, Depends(verify_bearer_token)]
 DbDependency = Annotated[Session, Depends(get_db_session)]
+SERVICE_INQUIRY_CONTROL_FIELDS = {"llm_profile", "provider_credentials"}
+
+
+def _service_inquiry_provider_credentials(payload: dict[str, object]) -> dict[str, Any] | None:
+    credentials: dict[str, Any] = {}
+    nested_credentials = payload.get("provider_credentials")
+    if nested_credentials not in (None, ""):
+        if not isinstance(nested_credentials, dict):
+            raise HTTPException(status_code=400, detail="provider_credentials must be an object")
+        credentials.update(nested_credentials)
+
+    llm_profile = payload.get("llm_profile")
+    if llm_profile not in (None, "") and not isinstance(llm_profile, str):
+        raise HTTPException(status_code=400, detail="llm_profile must be a string")
+    if isinstance(llm_profile, str):
+        normalized_profile = llm_profile.strip()
+        if normalized_profile:
+            credentials["llm_profile"] = normalized_profile
+
+    if not credentials:
+        return None
+
+    try:
+        validated = ProviderCredentials.model_validate(credentials)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid provider_credentials: {exc}") from exc
+    return validated.model_dump(exclude_none=True) or None
 
 
 def create_router(orchestrator: object) -> APIRouter:
@@ -278,23 +306,38 @@ def create_router(orchestrator: object) -> APIRouter:
         _: AuthDependency,
         payload: dict[str, object] = Body(...),
     ) -> dict[str, object]:
-        customer_key = str(payload.get("customer_email") or payload.get("customer") or payload.get("person") or "unknown")
-        session_id = str(payload.get("session_id") or f"sess_{customer_key}_{int(time.time())}")
-        inputs = {
-            **payload,
-            "session_id": session_id,
-            "customer": payload.get("customer") or payload.get("person") or customer_key,
-            "person": payload.get("person") or payload.get("customer") or customer_key,
-            "inquiry": payload.get("inquiry") or payload.get("inquiry_text") or "",
-            "inquiry_text": payload.get("inquiry_text") or payload.get("inquiry") or "",
-            "conversation_history": payload.get("conversation_history") or [],
-            "customer_tier": payload.get("customer_tier") or "STANDARD",
+        provider_credentials = _service_inquiry_provider_credentials(payload)
+        support_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in SERVICE_INQUIRY_CONTROL_FIELDS
         }
-        job_id = await orchestrator.submit_job(
-            WorkflowType.SUPPORT,
-            inputs,
-            metadata={"source": "service_inquiry", "session_id": session_id},
+        customer_key = str(
+            support_payload.get("customer_email")
+            or support_payload.get("customer")
+            or support_payload.get("person")
+            or "unknown"
         )
+        session_id = str(support_payload.get("session_id") or f"sess_{customer_key}_{int(time.time())}")
+        inputs = {
+            **support_payload,
+            "session_id": session_id,
+            "customer": support_payload.get("customer") or support_payload.get("person") or customer_key,
+            "person": support_payload.get("person") or support_payload.get("customer") or customer_key,
+            "inquiry": support_payload.get("inquiry") or support_payload.get("inquiry_text") or "",
+            "inquiry_text": support_payload.get("inquiry_text") or support_payload.get("inquiry") or "",
+            "conversation_history": support_payload.get("conversation_history") or [],
+            "customer_tier": support_payload.get("customer_tier") or "STANDARD",
+        }
+        try:
+            job_id = await orchestrator.submit_job(
+                WorkflowType.SUPPORT,
+                inputs,
+                provider_credentials=provider_credentials,
+                metadata={"source": "service_inquiry", "session_id": session_id},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "status": "queued",
             "job_id": job_id,

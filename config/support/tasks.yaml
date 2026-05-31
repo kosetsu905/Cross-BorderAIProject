@@ -47,8 +47,12 @@ inquiry_resolution:
     Conversation history, if provided: {conversation_history}
     Automation context: sentiment_analysis={sentiment_analysis}, rma_validation={rma_validation},
     logistics_output={logistics_output}, escalation_flag={escalation_flag}, compliance_tags={compliance_tags}.
-    Use the internal Support Knowledge Base first for policies, shipping timelines, returns, compensation, escalation rules, and product specs.
-    If intent is RMA_REQUEST, prioritize the RMA validation and logistics context. Include return label/tracking details only when present.
+    Use docs/knowledge_base return policy as the highest-priority source for policies, shipping timelines, returns, compensation, escalation rules, and product specs.
+    For returns, the 30-day window is necessary but not sufficient: the item must also be unused, unworn, in acceptable packaging/tag condition, and supported by proof of purchase.
+    Hygiene-sensitive or intimate items such as earrings, piercings, underwear, lingerie, and swimwear cannot be returned after opening or wear unless faulty, damaged, or incorrect.
+    If intent is RMA_REQUEST, prioritize the RMA validation and logistics context. Include return label/tracking details only when logistics_output explicitly provides them.
+    Never invent return labels, URLs, carriers, RMA numbers, tracking numbers, refund approvals, or approval status that are not explicitly present in logistics_output.
+    If rma_validation.eligible_for_return is false or logistics_output is null, do not tell the customer to print a label, ship the item back, or expect a refund.
     If escalation_flag is true, draft an empathetic handoff response and state that a human support lead should take over.
     Adapt tone, structure, and length for {channel}: WhatsApp concise and conversational (<2000 chars);
     Email/Gmail professional and structured;
@@ -66,6 +70,8 @@ quality_assurance_review:
     - Pre-sales: remove or rewrite any SKU, variant, price, compatibility claim, or feature not present in real PIM or catalog context; do not escalate solely because you rewrote unsupported product facts.
     - Order: status is based on provided order context; no guessed timelines; clear escalation path.
     - Post-sales: policy-compliant; empathetic tone; actionable next steps; human handoff preserved when required.
+    - Post-sales: no invented return label URLs, carriers, RMA numbers, tracking numbers, or refund approvals.
+    - Post-sales: for RMA requests, 30 days alone does not make a return eligible; verify unused/unworn condition, proof of purchase, and hygiene-sensitive item exclusions.
     The final output must be a CustomerServiceOutput-compatible JSON object with:
     session_id, customer_context, detected_intent, routing_confidence, pre_sales_response,
     order_response, support_response, final_response, qa_status, compliance_flags,

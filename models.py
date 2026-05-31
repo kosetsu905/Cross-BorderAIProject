@@ -117,11 +117,15 @@ class SalesImprovementInputs(StrictInputModel):
 
 class ProviderCredentials(StrictInputModel):
     llm_provider: str | None = None
+    llm_profile: str | None = None
     llm_api_key: str | None = None
     llm_model_name: str | None = None
     llm_base_url: str | None = None
     llm_disable_reasoning: bool | None = None
     serper_api_key: str | None = None
+    support_serper_pre_sales_enabled: bool | None = None
+    support_serper_order_fulfillment_enabled: bool | None = None
+    support_serper_post_sales_enabled: bool | None = None
     shopify_store_domain: str | None = None
     shopify_admin_access_token: str | None = None
     shopify_api_version: str | None = None

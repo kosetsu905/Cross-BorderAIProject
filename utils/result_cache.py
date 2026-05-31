@@ -19,6 +19,12 @@ CACHE_CONTROL_KEYS = {
     "openai_input_cost_per_1m_tokens",
     "openai_output_cost_per_1m_tokens",
 }
+SENSITIVE_RUNTIME_KEYS = {
+    "llm_api_key",
+    "openai_api_key",
+    "llm_profiles",
+    "support_llm_profile",
+}
 
 
 def _json_normalize(value: Any) -> Any:
@@ -58,7 +64,7 @@ def build_workflow_cache_key(
     runtime_context = {
         key: value
         for key, value in config_context.items()
-        if key not in CACHE_CONTROL_KEYS
+        if key not in CACHE_CONTROL_KEYS and key not in SENSITIVE_RUNTIME_KEYS
     }
     fingerprint = {
         "workflow_type": _workflow_value(workflow_type),

@@ -1,4 +1,5 @@
 import logging
+import time
 from threading import Lock
 from typing import Any, Callable
 
@@ -18,6 +19,7 @@ class WorkflowProgressRecorder:
         self.job_store = job_store
         self.backend = backend
         self._lock = Lock()
+        self._task_started_at: dict[tuple[int, str], float] = {}
 
     def emit_plan(self, task_names: list[str]) -> None:
         self._update_progress(
@@ -31,6 +33,8 @@ class WorkflowProgressRecorder:
         )
 
     def task_started(self, index: int, total: int, task_name: str, agent_role: str | None) -> None:
+        started_at = time.monotonic()
+        self._task_started_at[(index, task_name)] = started_at
         progress = PROGRESS_START + (PROGRESS_SPAN * index / max(total, 1))
         self._update_progress(
             event_type="task_started",
@@ -45,6 +49,8 @@ class WorkflowProgressRecorder:
         )
 
     def task_completed(self, index: int, total: int, task_name: str, agent_role: str | None) -> None:
+        started_at = self._task_started_at.pop((index, task_name), None)
+        duration_seconds = None if started_at is None else round(time.monotonic() - started_at, 3)
         progress = PROGRESS_START + (PROGRESS_SPAN * (index + 1) / max(total, 1))
         self._update_progress(
             event_type="task_completed",
@@ -55,6 +61,7 @@ class WorkflowProgressRecorder:
                 "total_tasks": total,
                 "task_name": task_name,
                 "agent_role": agent_role,
+                "duration_seconds": duration_seconds,
             },
         )
 
