@@ -25,7 +25,9 @@ from tools.custom.gmail_tools import (
     watch_gmail_mailbox,
 )
 from tools.custom.whatsapp_tools import (
+    parse_ycloud_webhook,
     parse_whatsapp_webhook,
+    verify_ycloud_signature,
     verify_whatsapp_signature,
 )
 
@@ -109,6 +111,44 @@ def create_router(orchestrator: object) -> APIRouter:
         channel_message = parse_gmail_message(gmail_message, mailbox_email=config.gmail_sender_email)
         return await submit_channel_message(db, channel_message, source)
 
+    async def process_channel_webhook(
+        db: Session,
+        *,
+        inbound_messages: list[object],
+        status_updates: list[object],
+        source: str,
+    ) -> dict[str, object]:
+        store = SupportInboxStore(db)
+        submitted_jobs: list[dict[str, str]] = []
+        duplicate_messages = 0
+        updated_statuses = 0
+
+        for status_update in status_updates:
+            if store.apply_status_update(status_update):  # type: ignore[arg-type]
+                updated_statuses += 1
+
+        for inbound_message in inbound_messages:
+            submitted = await submit_channel_message(db, inbound_message, source)
+            if not submitted["created"]:
+                duplicate_messages += 1
+                continue
+            submitted_jobs.append(
+                {
+                    "conversation_id": str(submitted["conversation_id"]),
+                    "message_id": str(submitted["message_id"]),
+                    "job_id": str(submitted["job_id"]),
+                }
+            )
+
+        return {
+            "status": "accepted",
+            "messages_received": len(inbound_messages),
+            "status_updates_received": len(status_updates),
+            "duplicates": duplicate_messages,
+            "statuses_updated": updated_statuses,
+            "submitted_jobs": submitted_jobs,
+        }
+
     @router.get("/api/v1/channels/whatsapp/webhook")
     async def verify_whatsapp_webhook(
         response: Response,
@@ -136,36 +176,33 @@ def create_router(orchestrator: object) -> APIRouter:
 
         payload = await request.json()
         inbound_messages, status_updates = parse_whatsapp_webhook(payload)
-        store = SupportInboxStore(db)
-        submitted_jobs: list[dict[str, str]] = []
-        duplicate_messages = 0
-        updated_statuses = 0
+        return await process_channel_webhook(
+            db,
+            inbound_messages=inbound_messages,
+            status_updates=status_updates,
+            source="whatsapp_webhook",
+        )
 
-        for status_update in status_updates:
-            if store.apply_status_update(status_update):
-                updated_statuses += 1
+    @router.post("/api/v1/channels/ycloud/webhook")
+    async def receive_ycloud_webhook(request: Request, db: DbDependency) -> dict[str, object]:
+        config = load_runtime_config()
+        body = await request.body()
+        signature = request.headers.get("ycloud-signature")
+        if not verify_ycloud_signature(
+            webhook_secret=config.ycloud_webhook_secret,
+            body=body,
+            signature=signature,
+        ):
+            raise HTTPException(status_code=403, detail="Invalid YCloud webhook signature")
 
-        for inbound_message in inbound_messages:
-            submitted = await submit_channel_message(db, inbound_message, "whatsapp_webhook")
-            if not submitted["created"]:
-                duplicate_messages += 1
-                continue
-            submitted_jobs.append(
-                {
-                    "conversation_id": str(submitted["conversation_id"]),
-                    "message_id": str(submitted["message_id"]),
-                    "job_id": str(submitted["job_id"]),
-                }
-            )
-
-        return {
-            "status": "accepted",
-            "messages_received": len(inbound_messages),
-            "status_updates_received": len(status_updates),
-            "duplicates": duplicate_messages,
-            "statuses_updated": updated_statuses,
-            "submitted_jobs": submitted_jobs,
-        }
+        payload = await request.json()
+        inbound_messages, status_updates = parse_ycloud_webhook(payload)
+        return await process_channel_webhook(
+            db,
+            inbound_messages=inbound_messages,
+            status_updates=status_updates,
+            source="ycloud_webhook",
+        )
 
     @router.post("/api/v1/channels/gmail/pubsub")
     async def receive_gmail_pubsub(

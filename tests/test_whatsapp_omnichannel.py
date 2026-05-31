@@ -1,18 +1,23 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
+import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 import httpx
 import yaml
 
-from api.routes import _send_whatsapp_approval_delivery
+from api.routes import _send_whatsapp_approval_delivery, create_router
 from crews.support_crew import _normalize_inputs
+from database import get_db_session
 from models import SupportInputs
 from runtime_config import load_runtime_config
 from services.language_detector import LanguageDetector
@@ -28,7 +33,12 @@ from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
 from support_inbox import SupportInboxStore, _json_safe, mask_contact
 from tools.custom.support_automation_tools import detect_language
 from tools.custom.support_handoff_tools import send_handoff_notification
-from tools.custom.whatsapp_tools import parse_whatsapp_webhook, verify_whatsapp_signature
+from tools.custom.whatsapp_tools import (
+    parse_whatsapp_webhook,
+    parse_ycloud_webhook,
+    verify_whatsapp_signature,
+    verify_ycloud_signature,
+)
 
 
 class FakeSupportSession:
@@ -177,6 +187,65 @@ class FakeWindowSessionManager:
         return self.expired
 
 
+class FakeWebhookStore:
+    inbound_messages: list[object] = []
+    status_updates: list[object] = []
+    attached_jobs: list[dict[str, str]] = []
+
+    def __init__(self, session: object) -> None:
+        self.session = session
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.inbound_messages = []
+        cls.status_updates = []
+        cls.attached_jobs = []
+
+    def apply_status_update(self, status: object) -> bool:
+        self.status_updates.append(status)
+        return True
+
+    def upsert_inbound_message(self, message: object) -> tuple[SimpleNamespace, SimpleNamespace, bool]:
+        self.inbound_messages.append(message)
+        conversation = SimpleNamespace(conversation_id="conv-ycloud-1")
+        record = SimpleNamespace(message_id="msg-ycloud-1", job_id=None)
+        return conversation, record, True
+
+    def build_support_inputs(self, conversation: SimpleNamespace, message: SimpleNamespace) -> dict[str, object]:
+        inbound = self.inbound_messages[-1]
+        return {
+            "customer": "Maria",
+            "person": "Maria",
+            "inquiry": getattr(inbound, "text", ""),
+            "channel": getattr(inbound, "channel", "whatsapp"),
+            "session_id": conversation.conversation_id,
+            "channel_message_id": getattr(inbound, "channel_message_id", ""),
+        }
+
+    def attach_job(self, conversation_id: str, message_id: str, job_id: str) -> None:
+        self.attached_jobs.append(
+            {"conversation_id": conversation_id, "message_id": message_id, "job_id": job_id}
+        )
+
+
+class FakeWebhookOrchestrator:
+    def __init__(self) -> None:
+        self.submissions: list[dict[str, object]] = []
+        self.registered_workflows = []
+
+    async def submit_job(
+        self,
+        workflow_type: object,
+        inputs: dict[str, object],
+        metadata: dict[str, object] | None = None,
+        **_: object,
+    ) -> str:
+        self.submissions.append(
+            {"workflow_type": workflow_type, "inputs": inputs, "metadata": metadata or {}}
+        )
+        return "job-ycloud-1"
+
+
 class WhatsAppOmniChannelTests(unittest.TestCase):
     def test_signature_verification_accepts_valid_signature(self) -> None:
         body = b'{"object":"whatsapp_business_account"}'
@@ -197,6 +266,40 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
                 app_secret="app-secret",
                 body=b"{}",
                 signature="sha256=bad",
+            )
+        )
+
+    def test_ycloud_signature_verification_accepts_valid_signature(self) -> None:
+        body = b'{"type":"whatsapp.inbound_message.received"}'
+        secret = "ycloud-webhook-secret"
+        timestamp = str(int(time.time()))
+        digest = hmac.new(secret.encode("utf-8"), f"{timestamp}.".encode("utf-8") + body, hashlib.sha256).hexdigest()
+
+        self.assertTrue(
+            verify_ycloud_signature(
+                webhook_secret=secret,
+                body=body,
+                signature=f"t={timestamp},s={digest}",
+            )
+        )
+
+    def test_ycloud_signature_verification_rejects_invalid_signature(self) -> None:
+        self.assertFalse(
+            verify_ycloud_signature(
+                webhook_secret="ycloud-webhook-secret",
+                body=b"{}",
+                signature="t=1779878400,s=bad",
+                tolerance_seconds=0,
+            )
+        )
+
+    def test_ycloud_signature_verification_requires_secret(self) -> None:
+        timestamp = str(int(time.time()))
+        self.assertFalse(
+            verify_ycloud_signature(
+                webhook_secret=None,
+                body=b"{}",
+                signature=f"t={timestamp},s=anything",
             )
         )
 
@@ -265,6 +368,171 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertEqual(messages[0].text, None)
         self.assertEqual(messages[0].attachments[0]["type"], "image")
         self.assertEqual(messages[0].attachments[0]["id"], "media-id")
+
+    def test_parse_ycloud_inbound_message(self) -> None:
+        payload = {
+            "id": "evt-1",
+            "type": "whatsapp.inbound_message.received",
+            "createdAt": "2026-05-31T00:00:00Z",
+            "data": {
+                "whatsappInboundMessage": {
+                    "id": "wamid.ycloud.inbound",
+                    "from": "+61412345678",
+                    "to": "+15551234567",
+                    "type": "text",
+                    "text": {"body": "Where is my order?"},
+                    "timestamp": "1779878400",
+                    "customerProfile": {"name": "Maria"},
+                }
+            },
+        }
+
+        messages, statuses = parse_ycloud_webhook(payload)
+
+        self.assertEqual(statuses, [])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].channel, "whatsapp")
+        self.assertEqual(messages[0].channel_thread_id, "+61412345678")
+        self.assertEqual(messages[0].channel_message_id, "wamid.ycloud.inbound")
+        self.assertEqual(messages[0].recipient, "+15551234567")
+        self.assertEqual(messages[0].text, "Where is my order?")
+        self.assertEqual(messages[0].sender_profile["profile"]["name"], "Maria")
+
+    def test_parse_ycloud_message_status_update(self) -> None:
+        payload = {
+            "id": "evt-2",
+            "type": "whatsapp.message.updated",
+            "data": {
+                "whatsappMessage": {
+                    "id": "ycloud-msg-1",
+                    "whatsappMessageId": "wamid.ycloud.outbound",
+                    "to": "+61412345678",
+                    "status": "delivered",
+                    "updateTime": "1779878401",
+                }
+            },
+        }
+
+        messages, statuses = parse_ycloud_webhook(payload)
+
+        self.assertEqual(messages, [])
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0].channel_message_id, "ycloud-msg-1")
+        self.assertEqual(statuses[0].recipient_id, "+61412345678")
+        self.assertEqual(statuses[0].status, "delivered")
+
+    def test_ycloud_webhook_route_submits_inbound_support_job(self) -> None:
+        FakeWebhookStore.reset()
+        orchestrator = FakeWebhookOrchestrator()
+        app = FastAPI()
+        app.include_router(create_router(orchestrator))
+        app.dependency_overrides[get_db_session] = lambda: object()
+        body = json.dumps(
+            {
+                "id": "evt-1",
+                "type": "whatsapp.inbound_message.received",
+                "apiVersion": "v2",
+                "createTime": "2026-05-31T00:00:00.000Z",
+                "whatsappInboundMessage": {
+                    "id": "wamid.ycloud.inbound",
+                    "from": "+61412345678",
+                    "to": "+15551234567",
+                    "type": "text",
+                    "text": {"body": "Where is my order?"},
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        timestamp = str(int(time.time()))
+        signature = hmac.new(
+            b"ycloud-webhook-secret",
+            f"{timestamp}.".encode("utf-8") + body,
+            hashlib.sha256,
+        ).hexdigest()
+
+        with (
+            patch(
+                "api.routes.load_runtime_config",
+                return_value=SimpleNamespace(ycloud_webhook_secret="ycloud-webhook-secret"),
+            ),
+            patch("api.routes.SupportInboxStore", FakeWebhookStore),
+        ):
+            response = TestClient(app).post(
+                "/api/v1/channels/ycloud/webhook",
+                content=body,
+                headers={"YCloud-Signature": f"t={timestamp},s={signature}", "Content-Type": "application/json"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["messages_received"], 1)
+        self.assertEqual(data["status_updates_received"], 0)
+        self.assertEqual(data["submitted_jobs"][0]["job_id"], "job-ycloud-1")
+        self.assertEqual(len(orchestrator.submissions), 1)
+        self.assertEqual(orchestrator.submissions[0]["metadata"]["source"], "ycloud_webhook")
+        self.assertEqual(FakeWebhookStore.attached_jobs[0]["job_id"], "job-ycloud-1")
+
+    def test_ycloud_webhook_route_applies_status_update(self) -> None:
+        FakeWebhookStore.reset()
+        app = FastAPI()
+        app.include_router(create_router(FakeWebhookOrchestrator()))
+        app.dependency_overrides[get_db_session] = lambda: object()
+        body = json.dumps(
+            {
+                "id": "evt-2",
+                "type": "whatsapp.message.updated",
+                "apiVersion": "v2",
+                "createTime": "2026-05-31T00:00:00.000Z",
+                "whatsappMessage": {
+                    "id": "ycloud-msg-1",
+                    "from": "+15551234567",
+                    "to": "+61412345678",
+                    "type": "text",
+                    "status": "delivered",
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        timestamp = str(int(time.time()))
+        signature = hmac.new(
+            b"ycloud-webhook-secret",
+            f"{timestamp}.".encode("utf-8") + body,
+            hashlib.sha256,
+        ).hexdigest()
+
+        with (
+            patch(
+                "api.routes.load_runtime_config",
+                return_value=SimpleNamespace(ycloud_webhook_secret="ycloud-webhook-secret"),
+            ),
+            patch("api.routes.SupportInboxStore", FakeWebhookStore),
+        ):
+            response = TestClient(app).post(
+                "/api/v1/channels/ycloud/webhook",
+                content=body,
+                headers={"YCloud-Signature": f"t={timestamp},s={signature}", "Content-Type": "application/json"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["messages_received"], 0)
+        self.assertEqual(data["status_updates_received"], 1)
+        self.assertEqual(data["statuses_updated"], 1)
+        self.assertEqual(len(FakeWebhookStore.status_updates), 1)
+
+    def test_ycloud_webhook_route_rejects_missing_secret(self) -> None:
+        app = FastAPI()
+        app.include_router(create_router(FakeWebhookOrchestrator()))
+        app.dependency_overrides[get_db_session] = lambda: object()
+
+        with patch("api.routes.load_runtime_config", return_value=SimpleNamespace(ycloud_webhook_secret=None)):
+            response = TestClient(app).post(
+                "/api/v1/channels/ycloud/webhook",
+                json={"type": "whatsapp.message.updated"},
+                headers={"YCloud-Signature": "t=1779878400,s=anything"},
+            )
+
+        self.assertEqual(response.status_code, 403)
 
     def test_support_inputs_accept_channel_fields(self) -> None:
         parsed = SupportInputs.model_validate(
@@ -415,6 +683,7 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
                 "YCLOUD_WHATSAPP_FROM": "+15551234567",
                 "YCLOUD_WABA_ID": "waba-1",
                 "YCLOUD_BASE_URL": "https://api.example.test/v2",
+                "YCLOUD_WEBHOOK_SECRET": "whsec_test",
             },
             clear=True,
         ):
@@ -425,6 +694,7 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         self.assertEqual(config.ycloud_whatsapp_from, "+15551234567")
         self.assertEqual(config.ycloud_waba_id, "waba-1")
         self.assertEqual(config.ycloud_base_url, "https://api.example.test/v2")
+        self.assertEqual(config.ycloud_webhook_secret, "whsec_test")
 
     def test_session_manager_records_inbound_session_state(self) -> None:
         redis_client = FakeRedis()

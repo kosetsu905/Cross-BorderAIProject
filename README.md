@@ -287,6 +287,7 @@ YCLOUD_API_KEY=optional_ycloud_api_key
 YCLOUD_WHATSAPP_FROM=optional_sender_phone_e164
 YCLOUD_WABA_ID=optional_whatsapp_business_account_id
 YCLOUD_BASE_URL=https://api.ycloud.com/v2
+YCLOUD_WEBHOOK_SECRET=optional_ycloud_webhook_secret
 
 # Optional PIM connector for pre-sales product knowledge. Missing credentials fall back to mock data.
 PIM_BACKEND=akeneo
@@ -754,7 +755,7 @@ Invoke-RestMethod `
 
 ### Deployment checklist
 
-- Configure WhatsApp sending with `WHATSAPP_PROVIDER=ycloud` for short-term testing, or `WHATSAPP_PROVIDER=meta` when Meta Cloud API credentials are available. YCloud uses `YCLOUD_API_KEY`, `YCLOUD_WHATSAPP_FROM`, `YCLOUD_WABA_ID`, and optional `YCLOUD_BASE_URL`; Meta uses `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, and optionally `WHATSAPP_APP_SECRET`; legacy deployment names `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_ID` are accepted as fallbacks.
+- Configure WhatsApp sending with `WHATSAPP_PROVIDER=ycloud` for short-term testing, or `WHATSAPP_PROVIDER=meta` when Meta Cloud API credentials are available. YCloud uses `YCLOUD_API_KEY`, `YCLOUD_WHATSAPP_FROM`, `YCLOUD_WABA_ID`, optional `YCLOUD_BASE_URL`, and `YCLOUD_WEBHOOK_SECRET` for inbound webhook verification; Meta uses `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, and optionally `WHATSAPP_APP_SECRET`; legacy deployment names `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_ID` are accepted as fallbacks.
 - Configure `SUPPORT_HANDOFF_WEBHOOK_URL` for human handoff notifications; `SLACK_WEBHOOK_URL` is accepted as a compatibility fallback.
 - Configure Gmail send/sync settings when email replies are needed. `SENDGRID_API_KEY` is not used by the current runnable code; Gmail is the active email provider, and SendGrid can be added later as a separate provider adapter.
 - Install the existing async/runtime dependencies from `requirements.txt`; `fastapi`, `uvicorn[standard]`, and `httpx` are already listed. `asyncio` is part of Python's standard library and should not be installed separately.
@@ -778,6 +779,14 @@ POST /api/v1/channels/whatsapp/webhook
 ```
 
 When `WHATSAPP_APP_SECRET` is configured, the webhook validates `X-Hub-Signature-256`. Inbound messages are stored idempotently by `channel_message_id`, normalized into support inputs, and submitted as `workflow_type=support`. WhatsApp delivery/read status webhooks update outbound message records.
+
+YCloud inbound WhatsApp webhooks are accepted separately at:
+
+```text
+POST /api/v1/channels/ycloud/webhook
+```
+
+This endpoint requires `YCLOUD_WEBHOOK_SECRET` and validates `YCloud-Signature` before parsing `whatsapp.inbound_message.received` and `whatsapp.message.updated` events.
 
 Gmail omni-channel support uses Gmail API message fetch plus optional Pub/Sub watch:
 

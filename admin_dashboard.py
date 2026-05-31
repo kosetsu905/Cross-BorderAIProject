@@ -101,6 +101,12 @@ WORKFLOW_PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
         "whatsapp_verify_token": "",
         "whatsapp_app_secret": "",
         "whatsapp_send_enabled": False,
+        "whatsapp_provider": "ycloud",
+        "ycloud_api_key": "",
+        "ycloud_whatsapp_from": "",
+        "ycloud_waba_id": "",
+        "ycloud_base_url": "https://api.ycloud.com/v2",
+        "ycloud_webhook_secret": "",
     }
 }
 ITEM_CONDITIONS = ["", "unopened", "damaged", "defective", "opened", "used"]

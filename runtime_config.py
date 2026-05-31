@@ -69,6 +69,7 @@ RUNTIME_CONFIG_KEYS = {
     "ycloud_whatsapp_from",
     "ycloud_waba_id",
     "ycloud_base_url",
+    "ycloud_webhook_secret",
     "pim_backend",
     "pim_akeneo_base_url",
     "pim_akeneo_api_key",
@@ -189,6 +190,7 @@ class RuntimeConfig:
     ycloud_whatsapp_from: str | None = None
     ycloud_waba_id: str | None = None
     ycloud_base_url: str = "https://api.ycloud.com/v2"
+    ycloud_webhook_secret: str | None = None
     pim_backend: str = "akeneo"
     pim_akeneo_base_url: str | None = None
     pim_akeneo_api_key: str | None = None
@@ -426,6 +428,7 @@ def load_runtime_config() -> RuntimeConfig:
         ycloud_whatsapp_from=os.getenv("YCLOUD_WHATSAPP_FROM"),
         ycloud_waba_id=os.getenv("YCLOUD_WABA_ID"),
         ycloud_base_url=os.getenv("YCLOUD_BASE_URL", "https://api.ycloud.com/v2"),
+        ycloud_webhook_secret=os.getenv("YCLOUD_WEBHOOK_SECRET"),
         pim_backend=os.getenv("PIM_BACKEND", "akeneo"),
         pim_akeneo_base_url=os.getenv("PIM_AKENEO_BASE_URL"),
         pim_akeneo_api_key=os.getenv("PIM_AKENEO_API_KEY"),

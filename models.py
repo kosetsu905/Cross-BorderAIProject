@@ -157,6 +157,7 @@ class ProviderCredentials(StrictInputModel):
     ycloud_whatsapp_from: str | None = None
     ycloud_waba_id: str | None = None
     ycloud_base_url: str | None = None
+    ycloud_webhook_secret: str | None = None
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None

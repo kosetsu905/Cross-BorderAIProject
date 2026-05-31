@@ -375,9 +375,12 @@ class YCloudWhatsAppProvider:
             (raw_data or {}).get("message_id")
             or (raw_data or {}).get("messageId")
             or (raw_data or {}).get("whatsappMessageId")
+            or (raw_data or {}).get("id")
+            or (raw_data or {}).get("wamid")
             or data.get("id")
             or data.get("messageId")
             or data.get("whatsappMessageId")
+            or data.get("wamid")
         )
         success = data.get("success")
         if success is None:
