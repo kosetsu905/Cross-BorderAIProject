@@ -2,7 +2,9 @@ import base64
 import json
 import logging
 import re
+import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 OPENAI_IMAGE_GENERATION_URL = "https://api.openai.com/v1/images/generations"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_CONTENT_ARTIFACT_DIR = "artifacts/content_creation"
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 
 class MultimodalLocalizationInput(BaseModel):
@@ -90,12 +92,16 @@ class MultimodalLocalizationTool(BaseTool):
     ) -> dict[str, Any]:
         market_profile = _market_profile(target_market)
         selected_platforms = platforms or market_profile["platforms"]
+        visual_text_language = _visual_text_language(language)
         image_prompt = (
             f"Premium e-commerce product photography of {product}. "
             f"Market: {target_market}. Visual style: {market_profile['style']}. "
             f"Palette: {market_profile['colors']}. Scene: {market_profile['background']}. "
             f"Brand voice: {brand_voice}. Use clear product detail, natural lighting, "
-            "culturally respectful props, no prohibited symbols, no unsupported claims."
+            "culturally respectful props, no prohibited symbols, no unsupported claims. "
+            "If any readable text, signage, packaging copy, CTA, or label appears in the image, "
+            f"it must be only {visual_text_language}; do not mix another language except brand "
+            "names or product names, and avoid gibberish or pseudo-text."
         )
         return {
             "target_market": target_market,
@@ -111,8 +117,9 @@ class MultimodalLocalizationTool(BaseTool):
             "video_script": _video_script(product, target_market, brand_voice),
             "image_text_consistency_check": (
                 "Check that the hero benefit, props, color mood, on-screen text, "
-                f"and CTA all support the {language} copy without adding claims "
-                "that are absent from first-party product inputs."
+                f"and CTA all support the {language} copy. Any visible text must be only "
+                f"{visual_text_language}, without adding claims that are absent from "
+                "first-party product inputs."
             ),
             "recommended_platforms": selected_platforms,
         }
@@ -236,12 +243,18 @@ class OpenAIImageGenerationTool(BaseTool):
         image_quality: str = "auto",
         image_size: str = "1024x1024",
     ) -> dict[str, Any]:
+        started_at = time.monotonic()
+        attempt_metadata: dict[str, int | None] = {"attempts": 0, "last_status_code": None}
         if not self.openai_api_key:
             return {
                 "status": "skipped_missing_credentials",
                 "model": self.image_model,
                 "prompt": prompt,
                 "assets": [],
+                "duration_seconds": 0.0,
+                "attempts": 0,
+                "last_status_code": None,
+                "retryable_status": False,
                 "error": "OPENAI_API_KEY is not configured for content image generation.",
             }
 
@@ -258,6 +271,10 @@ class OpenAIImageGenerationTool(BaseTool):
                 self.openai_api_key,
                 payload,
                 timeout_seconds=120,
+                attempt_recorder=lambda status_code: _record_http_attempt(
+                    attempt_metadata,
+                    status_code,
+                ),
             )
             assets = _save_image_generation_payload(
                 response_payload,
@@ -265,21 +282,33 @@ class OpenAIImageGenerationTool(BaseTool):
                 output_slug,
                 self.image_model,
                 prompt,
+                time.monotonic() - started_at,
             )
             return {
                 "status": "completed" if assets else "completed_no_local_asset",
                 "model": self.image_model,
                 "prompt": prompt,
                 "assets": assets,
+                "duration_seconds": round(time.monotonic() - started_at, 3),
+                "attempts": attempt_metadata["attempts"],
+                "last_status_code": attempt_metadata["last_status_code"],
+                "retryable_status": _is_retryable_status_code(
+                    attempt_metadata["last_status_code"]
+                ),
                 "error": None,
             }
         except Exception as exc:
             logger.warning("OpenAI image generation failed: %s", exc)
+            last_status_code = _last_status_code(attempt_metadata, exc)
             return {
                 "status": "failed",
                 "model": self.image_model,
                 "prompt": prompt,
                 "assets": [],
+                "duration_seconds": round(time.monotonic() - started_at, 3),
+                "attempts": attempt_metadata["attempts"],
+                "last_status_code": last_status_code,
+                "retryable_status": _is_retryable_status_code(last_status_code),
                 "error": _safe_error(exc),
             }
 
@@ -302,6 +331,7 @@ class VisualAssetScoringTool(BaseTool):
         language: str,
         brand_voice: str = "Premium, trustworthy, and culturally respectful",
     ) -> dict[str, Any]:
+        started_at = time.monotonic()
         if not self.openai_api_key:
             return {
                 "status": "skipped_missing_credentials",
@@ -310,6 +340,7 @@ class VisualAssetScoringTool(BaseTool):
                 "cultural_fit_score": 0.0,
                 "brand_voice_score": 0.0,
                 "publish_readiness_score": 0.0,
+                "duration_seconds": 0.0,
                 "notes": "OPENAI_API_KEY is not configured for visual asset scoring.",
                 "error": None,
             }
@@ -323,6 +354,7 @@ class VisualAssetScoringTool(BaseTool):
                 "cultural_fit_score": 0.0,
                 "brand_voice_score": 0.0,
                 "publish_readiness_score": 0.0,
+                "duration_seconds": 0.0,
                 "notes": "Asset path does not exist.",
                 "error": None,
             }
@@ -347,6 +379,7 @@ class VisualAssetScoringTool(BaseTool):
                 "status": "completed",
                 "asset_path": str(path.resolve()),
                 **parsed,
+                "duration_seconds": round(time.monotonic() - started_at, 3),
                 "error": None,
             }
         except Exception as exc:
@@ -358,6 +391,7 @@ class VisualAssetScoringTool(BaseTool):
                 "cultural_fit_score": 0.0,
                 "brand_voice_score": 0.0,
                 "publish_readiness_score": 0.0,
+                "duration_seconds": round(time.monotonic() - started_at, 3),
                 "notes": "Vision scoring failed; route asset to manual review.",
                 "error": _safe_error(exc),
             }
@@ -381,6 +415,26 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     )
 
 
+def _record_http_attempt(attempt_metadata: dict[str, int | None], status_code: int | None) -> None:
+    if status_code is None:
+        attempt_metadata["attempts"] = int(attempt_metadata.get("attempts") or 0) + 1
+        return
+    attempt_metadata["last_status_code"] = status_code
+
+
+def _last_status_code(
+    attempt_metadata: dict[str, int | None],
+    exc: Exception,
+) -> int | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code
+    return attempt_metadata.get("last_status_code")
+
+
+def _is_retryable_status_code(status_code: int | None) -> bool:
+    return status_code in RETRYABLE_STATUS_CODES
+
+
 @retry(
     retry=retry_if_exception(_is_retryable_exception),
     stop=stop_after_attempt(3),
@@ -392,7 +446,10 @@ def _post_openai_json(
     api_key: str,
     payload: dict[str, Any],
     timeout_seconds: int,
+    attempt_recorder: Callable[[int | None], None] | None = None,
 ) -> dict[str, Any]:
+    if attempt_recorder:
+        attempt_recorder(None)
     response = httpx.post(
         url,
         headers={
@@ -402,6 +459,8 @@ def _post_openai_json(
         json=payload,
         timeout=timeout_seconds,
     )
+    if attempt_recorder:
+        attempt_recorder(response.status_code)
     response.raise_for_status()
     return response.json()
 
@@ -412,6 +471,7 @@ def _save_image_generation_payload(
     output_slug: str,
     model: str,
     prompt: str,
+    duration_seconds: float,
 ) -> list[dict[str, Any]]:
     output_dir = Path(artifact_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -432,6 +492,7 @@ def _save_image_generation_payload(
                     "prompt": prompt,
                     "revised_prompt": revised_prompt,
                     "content_type": "image/png",
+                    "duration_seconds": round(duration_seconds, 3),
                 }
             )
         elif item.get("url"):
@@ -444,6 +505,7 @@ def _save_image_generation_payload(
                     "prompt": prompt,
                     "revised_prompt": revised_prompt,
                     "content_type": "image/remote",
+                    "duration_seconds": round(duration_seconds, 3),
                 }
             )
     return assets
@@ -457,13 +519,18 @@ def _visual_score_payload(
     language: str,
     brand_voice: str,
 ) -> dict[str, Any]:
+    visual_text_language = _visual_text_language(language)
     rubric = (
         "Score this e-commerce visual asset as JSON only with keys "
         "prompt_alignment_score, cultural_fit_score, brand_voice_score, "
         "publish_readiness_score, notes. Scores must be numbers from 0 to 100. "
         f"Prompt: {prompt}. Market: {target_market}. Language: {language}. "
         f"Brand voice: {brand_voice}. Check for unsupported product claims, "
-        "culturally risky props, text legibility, and production readiness."
+        "culturally risky props, text legibility, and production readiness. "
+        "Inspect every visible word, label, sign, package, and CTA. If readable "
+        f"text appears, it must be only {visual_text_language}; if another language, "
+        "mixed-language copy, gibberish, or pseudo-text appears, set publish_readiness_score "
+        "to 60 or lower and explain the language issue in notes."
     )
     return {
         "model": model,
@@ -481,8 +548,9 @@ def _visual_score_payload(
 
 def _parse_visual_score_response(response_payload: dict[str, Any]) -> dict[str, Any]:
     text = _extract_response_text(response_payload)
+    json_text = _extract_json_object_text(text)
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(json_text)
     except json.JSONDecodeError:
         parsed = {"notes": text}
     return {
@@ -492,6 +560,23 @@ def _parse_visual_score_response(response_payload: dict[str, Any]) -> dict[str, 
         "publish_readiness_score": _score(parsed.get("publish_readiness_score")),
         "notes": str(parsed.get("notes") or "No scoring notes returned.").strip(),
     }
+
+
+def _extract_json_object_text(text: str) -> str:
+    stripped = text.strip()
+    fenced_match = re.search(
+        r"```(?:json)?\s*([\s\S]*?)\s*```",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if fenced_match:
+        stripped = fenced_match.group(1).strip()
+
+    object_start = stripped.find("{")
+    object_end = stripped.rfind("}")
+    if object_start >= 0 and object_end > object_start:
+        return stripped[object_start : object_end + 1].strip()
+    return stripped
 
 
 def _extract_response_text(response_payload: dict[str, Any]) -> str:
@@ -719,6 +804,28 @@ def _currency_for_market(target_market: str) -> str:
     if "germany" in market or "france" in market or "eu" in market:
         return "EUR"
     return "USD"
+
+
+def _visual_text_language(language: str) -> str:
+    key = _market_key(language)
+    language_map = {
+        "ja": "Japanese",
+        "jp": "Japanese",
+        "ja_jp": "Japanese",
+        "japanese": "Japanese",
+        "zh": "Simplified Chinese suitable for Singapore",
+        "zh_cn": "Simplified Chinese suitable for Singapore",
+        "zh_hans": "Simplified Chinese suitable for Singapore",
+        "zh_sg": "Simplified Chinese suitable for Singapore",
+        "zh_hans_sg": "Simplified Chinese suitable for Singapore",
+        "chinese": "Simplified Chinese suitable for Singapore",
+        "en": "English",
+        "en_us": "English",
+        "en_gb": "English",
+        "en_au": "English",
+        "english": "English",
+    }
+    return language_map.get(key, language.strip() or "the target language")
 
 
 def _score(value: Any) -> float:

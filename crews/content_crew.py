@@ -1,5 +1,6 @@
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import yaml
@@ -113,6 +114,10 @@ class VisualAssetGenerationResult(BaseModel):
     prompt: str = Field(..., description="Image prompt used")
     revised_prompt: str | None = Field(None, description="Provider-revised prompt if available")
     content_type: str | None = Field(None, description="Generated asset content type")
+    duration_seconds: float | None = Field(None, ge=0, description="Image generation duration")
+    attempts: int | None = Field(None, ge=0, description="Image API attempts made")
+    last_status_code: int | None = Field(None, ge=100, le=599, description="Last image API HTTP status")
+    retryable_status: bool | None = Field(None, description="Whether the last image API status is retryable")
     error: str | None = Field(None, description="Generation error or skip reason")
 
 
@@ -125,6 +130,7 @@ class VisualAssetScore(BaseModel):
     cultural_fit_score: float = Field(..., ge=0, le=100)
     brand_voice_score: float = Field(..., ge=0, le=100)
     publish_readiness_score: float = Field(..., ge=0, le=100)
+    duration_seconds: float | None = Field(None, ge=0, description="Vision scoring duration")
     notes: str = Field(..., description="Vision scoring notes")
     error: str | None = Field(None, description="Scoring error or skip reason")
 
@@ -373,13 +379,24 @@ def _enrich_language_output(
                 or "artifacts/content_creation"
             ),
         )
-        image_result = image_tool._run(
-            prompt=localization_output["visual_spec"]["ai_image_prompt"],
-            output_slug=_asset_output_slug(inputs, language, target_market),
-            image_generation_count=int(inputs.get("image_generation_count") or 1),
-            image_quality=str(inputs.get("image_quality") or "auto"),
-            image_size=str(inputs.get("image_size") or "1024x1024"),
-        )
+        image_generation_lock = config_context.get("content_image_generation_lock")
+        if image_generation_lock is not None:
+            with image_generation_lock:
+                image_result = image_tool._run(
+                    prompt=localization_output["visual_spec"]["ai_image_prompt"],
+                    output_slug=_asset_output_slug(inputs, language, target_market),
+                    image_generation_count=int(inputs.get("image_generation_count") or 1),
+                    image_quality=str(inputs.get("image_quality") or "auto"),
+                    image_size=str(inputs.get("image_size") or "1024x1024"),
+                )
+        else:
+            image_result = image_tool._run(
+                prompt=localization_output["visual_spec"]["ai_image_prompt"],
+                output_slug=_asset_output_slug(inputs, language, target_market),
+                image_generation_count=int(inputs.get("image_generation_count") or 1),
+                image_quality=str(inputs.get("image_quality") or "auto"),
+                image_size=str(inputs.get("image_size") or "1024x1024"),
+            )
         visual_assets = _visual_assets_from_generation_result(image_result)
         scoring_tool = VisualAssetScoringTool(
             openai_api_key=_openai_api_key_for_images(config_context),
@@ -443,6 +460,14 @@ def _visual_assets_from_generation_result(image_result: dict[str, Any]) -> list[
                 "prompt": str(asset.get("prompt") or image_result.get("prompt") or ""),
                 "revised_prompt": asset.get("revised_prompt"),
                 "content_type": asset.get("content_type"),
+                "duration_seconds": asset.get("duration_seconds") or image_result.get("duration_seconds"),
+                "attempts": asset.get("attempts") or image_result.get("attempts"),
+                "last_status_code": asset.get("last_status_code") or image_result.get("last_status_code"),
+                "retryable_status": (
+                    asset.get("retryable_status")
+                    if asset.get("retryable_status") is not None
+                    else image_result.get("retryable_status")
+                ),
                 "error": asset.get("error"),
             }
             for asset in assets
@@ -457,6 +482,10 @@ def _visual_assets_from_generation_result(image_result: dict[str, Any]) -> list[
             "prompt": str(image_result.get("prompt") or ""),
             "revised_prompt": None,
             "content_type": None,
+            "duration_seconds": image_result.get("duration_seconds"),
+            "attempts": image_result.get("attempts"),
+            "last_status_code": image_result.get("last_status_code"),
+            "retryable_status": image_result.get("retryable_status"),
             "error": image_result.get("error"),
         }
     ]
@@ -482,6 +511,7 @@ def _score_visual_assets(
                     "cultural_fit_score": 0.0,
                     "brand_voice_score": 0.0,
                     "publish_readiness_score": 0.0,
+                    "duration_seconds": 0.0,
                     "notes": "No local asset path was available for vision scoring.",
                     "error": asset.get("error"),
                 }
@@ -616,6 +646,7 @@ def _production_ready_assets(
                 "asset_type": "visual_asset",
                 "asset_path": visual_asset.get("asset_path"),
                 "asset_url": visual_asset.get("asset_url"),
+                "duration_seconds": visual_asset.get("duration_seconds"),
                 "status": visual_asset.get("status"),
             }
         )
@@ -796,6 +827,10 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     if recorder:
         recorder.task_completed(0, len(task_names), "research_and_strategy", agents_config["research_strategy_lead"]["role"])
 
+    worker_config_context = dict(config_context)
+    if bool(normalized_inputs.get("generate_visual_assets")):
+        worker_config_context["content_image_generation_lock"] = Lock()
+
     outputs_by_language: dict[str, dict[str, Any]] = {}
     max_workers = min(_content_language_concurrency(config_context), len(languages))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -824,7 +859,7 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
                 strategy_context,
                 agents_config,
                 tasks_config,
-                dict(config_context),
+                dict(worker_config_context),
             )
             future_to_language[future] = (index, language)
 

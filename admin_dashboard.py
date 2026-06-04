@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,6 +14,8 @@ load_dotenv()
 
 DEFAULT_API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 DEFAULT_BEARER_TOKEN = os.getenv("API_BEARER_TOKEN", "")
+PROJECT_ROOT = Path(__file__).resolve().parent
+ARTIFACT_ROOT = (PROJECT_ROOT / "artifacts").resolve()
 
 WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
     "marketing": {
@@ -435,6 +439,224 @@ def _support_result_payload(latest_job: dict[str, Any]) -> dict[str, Any] | None
     return result if isinstance(result, dict) and "sentiment_analysis" in result else None
 
 
+def _content_result_payload(latest_job: dict[str, Any]) -> dict[str, Any] | None:
+    result = latest_job.get("result")
+    if not isinstance(result, dict):
+        return None
+    content_keys = {"visual_assets", "multimodal_outputs", "seo_outputs", "visual_asset_scores"}
+    return result if any(key in result for key in content_keys) else None
+
+
+def _safe_artifact_path(value: Any) -> tuple[Path | None, list[str]]:
+    diagnostics: list[str] = []
+    for label, path in _artifact_path_candidates(value):
+        is_artifact = _is_artifact_path(path)
+        exists = path.is_file()
+        diagnostics.append(f"{label}: {path} | exists={exists} | under_artifacts={is_artifact}")
+        if exists and is_artifact:
+            return path, diagnostics
+    return None, diagnostics
+
+
+def _artifact_path_candidates(value: Any) -> list[tuple[str, Path]]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+
+    candidates: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    def add(label: str, path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except (OSError, RuntimeError):
+            return
+        key = str(resolved).casefold()
+        if key not in seen:
+            seen.add(key)
+            candidates.append((label, resolved))
+
+    add("original", Path(raw))
+
+    normalized = raw.replace("\\", "/")
+    app_artifact_prefix = "/app/artifacts/"
+    if normalized.startswith(app_artifact_prefix):
+        relative_artifact_path = normalized.removeprefix(app_artifact_prefix)
+        add("mapped_from_container", ARTIFACT_ROOT / relative_artifact_path)
+    elif normalized.startswith("app/artifacts/"):
+        relative_artifact_path = normalized.removeprefix("app/artifacts/")
+        add("mapped_from_container", ARTIFACT_ROOT / relative_artifact_path)
+    elif normalized.startswith("artifacts/"):
+        relative_artifact_path = normalized.removeprefix("artifacts/")
+        add("mapped_from_relative_artifacts", ARTIFACT_ROOT / relative_artifact_path)
+    elif "/artifacts/" in normalized:
+        relative_artifact_path = normalized.split("/artifacts/", 1)[1]
+        add("mapped_from_embedded_artifacts", ARTIFACT_ROOT / relative_artifact_path)
+
+    return candidates
+
+
+def _is_artifact_path(path: Path) -> bool:
+    try:
+        return path.is_relative_to(ARTIFACT_ROOT)
+    except ValueError:
+        return False
+
+
+def _format_seconds(value: Any) -> str:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    return f"{seconds:.2f}s"
+
+
+def _score_for_asset(
+    scores: list[dict[str, Any]],
+    asset: dict[str, Any],
+) -> dict[str, Any] | None:
+    asset_path = asset.get("asset_path")
+    for score in scores:
+        if score.get("asset_path") == asset_path:
+            return _normalized_visual_score(score)
+    return None
+
+
+def _normalized_visual_score(score: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(score)
+    notes_payload = _json_object_from_text(score.get("notes"))
+    if not notes_payload:
+        return normalized
+
+    for score_key in (
+        "prompt_alignment_score",
+        "cultural_fit_score",
+        "brand_voice_score",
+        "publish_readiness_score",
+    ):
+        if score_key in notes_payload:
+            normalized[score_key] = _bounded_score(notes_payload[score_key])
+    if notes_payload.get("notes"):
+        normalized["notes"] = str(notes_payload["notes"]).strip()
+    return normalized
+
+
+def _json_object_from_text(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    json_text = _extract_json_object_text(value)
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_json_object_text(text: str) -> str:
+    stripped = text.strip()
+    fenced_match = re.search(
+        r"```(?:json)?\s*([\s\S]*?)\s*```",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if fenced_match:
+        stripped = fenced_match.group(1).strip()
+
+    object_start = stripped.find("{")
+    object_end = stripped.rfind("}")
+    if object_start >= 0 and object_end > object_start:
+        return stripped[object_start : object_end + 1].strip()
+    return stripped
+
+
+def _bounded_score(value: Any) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(score, 100.0))
+
+
+def _visual_asset_failure_note(asset: dict[str, Any]) -> str | None:
+    if not asset.get("error") and str(asset.get("status") or "").lower() != "failed":
+        return None
+
+    parts: list[str] = []
+    attempts = asset.get("attempts")
+    last_status_code = asset.get("last_status_code")
+    retryable_status = asset.get("retryable_status")
+    if attempts is not None:
+        parts.append(f"Attempts: {attempts}")
+    if last_status_code:
+        parts.append(f"Last HTTP status: {last_status_code}")
+    if retryable_status is True:
+        parts.append("Retryable upstream status; generation failed after retries.")
+    elif retryable_status is False and last_status_code:
+        parts.append("Non-retryable final status.")
+    if asset.get("error"):
+        parts.append(str(asset["error"]))
+    return "\n".join(parts) if parts else None
+
+
+def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
+    content_result = _content_result_payload(latest_job)
+    if not content_result:
+        return
+
+    visual_assets = [
+        asset
+        for asset in content_result.get("visual_assets", [])
+        if isinstance(asset, dict)
+    ]
+    scores = [
+        score
+        for score in content_result.get("visual_asset_scores", [])
+        if isinstance(score, dict)
+    ]
+
+    st.subheader("Content Visual Assets")
+    if not visual_assets:
+        st.info("No generated images yet. Set generate_visual_assets=true and provide an OpenAI key to generate visual assets.")
+        return
+
+    for index, asset in enumerate(visual_assets, start=1):
+        score = _score_for_asset(scores, asset)
+        st.markdown(f"**Asset {index}: {asset.get('status', 'unknown')}**")
+        media_col, meta_col = st.columns([2, 1])
+        safe_path, path_diagnostics = _safe_artifact_path(asset.get("asset_path"))
+        if safe_path:
+            media_col.image(str(safe_path), caption=safe_path.name, use_container_width=True)
+        elif asset.get("asset_url"):
+            media_col.image(str(asset["asset_url"]), caption="Remote generated asset", use_container_width=True)
+        else:
+            media_col.warning(asset.get("error") or "No local image file was returned.")
+            failure_note = _visual_asset_failure_note(asset)
+            if failure_note:
+                media_col.info(failure_note)
+            if path_diagnostics:
+                media_col.caption("Local image diagnostics")
+                media_col.code("\n".join(path_diagnostics))
+
+        meta_col.metric("Generation", _format_seconds(asset.get("duration_seconds")))
+        meta_col.metric("Model", asset.get("model") or "n/a")
+        if asset.get("attempts") is not None:
+            meta_col.metric("Attempts", str(asset.get("attempts")))
+        if asset.get("last_status_code"):
+            meta_col.metric("HTTP", str(asset.get("last_status_code")))
+        if score:
+            meta_col.metric("Scoring", _format_seconds(score.get("duration_seconds")))
+            meta_col.metric("Readiness", f"{float(score.get('publish_readiness_score') or 0):.0f}/100")
+        if asset.get("asset_path"):
+            meta_col.caption(str(asset["asset_path"]))
+        with st.expander(f"Prompt and scoring details {index}", expanded=False):
+            st.write(asset.get("prompt") or "No prompt returned.")
+            if score:
+                if score.get("notes"):
+                    st.caption(f"Scoring notes: {score['notes']}")
+                st.json(score)
+
+
 def _render_support_result_summary(latest_job: dict[str, Any]) -> None:
     support_result = _support_result_payload(latest_job)
     if not support_result:
@@ -677,6 +899,7 @@ def main() -> None:
             usage_cols[3].metric("Status", status)
             if latest_job.get("cache_hit"):
                 st.info(f"Served from cache: {latest_job.get('source_job_id')}")
+            _render_content_visual_assets(latest_job)
             _render_support_result_summary(latest_job)
             st.json(latest_job)
 
