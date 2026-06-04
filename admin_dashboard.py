@@ -28,6 +28,12 @@ WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
         "target_markets": "Germany, Japan, Canada",
         "target_languages": ["de", "ja", "en"],
         "platforms": ["Instagram", "LinkedIn", "X"],
+        "brand_voice": "Premium, practical, sustainability-minded, and culturally respectful",
+        "primary_keywords": ["thermal activewear", "winter training layer", "recycled sportswear"],
+        "generate_visual_assets": False,
+        "image_generation_count": 1,
+        "image_quality": "auto",
+        "image_size": "1024x1024",
     },
     "support": {
         "customer": "",
@@ -84,6 +90,11 @@ PROGRESS_BY_EVENT = {
 
 ACTIVE_STATUSES = {"pending", "running"}
 WORKFLOW_PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
+    "content": {
+        "content_image_model": "gpt-image-2",
+        "content_image_scoring_model": "gpt-4o-mini",
+        "content_image_artifact_dir": "artifacts/content_creation",
+    },
     "support": {
         "llm_profile": "openrouter_gpt4o_mini",
         "gmail_access_token": "",

@@ -2,14 +2,19 @@ research_and_strategy:
   description: >
     Research trending topics, competitor content, search intent, audience needs, and platform context
     for {product_category} in {target_markets}. Use that research to produce a compact content blueprint
-    for {subject}, including recommended angles, article structure, SEO keyword themes, localization notes,
-    and platform distribution guidance for {target_languages} and {platforms}. Keep guidance clearly separated
-    by requested language and market so downstream language-specific generation can use only the relevant section.
+    for {subject}, including recommended angles, article structure, multi-engine SEO keyword themes,
+    visual localization cues, cultural risk notes, and platform distribution guidance for
+    {target_languages} and {platforms}. Keep guidance clearly separated by requested language and
+    market so downstream language-specific generation can use only the relevant section.
+    Brand voice guidance:
+    {brand_voice_summary}
+    Primary keyword seeds:
+    {primary_keywords_summary}
     Ground the blueprint in these user-provided product features when available:
     {product_features_summary}
     Treat product features as first-party input. Use them to shape article angles, examples, CTAs, and benefit-led
     messaging, but do not exaggerate proof points beyond what the user provided.
-  expected_output: "A concise research-backed content blueprint with market insights, SEO themes, localization guidance, article structure, and platform distribution notes."
+  expected_output: "A concise research-backed content blueprint with market insights, multi-engine SEO themes, visual localization guidance, article structure, cultural risk notes, and platform distribution notes."
 
 content_creation_and_qa:
   description: >
@@ -24,6 +29,10 @@ content_creation_and_qa:
     or cultures unless they are explicitly relevant to this target language and market scope.
     Product features to incorporate where relevant:
     {product_features_summary}
+    Brand voice to maintain:
+    {brand_voice_summary}
+    Primary keyword seeds to consider:
+    {primary_keywords_summary}
     Make the article concrete by connecting these features to practical user needs, usage scenarios, and CTAs.
     If no product features are provided, avoid inventing specific capabilities.
     The article, social posts, SEO keywords, and compliance notes must be written in {target_language};
@@ -33,4 +42,7 @@ content_creation_and_qa:
     for a specific claim, use cautious generic language such as "some brands", "many consumers",
     or "consider checking certified materials" rather than presenting it as factual local market data.
     Do not output placeholder brand names such as Brand A, Marca A, or [brand name].
-  expected_output: "A final structured single-language content package with localized_article, social_media_posts, seo_keywords, and compliance_notes."
+    If you include multimodal, SEO metadata, cultural risk, or visual asset fields, treat them as
+    planning metadata only. Do not claim that an image was generated or scored; external image
+    generation and visual scoring are controlled by the workflow after your task completes.
+  expected_output: "A final structured single-language content package with localized_article, social_media_posts, seo_keywords, compliance_notes, and optional multimodal/SEO/compliance planning metadata."

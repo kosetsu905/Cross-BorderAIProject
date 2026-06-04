@@ -20,6 +20,9 @@ RUNTIME_CONFIG_KEYS = {
     "llm_base_url",
     "llm_disable_reasoning",
     "llm_profiles",
+    "content_image_model",
+    "content_image_scoring_model",
+    "content_image_artifact_dir",
     "support_qa_mode",
     "support_llm_profile",
     "openai_api_key",
@@ -141,6 +144,9 @@ class RuntimeConfig:
     llm_base_url: str | None = None
     llm_disable_reasoning: bool = False
     llm_profiles: dict[str, LLMProfileConfig] = dataclass_field(default_factory=dict)
+    content_image_model: str = "gpt-image-2"
+    content_image_scoring_model: str = "gpt-4o-mini"
+    content_image_artifact_dir: str = "artifacts/content_creation"
     support_qa_mode: str = "full_llm"
     support_llm_profile: str | None = None
     openai_api_key: str | None = None
@@ -379,6 +385,12 @@ def load_runtime_config() -> RuntimeConfig:
         llm_base_url=llm_base_url,
         llm_disable_reasoning=_bool_env("LLM_DISABLE_REASONING", False),
         llm_profiles=llm_profiles,
+        content_image_model=os.getenv("CONTENT_IMAGE_MODEL", "gpt-image-2"),
+        content_image_scoring_model=os.getenv("CONTENT_IMAGE_SCORING_MODEL", "gpt-4o-mini"),
+        content_image_artifact_dir=os.getenv(
+            "CONTENT_IMAGE_ARTIFACT_DIR",
+            "artifacts/content_creation",
+        ),
         support_qa_mode=_support_qa_mode_env(),
         support_llm_profile=support_llm_profile,
         openai_api_key=os.getenv("OPENAI_API_KEY"),

@@ -5,6 +5,7 @@ import unittest
 OUTPUT_PYDANTIC_MODELS = [
     ("crews.analytics_crew", "AnalyticsReportOutput"),
     ("crews.bizdev_crew", "BizDevOutput"),
+    ("crews.content_crew", "ContentOutput"),
     ("crews.content_crew", "PerLanguageContentOutput"),
     ("crews.marketing_crew", "PerMarketCampaignOutput"),
     ("crews.sales_improvement_crew", "SalesImprovementOutput"),

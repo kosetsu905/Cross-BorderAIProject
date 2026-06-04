@@ -208,6 +208,9 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 CONTENT_LANGUAGE_CONCURRENCY=4
+CONTENT_IMAGE_MODEL=gpt-image-2
+CONTENT_IMAGE_SCORING_MODEL=gpt-4o-mini
+CONTENT_IMAGE_ARTIFACT_DIR=artifacts/content_creation
 MARKETING_MARKET_CONCURRENCY=4
 SERPER_DEEP_READ_ENABLED=false
 SERPER_DEEP_READ_MAX_PAGES=3
@@ -222,6 +225,7 @@ Runtime configuration and secrets are centralized in `runtime_config.py`. FastAP
 If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
+Content Creation also produces multimodal localization specs, video storyboard guidance, multi-engine SEO metadata, hreflang tags, JSON-LD, and cultural risk notes. Set request input `generate_visual_assets=true` to call the OpenAI Image API; generated files are stored under `CONTENT_IMAGE_ARTIFACT_DIR`, which defaults to ignored `artifacts/content_creation`. Without an OpenAI API key, the workflow still completes and marks image generation as `skipped_missing_credentials`.
 Marketing runs one shared strategy/channel-planning task and then generates market-specific creative/compliance packages in parallel. `MARKETING_MARKET_CONCURRENCY` controls the maximum number of market workers.
 Analytics competitive research can optionally deep-read Serper result URLs. When `SERPER_DEEP_READ_ENABLED=true`, `CompetitorBenchmarkTool` reads up to `SERPER_DEEP_READ_MAX_PAGES` pages per market with `SERPER_DEEP_READ_CONCURRENCY` workers and passes source excerpts to CrewAI.
 Customer Service keeps external Serper search off by default for faster support responses. Set `SUPPORT_SERPER_PRE_SALES_ENABLED=true`, `SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED=true`, or `SUPPORT_SERPER_POST_SALES_ENABLED=true` together with `SERPER_API_KEY` to enable live search only for that stage.
@@ -345,6 +349,9 @@ Example shape:
     "amazon_sp_api_access_token": "request_scoped_amazon_access_token",
     "amazon_marketplace_ids": "ATVPDKIKX0DER",
     "serper_api_key": "request_scoped_serper_key",
+    "content_image_model": "gpt-image-2",
+    "content_image_scoring_model": "gpt-4o-mini",
+    "content_image_artifact_dir": "artifacts/content_creation",
     "support_serper_pre_sales_enabled": false,
     "support_serper_order_fulfillment_enabled": false,
     "support_serper_post_sales_enabled": false,
@@ -381,7 +388,7 @@ Gmail and WhatsApp support can also use the omni-channel inbox flow instead of w
 These checks do not run CrewAI jobs and should not consume OpenAI API tokens.
 
 ```powershell
-python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\support_inbox.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\custom\support_search_tools.py .\tools\custom\whatsapp_tools.py .\tools\integrations\cross_platform_ads_tools.py
+python -m py_compile .\main.py .\models.py .\runtime_config.py .\database.py .\db_models.py .\job_store.py .\orchestrator.py .\support_inbox.py .\api\routes.py .\celery_worker\celery_app.py .\celery_worker\tasks.py .\crews\analytics_crew.py .\crews\bizdev_crew.py .\crews\content_crew.py .\crews\marketing_crew.py .\crews\scheduler_crew.py .\crews\sales_improvement_crew.py .\crews\support_crew.py .\tools\custom\analytics_tools.py .\tools\custom\bizdev_tools.py .\tools\custom\content_tools.py .\tools\custom\gmail_tools.py .\tools\custom\marketing_tools.py .\tools\custom\sales_tools.py .\tools\custom\scheduler_tools.py .\tools\custom\support_automation_tools.py .\tools\custom\support_search_tools.py .\tools\custom\whatsapp_tools.py .\tools\integrations\cross_platform_ads_tools.py
 python -m pip check
 python -c "from main import app, orchestrator; print(app.title); print([w.value for w in orchestrator.registered_workflows])"
 ```
@@ -394,7 +401,7 @@ Required `inputs` by workflow:
 
 ```text
 marketing: product_category, product_usp, target_markets, budget
-content: subject, product_category, target_markets, target_languages, platforms
+content: subject, product_category, target_markets, target_languages, platforms (optional: product_features, brand_voice, primary_keywords, generate_visual_assets, image_generation_count, image_quality, image_size)
 support: customer, person, inquiry (optional: ticket_id, customer_email, phone_number, inquiry_text, order_id, item_sku, return_reason, order_history, detected_language, channel, channel_thread_id, channel_message_id, sender_profile, attachments, conversation_history)
 analytics: product_category, target_markets, date_range, currency
 bizdev: product_category, partnership_type, target_markets, target_languages, key_decision_maker_roles
@@ -864,6 +871,7 @@ docker compose up -d --force-recreate fastapi celery_worker
 This request starts the Content Creation CrewAI workflow and may consume OpenAI API tokens.
 For multilingual inputs, the workflow runs research/strategy once, then generates each requested language in parallel up to `CONTENT_LANGUAGE_CONCURRENCY`.
 Use `product_features` when you want the article to focus on your actual product instead of broad category-level trends.
+Use `brand_voice` and `primary_keywords` to steer localization and SEO metadata. `generate_visual_assets` defaults to `false`; when set to `true`, the workflow calls the OpenAI Image API, saves generated files under `artifacts/content_creation`, and scores local assets with a vision-capable model. If no OpenAI API key is configured, the workflow returns visual prompts/specs and marks image generation as skipped instead of failing the content job.
 
 ```powershell
 $body = @{
@@ -875,6 +883,12 @@ $body = @{
     target_markets = "Germany, Japan, Canada"
     target_languages = @("de", "ja", "en")
     platforms = @("Instagram", "LinkedIn", "X")
+    brand_voice = "Premium, practical, sustainability-minded, and culturally respectful"
+    primary_keywords = @("thermal activewear", "winter training layer", "recycled sportswear")
+    generate_visual_assets = $false
+    image_generation_count = 1
+    image_quality = "auto"
+    image_size = "1024x1024"
   }
 } | ConvertTo-Json -Depth 5
 

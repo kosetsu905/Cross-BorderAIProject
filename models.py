@@ -53,6 +53,34 @@ class ContentInputs(StrictInputModel):
     target_markets: str = Field(..., min_length=1)
     target_languages: list[str] = Field(..., min_length=1)
     platforms: list[str] = Field(..., min_length=1)
+    brand_voice: str | None = Field(
+        None,
+        description="Optional brand voice guidance for localized content and visual assets.",
+    )
+    primary_keywords: list[str] | None = Field(
+        None,
+        description="Optional seed SEO keywords for multi-engine metadata generation.",
+    )
+    generate_visual_assets: bool = Field(
+        False,
+        description="When true, Content Creation may call the configured OpenAI Image API.",
+    )
+    image_generation_count: int = Field(
+        1,
+        ge=1,
+        le=4,
+        description="Number of images to generate per language/market when visual generation is enabled.",
+    )
+    image_quality: str = Field(
+        "auto",
+        min_length=1,
+        description="OpenAI image generation quality setting, such as auto, low, medium, or high.",
+    )
+    image_size: str = Field(
+        "1024x1024",
+        min_length=1,
+        description="OpenAI image generation size setting, such as 1024x1024.",
+    )
 
 
 class SupportInputs(StrictInputModel):
@@ -122,6 +150,9 @@ class ProviderCredentials(StrictInputModel):
     llm_model_name: str | None = None
     llm_base_url: str | None = None
     llm_disable_reasoning: bool | None = None
+    content_image_model: str | None = None
+    content_image_scoring_model: str | None = None
+    content_image_artifact_dir: str | None = None
     serper_api_key: str | None = None
     support_serper_pre_sales_enabled: bool | None = None
     support_serper_order_fulfillment_enabled: bool | None = None
