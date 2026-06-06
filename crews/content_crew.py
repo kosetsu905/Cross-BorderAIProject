@@ -1,4 +1,7 @@
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -22,6 +25,38 @@ from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRES
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "content"
+CONTENT_PROGRESS_TASK_INDEX_KEY = "_content_progress_task_index"
+CONTENT_PROGRESS_TOTAL_TASKS_KEY = "_content_progress_total_tasks"
+CONTENT_STAGE_PROGRESS_OFFSETS = {
+    "content_generation": 0.12,
+    "visual_localization": 0.35,
+    "seo_metadata": 0.48,
+    "cultural_compliance": 0.62,
+    "image_generation": 0.76,
+    "visual_scoring": 0.9,
+    "content_assembly": 0.98,
+}
+CONTENT_PARTIAL_SECRET_KEYS = {
+    "api_key",
+    "authorization",
+    "b64_json",
+    "client_secret",
+    "credential",
+    "openai_api_key",
+    "refresh_token",
+    "secret",
+    "token",
+}
+CONTENT_PARTIAL_MAX_TEXT_LENGTH = 20000
+CONTENT_ARTICLE_MAX_CHARS = 3500
+CONTENT_TITLE_MAX_CHARS = 160
+CONTENT_SOCIAL_POST_MAX_CHARS = 600
+CONTENT_COMPLIANCE_NOTES_MAX_CHARS = 1000
+CONTENT_SEO_KEYWORDS_MAX_COUNT = 12
+CONTENT_GENERATION_MAX_TOKENS = 4096
+CONTENT_GENERATION_AGENT_MAX_RETRY_LIMIT = 1
+CONTENT_GENERATION_AGENT_MAX_ITER = 3
+CONTENT_GENERATION_AGENT_MAX_EXECUTION_SECONDS = 240
 
 
 class SocialMediaPost(BaseModel):
@@ -248,6 +283,41 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
     return bool(config_context.get("crewai_memory_enabled"))
 
 
+def _positive_int_config(
+    config_context: dict[str, Any],
+    key: str,
+    default: int,
+) -> int:
+    value = config_context.get(key)
+    if value in (None, ""):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _content_generation_llm_context(config_context: dict[str, Any]) -> dict[str, Any]:
+    context = dict(config_context)
+    has_explicit_limit = any(
+        context.get(key) not in (None, "")
+        for key in (
+            "llm_max_tokens",
+            "max_tokens",
+            "llm_max_completion_tokens",
+            "max_completion_tokens",
+        )
+    )
+    if not has_explicit_limit:
+        context["llm_max_tokens"] = _positive_int_config(
+            config_context,
+            "content_generation_max_tokens",
+            CONTENT_GENERATION_MAX_TOKENS,
+        )
+    return context
+
+
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return serialize_crew_result(result)
 
@@ -259,6 +329,11 @@ def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     )
     normalized["brand_voice_summary"] = _brand_voice(normalized)
     normalized["primary_keywords_summary"] = ", ".join(_primary_keywords(normalized))
+    normalized["content_article_max_chars"] = CONTENT_ARTICLE_MAX_CHARS
+    normalized["content_title_max_chars"] = CONTENT_TITLE_MAX_CHARS
+    normalized["content_social_post_max_chars"] = CONTENT_SOCIAL_POST_MAX_CHARS
+    normalized["content_compliance_notes_max_chars"] = CONTENT_COMPLIANCE_NOTES_MAX_CHARS
+    normalized["content_seo_keywords_max_count"] = CONTENT_SEO_KEYWORDS_MAX_COUNT
     return normalized
 
 
@@ -349,23 +424,142 @@ def _enrich_language_output(
         if str(platform).strip()
     ]
 
-    localization_output = MultimodalLocalizationTool()._run(
-        product=product,
-        target_market=target_market,
+    stage_started_at = time.monotonic()
+    _emit_content_stage(
+        config_context,
+        "visual_localization",
+        "started",
+        f"Building visual localization spec for {language}.",
         language=language,
-        brand_voice=brand_voice,
-        platforms=platforms,
+        target_market=target_market,
     )
-    seo_output = MultiEngineSEOOptimizerTool()._run(
-        product=product,
-        target_market=target_market,
+    try:
+        localization_output = MultimodalLocalizationTool()._run(
+            product=product,
+            target_market=target_market,
+            language=language,
+            brand_voice=brand_voice,
+            platforms=platforms,
+        )
+    except Exception as exc:
+        _emit_content_stage(
+            config_context,
+            "visual_localization",
+            "failed",
+            f"Visual localization failed for {language}.",
+            language=language,
+            target_market=target_market,
+            duration_seconds=time.monotonic() - stage_started_at,
+            error_summary=_error_summary(exc),
+        )
+        raise
+    _emit_content_stage(
+        config_context,
+        "visual_localization",
+        "completed",
+        f"Visual localization spec ready for {language}.",
         language=language,
-        primary_keywords=primary_keywords,
+        target_market=target_market,
+        duration_seconds=time.monotonic() - stage_started_at,
     )
-    compliance_output = CulturalComplianceCheckerTool()._run(
-        content_summary=_content_summary(output, localization_output, seo_output),
-        target_market=target_market,
+    _emit_content_partial(
+        config_context,
+        "visual_localization",
+        "visual_brief",
+        _visual_localization_preview(localization_output),
         language=language,
+        target_market=target_market,
+    )
+
+    stage_started_at = time.monotonic()
+    _emit_content_stage(
+        config_context,
+        "seo_metadata",
+        "started",
+        f"Building SEO metadata for {language}.",
+        language=language,
+        target_market=target_market,
+    )
+    try:
+        seo_output = MultiEngineSEOOptimizerTool()._run(
+            product=product,
+            target_market=target_market,
+            language=language,
+            primary_keywords=primary_keywords,
+        )
+    except Exception as exc:
+        _emit_content_stage(
+            config_context,
+            "seo_metadata",
+            "failed",
+            f"SEO metadata failed for {language}.",
+            language=language,
+            target_market=target_market,
+            duration_seconds=time.monotonic() - stage_started_at,
+            error_summary=_error_summary(exc),
+        )
+        raise
+    _emit_content_stage(
+        config_context,
+        "seo_metadata",
+        "completed",
+        f"SEO metadata ready for {language}.",
+        language=language,
+        target_market=target_market,
+        duration_seconds=time.monotonic() - stage_started_at,
+    )
+    _emit_content_partial(
+        config_context,
+        "seo_metadata",
+        "seo_metadata",
+        seo_output,
+        language=language,
+        target_market=target_market,
+    )
+
+    stage_started_at = time.monotonic()
+    _emit_content_stage(
+        config_context,
+        "cultural_compliance",
+        "started",
+        f"Checking cultural compliance for {language}.",
+        language=language,
+        target_market=target_market,
+    )
+    try:
+        compliance_output = CulturalComplianceCheckerTool()._run(
+            content_summary=_content_summary(output, localization_output, seo_output),
+            target_market=target_market,
+            language=language,
+        )
+    except Exception as exc:
+        _emit_content_stage(
+            config_context,
+            "cultural_compliance",
+            "failed",
+            f"Cultural compliance failed for {language}.",
+            language=language,
+            target_market=target_market,
+            duration_seconds=time.monotonic() - stage_started_at,
+            error_summary=_error_summary(exc),
+        )
+        raise
+    _emit_content_stage(
+        config_context,
+        "cultural_compliance",
+        "completed",
+        f"Cultural compliance check ready for {language}.",
+        language=language,
+        target_market=target_market,
+        duration_seconds=time.monotonic() - stage_started_at,
+    )
+    _emit_content_partial(
+        config_context,
+        "cultural_compliance",
+        "compliance",
+        compliance_output,
+        language=language,
+        target_market=target_market,
     )
 
     visual_assets: list[dict[str, Any]] = []
@@ -380,8 +574,26 @@ def _enrich_language_output(
             ),
         )
         image_generation_lock = config_context.get("content_image_generation_lock")
-        if image_generation_lock is not None:
-            with image_generation_lock:
+        stage_started_at = time.monotonic()
+        _emit_content_stage(
+            config_context,
+            "image_generation",
+            "started",
+            f"Generating visual assets for {language}.",
+            language=language,
+            target_market=target_market,
+        )
+        try:
+            if image_generation_lock is not None:
+                with image_generation_lock:
+                    image_result = image_tool._run(
+                        prompt=localization_output["visual_spec"]["ai_image_prompt"],
+                        output_slug=_asset_output_slug(inputs, language, target_market),
+                        image_generation_count=int(inputs.get("image_generation_count") or 1),
+                        image_quality=str(inputs.get("image_quality") or "auto"),
+                        image_size=str(inputs.get("image_size") or "1024x1024"),
+                    )
+            else:
                 image_result = image_tool._run(
                     prompt=localization_output["visual_spec"]["ai_image_prompt"],
                     output_slug=_asset_output_slug(inputs, language, target_market),
@@ -389,15 +601,45 @@ def _enrich_language_output(
                     image_quality=str(inputs.get("image_quality") or "auto"),
                     image_size=str(inputs.get("image_size") or "1024x1024"),
                 )
-        else:
-            image_result = image_tool._run(
-                prompt=localization_output["visual_spec"]["ai_image_prompt"],
-                output_slug=_asset_output_slug(inputs, language, target_market),
-                image_generation_count=int(inputs.get("image_generation_count") or 1),
-                image_quality=str(inputs.get("image_quality") or "auto"),
-                image_size=str(inputs.get("image_size") or "1024x1024"),
+        except Exception as exc:
+            _emit_content_stage(
+                config_context,
+                "image_generation",
+                "failed",
+                f"Image generation failed for {language}.",
+                language=language,
+                target_market=target_market,
+                duration_seconds=time.monotonic() - stage_started_at,
+                asset_count=0,
+                error_summary=_error_summary(exc),
             )
+            raise
         visual_assets = _visual_assets_from_generation_result(image_result)
+        image_status = str(image_result.get("status") or "completed")
+        stage_status = "completed"
+        if image_status.startswith("skipped"):
+            stage_status = "skipped"
+        elif image_status == "failed":
+            stage_status = "failed"
+        _emit_content_stage(
+            config_context,
+            "image_generation",
+            stage_status,
+            f"Image generation {stage_status} for {language}.",
+            language=language,
+            target_market=target_market,
+            duration_seconds=time.monotonic() - stage_started_at,
+            asset_count=len(visual_assets),
+            error_summary=_error_summary(image_result.get("error")),
+        )
+        _emit_content_partial(
+            config_context,
+            "image_generation",
+            "images",
+            _image_generation_preview(image_result, visual_assets),
+            language=language,
+            target_market=target_market,
+        )
         scoring_tool = VisualAssetScoringTool(
             openai_api_key=_openai_api_key_for_images(config_context),
             scoring_model=str(
@@ -406,13 +648,86 @@ def _enrich_language_output(
                 or "gpt-4o-mini"
             ),
         )
-        visual_asset_scores = _score_visual_assets(
-            scoring_tool,
-            visual_assets,
-            localization_output["visual_spec"]["ai_image_prompt"],
-            target_market,
-            language,
-            brand_voice,
+        stage_started_at = time.monotonic()
+        _emit_content_stage(
+            config_context,
+            "visual_scoring",
+            "started",
+            f"Scoring visual assets for {language}.",
+            language=language,
+            target_market=target_market,
+            asset_count=len(visual_assets),
+        )
+        try:
+            visual_asset_scores = _score_visual_assets(
+                scoring_tool,
+                visual_assets,
+                localization_output["visual_spec"]["ai_image_prompt"],
+                target_market,
+                language,
+                brand_voice,
+            )
+        except Exception as exc:
+            _emit_content_stage(
+                config_context,
+                "visual_scoring",
+                "failed",
+                f"Visual scoring failed for {language}.",
+                language=language,
+                target_market=target_market,
+                duration_seconds=time.monotonic() - stage_started_at,
+                asset_count=len(visual_assets),
+                score_count=0,
+                error_summary=_error_summary(exc),
+            )
+            raise
+        score_statuses = {
+            str(score.get("status") or "")
+            for score in visual_asset_scores
+            if isinstance(score, dict)
+        }
+        score_stage_status = "completed"
+        if score_statuses and all(status.startswith("skipped") for status in score_statuses):
+            score_stage_status = "skipped"
+        elif any(status == "failed" for status in score_statuses):
+            score_stage_status = "failed"
+        score_error = next(
+            (
+                str(score.get("error"))
+                for score in visual_asset_scores
+                if isinstance(score, dict) and score.get("error")
+            ),
+            None,
+        )
+        _emit_content_stage(
+            config_context,
+            "visual_scoring",
+            score_stage_status,
+            f"Visual scoring {score_stage_status} for {language}.",
+            language=language,
+            target_market=target_market,
+            duration_seconds=time.monotonic() - stage_started_at,
+            asset_count=len(visual_assets),
+            score_count=len(visual_asset_scores),
+            error_summary=_error_summary(score_error),
+        )
+    else:
+        _emit_content_stage(
+            config_context,
+            "image_generation",
+            "skipped",
+            f"Visual asset generation disabled for {language}.",
+            language=language,
+            target_market=target_market,
+            asset_count=0,
+        )
+        _emit_content_partial(
+            config_context,
+            "image_generation",
+            "images",
+            {"status": "skipped", "assets": [], "error_summary": None},
+            language=language,
+            target_market=target_market,
         )
 
     enriched = dict(output)
@@ -446,6 +761,91 @@ def _content_summary(
             str(seo_output)[:1000],
         ]
     )
+
+
+def _content_generation_preview(output: dict[str, Any]) -> dict[str, Any]:
+    article = output.get("localized_article")
+    social_posts = output.get("social_media_posts")
+    return {
+        "status": str(output.get("status") or "completed"),
+        "localized_article": article if isinstance(article, dict) else None,
+        "social_media_posts": social_posts if isinstance(social_posts, list) else [],
+        "seo_keywords": output.get("seo_keywords") if isinstance(output.get("seo_keywords"), list) else [],
+        "compliance_notes": str(output.get("compliance_notes") or "").strip(),
+    }
+
+
+def _failed_content_generation_preview(
+    language: str,
+    target_market: str,
+    error: Exception | str | None,
+) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "language": language,
+        "target_market": target_market,
+        "error_summary": _error_summary(error) or "Content generation failed.",
+        "retry_available": True,
+    }
+
+
+def _failed_language_output(
+    language: str,
+    target_market: str,
+    error: Exception | str | None,
+) -> dict[str, Any]:
+    error_summary = _error_summary(error) or "Content generation failed."
+    return {
+        "status": "failed",
+        "language": language,
+        "target_market": target_market,
+        "localized_article": None,
+        "social_media_posts": [],
+        "seo_keywords": [],
+        "compliance_notes": f"Generation failed for {language} ({target_market}): {error_summary}",
+        "visual_assets": [],
+        "visual_asset_scores": [],
+        "error_summary": error_summary,
+    }
+
+
+def _visual_localization_preview(localization_output: dict[str, Any]) -> dict[str, Any]:
+    visual_spec = localization_output.get("visual_spec")
+    return {
+        "visual_spec": visual_spec if isinstance(visual_spec, dict) else {},
+        "image_text_consistency_check": localization_output.get("image_text_consistency_check"),
+        "recommended_platforms": localization_output.get("recommended_platforms") or [],
+    }
+
+
+def _image_generation_preview(
+    image_result: dict[str, Any],
+    visual_assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "status": image_result.get("status"),
+        "assets": [
+            {
+                "status": asset.get("status"),
+                "asset_path": asset.get("asset_path"),
+                "asset_url": asset.get("asset_url"),
+                "model": asset.get("model"),
+                "content_type": asset.get("content_type"),
+                "duration_seconds": asset.get("duration_seconds"),
+                "attempts": asset.get("attempts"),
+                "last_status_code": asset.get("last_status_code"),
+                "retryable_status": asset.get("retryable_status"),
+                "error_summary": _error_summary(asset.get("error")),
+            }
+            for asset in visual_assets
+            if isinstance(asset, dict)
+        ],
+        "duration_seconds": image_result.get("duration_seconds"),
+        "attempts": image_result.get("attempts"),
+        "last_status_code": image_result.get("last_status_code"),
+        "retryable_status": image_result.get("retryable_status"),
+        "error_summary": _error_summary(image_result.get("error")),
+    }
 
 
 def _visual_assets_from_generation_result(image_result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -539,9 +939,155 @@ def _content_language_concurrency(config_context: dict[str, Any]) -> int:
 
 def _progress_recorder(config_context: dict[str, Any]) -> Any | None:
     recorder = config_context.get(PROGRESS_CONTEXT_KEY)
-    if all(hasattr(recorder, name) for name in ("emit_plan", "task_started", "task_completed")):
+    if all(
+        hasattr(recorder, name)
+        for name in ("emit_plan", "task_started", "task_completed", "emit_progress")
+    ):
         return recorder
     return None
+
+
+def _content_stage_progress(config_context: dict[str, Any], stage: str, status: str) -> float:
+    total_tasks = config_context.get(CONTENT_PROGRESS_TOTAL_TASKS_KEY)
+    task_index = config_context.get(CONTENT_PROGRESS_TASK_INDEX_KEY)
+    try:
+        total = max(int(total_tasks), 1)
+        index = max(int(task_index), 0)
+    except (TypeError, ValueError):
+        if stage == "content_assembly":
+            return PROGRESS_START + PROGRESS_SPAN
+        return PROGRESS_START
+
+    stage_offset = CONTENT_STAGE_PROGRESS_OFFSETS.get(stage, 0.5)
+    if status == "started":
+        stage_offset = max(stage_offset - 0.08, 0.0)
+    task_progress = PROGRESS_START + (PROGRESS_SPAN * index / total)
+    task_span = PROGRESS_SPAN / total
+    return min(PROGRESS_START + PROGRESS_SPAN, task_progress + (task_span * stage_offset))
+
+
+def _error_summary(error: Exception | str | None) -> str | None:
+    if error is None:
+        return None
+    summary = str(error).strip()
+    if not summary:
+        return None
+    summary = re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "sk-***", summary)
+    summary = re.sub(
+        r"(?i)(api[_\s-]?key|authorization|token|secret)(\s*[:=]\s*)\S+",
+        r"\1\2***",
+        summary,
+    )
+    lowered = summary.lower()
+    if "length limit was reached" in lowered or "completion_tokens=16384" in lowered:
+        return "Output exceeded generation limit; content was truncated before valid JSON could be parsed."
+    if "<!doctype html" in lowered or "<html" in lowered:
+        if "520" in summary:
+            return "HTTP 520: upstream image API returned an HTML error page."
+        return "Upstream image API returned an HTML error page."
+    return summary[:240]
+
+
+def _utc_iso_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_sensitive_preview_key(key: Any) -> bool:
+    normalized_key = str(key or "").lower()
+    return any(secret_key in normalized_key for secret_key in CONTENT_PARTIAL_SECRET_KEYS)
+
+
+def _safe_preview_content(value: Any) -> Any:
+    if isinstance(value, dict):
+        safe_payload: dict[str, Any] = {}
+        for key, item in value.items():
+            if _is_sensitive_preview_key(key):
+                continue
+            safe_payload[str(key)] = _safe_preview_content(item)
+        return safe_payload
+    if isinstance(value, list):
+        return [_safe_preview_content(item) for item in value]
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if "<!doctype html" in cleaned.lower() or "<html" in cleaned.lower():
+            return _error_summary(cleaned)
+        if len(cleaned) > CONTENT_PARTIAL_MAX_TEXT_LENGTH:
+            return f"{cleaned[:CONTENT_PARTIAL_MAX_TEXT_LENGTH]}..."
+        return cleaned
+    return value
+
+
+def _emit_content_partial(
+    config_context: dict[str, Any],
+    stage: str,
+    preview_type: str,
+    content: dict[str, Any],
+    *,
+    language: str | None = None,
+    target_market: str | None = None,
+) -> None:
+    recorder = _progress_recorder(config_context)
+    if not recorder or not hasattr(recorder, "job_store") or not hasattr(recorder, "job_id"):
+        return
+
+    payload: dict[str, Any] = {
+        "scope": "content",
+        "stage": stage,
+        "language": language,
+        "target_market": target_market,
+        "preview_type": preview_type,
+        "content": _safe_preview_content(content),
+        "created_at": _utc_iso_timestamp(),
+    }
+    recorder.job_store.log_event(
+        recorder.job_id,
+        "content_partial",
+        f"Content preview updated: {preview_type}.",
+        payload,
+    )
+
+
+def _emit_content_stage(
+    config_context: dict[str, Any],
+    stage: str,
+    status: str,
+    message: str,
+    *,
+    language: str | None = None,
+    target_market: str | None = None,
+    duration_seconds: float | None = None,
+    asset_count: int | None = None,
+    score_count: int | None = None,
+    error_summary: str | None = None,
+) -> None:
+    recorder = _progress_recorder(config_context)
+    if not recorder:
+        return
+
+    payload: dict[str, Any] = {
+        "scope": "content",
+        "stage": stage,
+        "status": status,
+    }
+    if language:
+        payload["language"] = language
+    if target_market:
+        payload["target_market"] = target_market
+    if duration_seconds is not None:
+        payload["duration_seconds"] = round(float(duration_seconds), 3)
+    if asset_count is not None:
+        payload["asset_count"] = asset_count
+    if score_count is not None:
+        payload["score_count"] = score_count
+    if error_summary:
+        payload["error_summary"] = error_summary
+
+    recorder.emit_progress(
+        "content_stage",
+        message,
+        _content_stage_progress(config_context, stage, status),
+        payload,
+    )
 
 
 def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -755,11 +1301,14 @@ def _run_language_generation(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
-    llm = build_llm(config_context)
+    llm = build_llm(_content_generation_llm_context(config_context))
     multilingual_editor = Agent(
         config=agents_config["multilingual_editor"],
         llm=llm,
         tools=_build_creation_tools(config_context),
+        max_retry_limit=CONTENT_GENERATION_AGENT_MAX_RETRY_LIMIT,
+        max_iter=CONTENT_GENERATION_AGENT_MAX_ITER,
+        max_execution_time=CONTENT_GENERATION_AGENT_MAX_EXECUTION_SECONDS,
     )
     creation_qa_task = Task(
         config=tasks_config["content_creation_and_qa"],
@@ -772,20 +1321,69 @@ def _run_language_generation(
         verbose=False,
         memory=_memory_enabled(config_context),
     )
+    target_market = _target_market_for_language(inputs, language_index)
     language_inputs = {
         **inputs,
         "target_language": language,
         "target_languages": [language],
-        "target_market": _target_market_for_language(inputs, language_index),
-        "target_markets": _target_market_for_language(inputs, language_index),
+        "target_market": target_market,
+        "target_markets": target_market,
         "strategy_context": _serialize_strategy_context(strategy_context),
     }
-    result = _serialize_crew_result(content_crew.kickoff(inputs=language_inputs))
+    stage_started_at = time.monotonic()
+    _emit_content_stage(
+        config_context,
+        "content_generation",
+        "started",
+        f"Generating localized content for {language}.",
+        language=language,
+        target_market=target_market,
+    )
+    try:
+        result = _serialize_crew_result(content_crew.kickoff(inputs=language_inputs))
+    except Exception as exc:
+        error_summary = _error_summary(exc)
+        _emit_content_stage(
+            config_context,
+            "content_generation",
+            "failed",
+            f"Localized content generation failed for {language}.",
+            language=language,
+            target_market=target_market,
+            duration_seconds=time.monotonic() - stage_started_at,
+            error_summary=error_summary,
+        )
+        _emit_content_partial(
+            config_context,
+            "content_generation",
+            "content_package",
+            _failed_content_generation_preview(language, target_market, exc),
+            language=language,
+            target_market=target_market,
+        )
+        raise
+    _emit_content_stage(
+        config_context,
+        "content_generation",
+        "completed",
+        f"Localized content ready for {language}.",
+        language=language,
+        target_market=target_market,
+        duration_seconds=time.monotonic() - stage_started_at,
+    )
+    _emit_content_partial(
+        config_context,
+        "content_generation",
+        "content_package",
+        _content_generation_preview(result),
+        language=language,
+        target_market=target_market,
+    )
     return _enrich_language_output(
         result,
         inputs,
         language,
-        language_inputs["target_market"],
+        target_market,
         config_context,
     )
 
@@ -807,7 +1405,11 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='content')
     tasks_config = _load_yaml_config("tasks.yaml")
-    languages = [str(language).strip() for language in normalized_inputs.get("target_languages", []) if str(language).strip()]
+    languages = [
+        str(language).strip()
+        for language in normalized_inputs.get("target_languages", [])
+        if str(language).strip()
+    ]
     if not languages:
         raise ValueError("Content workflow requires at least one target language.")
 
@@ -815,7 +1417,12 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     task_names = ["research_and_strategy", *[f"content_creation_and_qa:{language}" for language in languages]]
     if recorder:
         recorder.emit_plan(task_names)
-        recorder.task_started(0, len(task_names), "research_and_strategy", agents_config["research_strategy_lead"]["role"])
+        recorder.task_started(
+            0,
+            len(task_names),
+            "research_and_strategy",
+            agents_config["research_strategy_lead"]["role"],
+        )
 
     strategy_context = _run_research_strategy(
         normalized_inputs,
@@ -825,7 +1432,12 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     )
 
     if recorder:
-        recorder.task_completed(0, len(task_names), "research_and_strategy", agents_config["research_strategy_lead"]["role"])
+        recorder.task_completed(
+            0,
+            len(task_names),
+            "research_and_strategy",
+            agents_config["research_strategy_lead"]["role"],
+        )
 
     worker_config_context = dict(config_context)
     if bool(normalized_inputs.get("generate_visual_assets")):
@@ -839,18 +1451,27 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         language_agent_role = agents_config["multilingual_editor"]["role"]
         current_progress = PROGRESS_START + (PROGRESS_SPAN / len(task_names))
         for index, language in enumerate(languages, start=1):
+            target_market = _target_market_for_language(normalized_inputs, index - 1)
             if recorder:
                 recorder.emit_progress(
                     "task_started",
                     f"Task {index + 1}/{len(task_names)} started: content_creation_and_qa:{language}",
                     current_progress,
                     {
+                        "scope": "content",
+                        "stage": "content_generation",
+                        "status": "started",
                         "task_index": index + 1,
                         "total_tasks": len(task_names),
                         "task_name": f"content_creation_and_qa:{language}",
                         "agent_role": language_agent_role,
+                        "language": language,
+                        "target_market": target_market,
                     },
                 )
+            language_config_context = dict(worker_config_context)
+            language_config_context[CONTENT_PROGRESS_TASK_INDEX_KEY] = index
+            language_config_context[CONTENT_PROGRESS_TOTAL_TASKS_KEY] = len(task_names)
             future = executor.submit(
                 _run_language_generation,
                 language,
@@ -859,33 +1480,100 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
                 strategy_context,
                 agents_config,
                 tasks_config,
-                dict(worker_config_context),
+                language_config_context,
             )
             future_to_language[future] = (index, language)
 
         for future in as_completed(future_to_language):
             index, language = future_to_language[future]
-            outputs_by_language[language] = future.result()
+            target_market = _target_market_for_language(normalized_inputs, index - 1)
+            try:
+                outputs_by_language[language] = future.result()
+                language_status = "completed"
+                language_message = (
+                    f"Task {index + 1}/{len(task_names)} completed: "
+                    f"content_creation_and_qa:{language}"
+                )
+                error_summary = None
+            except Exception as exc:
+                error_summary = _error_summary(exc)
+                outputs_by_language[language] = _failed_language_output(
+                    language,
+                    target_market,
+                    exc,
+                )
+                _emit_content_partial(
+                    config_context,
+                    "content_generation",
+                    "content_package",
+                    _failed_content_generation_preview(language, target_market, exc),
+                    language=language,
+                    target_market=target_market,
+                )
+                language_status = "failed"
+                language_message = (
+                    f"Task {index + 1}/{len(task_names)} failed: "
+                    f"content_creation_and_qa:{language}"
+                )
             completed_language_count += 1
             if recorder:
                 progress = PROGRESS_START + (
                     PROGRESS_SPAN * (1 + completed_language_count) / len(task_names)
                 )
+                payload = {
+                    "scope": "content",
+                    "stage": "content_generation",
+                    "status": language_status,
+                    "task_index": index + 1,
+                    "total_tasks": len(task_names),
+                    "task_name": f"content_creation_and_qa:{language}",
+                    "agent_role": language_agent_role,
+                    "language": language,
+                    "target_market": target_market,
+                }
+                if error_summary:
+                    payload["error_summary"] = error_summary
                 recorder.emit_progress(
-                    "task_completed",
-                    f"Task {index + 1}/{len(task_names)} completed: content_creation_and_qa:{language}",
+                    "task_completed" if language_status == "completed" else "task_failed",
+                    language_message,
                     progress,
-                    {
-                        "task_index": index + 1,
-                        "total_tasks": len(task_names),
-                        "task_name": f"content_creation_and_qa:{language}",
-                        "agent_role": language_agent_role,
-                    },
+                    payload,
                 )
 
     language_outputs = [outputs_by_language[language] for language in languages]
-    result = _merge_language_outputs(language_outputs)
-    usage_metrics = _merge_usage_metrics([strategy_context, *language_outputs])
-    if usage_metrics:
-        result[INTERNAL_USAGE_KEY] = usage_metrics
-    return _annotate_localized_output(result, normalized_inputs)
+    assembly_context = dict(config_context)
+    assembly_context[CONTENT_PROGRESS_TASK_INDEX_KEY] = len(task_names) - 1
+    assembly_context[CONTENT_PROGRESS_TOTAL_TASKS_KEY] = len(task_names)
+    assembly_started_at = time.monotonic()
+    _emit_content_stage(
+        assembly_context,
+        "content_assembly",
+        "started",
+        "Assembling final content package.",
+    )
+    try:
+        result = _merge_language_outputs(language_outputs)
+        usage_metrics = _merge_usage_metrics([strategy_context, *language_outputs])
+        if usage_metrics:
+            result[INTERNAL_USAGE_KEY] = usage_metrics
+        annotated_result = _annotate_localized_output(result, normalized_inputs)
+    except Exception as exc:
+        _emit_content_stage(
+            assembly_context,
+            "content_assembly",
+            "failed",
+            "Final content package assembly failed.",
+            duration_seconds=time.monotonic() - assembly_started_at,
+            error_summary=_error_summary(exc),
+        )
+        raise
+    _emit_content_stage(
+        assembly_context,
+        "content_assembly",
+        "completed",
+        "Final content package assembled.",
+        duration_seconds=time.monotonic() - assembly_started_at,
+        asset_count=len(annotated_result.get("visual_assets", [])),
+        score_count=len(annotated_result.get("visual_asset_scores", [])),
+    )
+    return annotated_result

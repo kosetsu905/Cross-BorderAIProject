@@ -1,4 +1,5 @@
 import base64
+import json
 import tempfile
 import time
 import unittest
@@ -10,13 +11,33 @@ from unittest.mock import patch
 
 import httpx
 
-from admin_dashboard import ARTIFACT_ROOT, _normalized_visual_score, _safe_artifact_path
-from crews.content_crew import _enrich_language_output
+from admin_dashboard import (
+    ARTIFACT_ROOT,
+    _content_inputs_from_form_values,
+    _content_live_preview_groups,
+    _content_timeline_entries,
+    _normalized_visual_score,
+    _safe_artifact_path,
+    _should_show_content_image_placeholder,
+)
+from crews.content_crew import (
+    CONTENT_ARTICLE_MAX_CHARS,
+    CONTENT_GENERATION_MAX_TOKENS,
+    CONTENT_SEO_KEYWORDS_MAX_COUNT,
+    _content_generation_llm_context,
+    _enrich_language_output,
+    _error_summary,
+    _normalize_inputs,
+    run_content_crew,
+)
+from job_store import InMemoryJobStore
+from models import ContentInputs, WorkflowType
 from tools.custom.content_tools import (
     MultimodalLocalizationTool,
     OpenAIImageGenerationTool,
     VisualAssetScoringTool,
 )
+from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
 
 
 class ContentToolTests(unittest.TestCase):
@@ -253,6 +274,513 @@ class ContentToolTests(unittest.TestCase):
         self.assertEqual(normalized["brand_voice_score"], 90.0)
         self.assertEqual(normalized["publish_readiness_score"], 88.0)
         self.assertEqual(normalized["notes"], "Ready for publishing.")
+
+    def test_content_form_values_build_valid_payload_lists(self) -> None:
+        payload = _content_inputs_from_form_values(
+            subject=" Sustainable Activewear ",
+            product_category="Winter Sportswear",
+            product_features="Recycled shell",
+            target_markets="Germany, Japan, Canada",
+            target_languages="de, ja, en",
+            platforms="Instagram, LinkedIn, X",
+            brand_voice="Premium",
+            primary_keywords="thermal activewear, recycled sportswear",
+            generate_visual_assets=True,
+            image_generation_count=2,
+            image_quality="high",
+            image_size="1024x1024",
+        )
+
+        self.assertEqual(payload["subject"], "Sustainable Activewear")
+        self.assertEqual(payload["target_languages"], ["de", "ja", "en"])
+        self.assertEqual(payload["platforms"], ["Instagram", "LinkedIn", "X"])
+        self.assertEqual(
+            payload["primary_keywords"],
+            ["thermal activewear", "recycled sportswear"],
+        )
+        self.assertTrue(payload["generate_visual_assets"])
+        self.assertEqual(payload["image_generation_count"], 2)
+        self.assertEqual(ContentInputs.model_validate(payload).image_quality, "high")
+
+        payload_without_quality = dict(payload)
+        payload_without_quality.pop("image_quality")
+        self.assertEqual(
+            ContentInputs.model_validate(payload_without_quality).image_quality,
+            "low",
+        )
+
+    def test_content_generation_defaults_to_bounded_llm_context(self) -> None:
+        context = _content_generation_llm_context({})
+
+        self.assertEqual(context["llm_max_tokens"], CONTENT_GENERATION_MAX_TOKENS)
+        self.assertEqual(
+            _content_generation_llm_context({"content_generation_max_tokens": 2048})["llm_max_tokens"],
+            2048,
+        )
+        self.assertEqual(
+            _content_generation_llm_context({"llm_max_tokens": 8192})["llm_max_tokens"],
+            8192,
+        )
+
+        normalized = _normalize_inputs(
+            {
+                "subject": "Sustainable Activewear",
+                "product_category": "Sportswear",
+                "target_markets": "Japan",
+                "target_languages": ["ja"],
+                "platforms": ["Instagram"],
+            }
+        )
+
+        self.assertEqual(normalized["content_article_max_chars"], CONTENT_ARTICLE_MAX_CHARS)
+        self.assertEqual(normalized["content_seo_keywords_max_count"], CONTENT_SEO_KEYWORDS_MAX_COUNT)
+
+    def test_content_task_prompt_contains_length_constraints(self) -> None:
+        prompt = Path("config/content/tasks.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("{content_article_max_chars}", prompt)
+        self.assertIn("{content_social_post_max_chars}", prompt)
+        self.assertIn("{content_seo_keywords_max_count}", prompt)
+        self.assertIn("Return at most one social post per requested", prompt)
+
+    def test_content_timeline_entries_normalize_task_and_stage_events(self) -> None:
+        events = [
+            {
+                "event_id": 1,
+                "event_type": "task_started",
+                "message": "Task 1/2 started: research_and_strategy",
+                "payload": {
+                    "workflow_type": "content",
+                    "task_name": "research_and_strategy",
+                    "agent_role": "Strategy Lead",
+                },
+                "created_at": "2026-06-06T00:00:00Z",
+            },
+            {
+                "event_id": 2,
+                "event_type": "content_stage",
+                "message": "Image generation completed for ja.",
+                "payload": {
+                    "scope": "content",
+                    "stage": "image_generation",
+                    "status": "completed",
+                    "language": "ja",
+                    "target_market": "Japan",
+                    "asset_count": 1,
+                },
+                "created_at": "2026-06-06T00:00:01Z",
+            },
+        ]
+
+        entries = _content_timeline_entries(events)
+
+        self.assertEqual(entries[0]["stage"], "research_strategy")
+        self.assertEqual(entries[0]["status"], "running")
+        self.assertEqual(entries[1]["step"], "Image generation")
+        self.assertEqual(entries[1]["status"], "completed")
+        self.assertEqual(entries[1]["asset_count"], 1)
+
+    def test_content_timeline_entries_show_failed_and_retrying_stages(self) -> None:
+        events = [
+            {
+                "event_id": 1,
+                "event_type": "content_stage",
+                "message": "Retrying localized content for ja.",
+                "payload": {
+                    "scope": "content",
+                    "stage": "content_generation",
+                    "status": "retrying",
+                    "language": "ja",
+                    "target_market": "Japan",
+                },
+            },
+            {
+                "event_id": 2,
+                "event_type": "task_failed",
+                "message": "Task failed: content_creation_and_qa:ja",
+                "payload": {
+                    "scope": "content",
+                    "stage": "content_generation",
+                    "status": "failed",
+                    "language": "ja",
+                    "target_market": "Japan",
+                    "error_summary": "Output exceeded generation limit.",
+                },
+            },
+        ]
+
+        entries = _content_timeline_entries(events)
+
+        self.assertEqual(entries[0]["status"], "retrying")
+        self.assertEqual(entries[0]["status_label"], "Retrying")
+        self.assertEqual(entries[1]["status"], "failed")
+        self.assertEqual(entries[1]["error_summary"], "Output exceeded generation limit.")
+
+    def test_content_image_placeholder_condition(self) -> None:
+        running_job = {"status": "running", "result": None}
+        visual_inputs = {"generate_visual_assets": True}
+
+        self.assertTrue(
+            _should_show_content_image_placeholder(running_job, [], visual_inputs)
+        )
+        self.assertFalse(
+            _should_show_content_image_placeholder(
+                {"status": "completed", "result": None},
+                [],
+                visual_inputs,
+            )
+        )
+        self.assertFalse(
+            _should_show_content_image_placeholder(
+                {
+                    "status": "running",
+                    "result": {"visual_assets": [{"asset_path": "artifacts/content_creation/a.png"}]},
+                },
+                [],
+                visual_inputs,
+            )
+        )
+
+    def test_content_enrichment_emits_safe_stage_events(self) -> None:
+        store = InMemoryJobStore()
+        store.create_job("job-1", WorkflowType.CONTENT, {})
+        recorder = WorkflowProgressRecorder(
+            job_id="job-1",
+            workflow_type="content",
+            job_store=store,
+            backend="local",
+        )
+        output = {
+            "localized_article": {
+                "language": "ja",
+                "title": "Title",
+                "article": "Article body",
+            },
+            "social_media_posts": [],
+            "seo_keywords": ["keyword"],
+            "compliance_notes": "Reviewed.",
+        }
+        inputs = {
+            "subject": "Smart Thermos",
+            "product_category": "Drinkware",
+            "target_markets": "Japan",
+            "target_languages": ["ja"],
+            "platforms": ["Instagram"],
+            "generate_visual_assets": True,
+            "image_generation_count": 1,
+            "image_quality": "auto",
+            "image_size": "1024x1024",
+        }
+
+        def fake_image_generation_run(
+            tool: OpenAIImageGenerationTool,
+            prompt: str,
+            output_slug: str = "content-visual",
+            image_generation_count: int = 1,
+            image_quality: str = "auto",
+            image_size: str = "1024x1024",
+        ) -> dict[str, object]:
+            return {
+                "status": "completed",
+                "model": tool.image_model,
+                "prompt": prompt,
+                "assets": [
+                    {
+                        "status": "completed",
+                        "asset_path": "artifacts/content_creation/fake.png",
+                        "model": tool.image_model,
+                        "prompt": prompt,
+                        "duration_seconds": 0.01,
+                    }
+                ],
+                "duration_seconds": 0.01,
+                "attempts": 1,
+                "last_status_code": 200,
+                "retryable_status": False,
+                "error": None,
+            }
+
+        def fake_visual_score_run(
+            tool: VisualAssetScoringTool,
+            asset_path: str,
+            prompt: str,
+            target_market: str,
+            language: str,
+            brand_voice: str = "Premium, trustworthy, and culturally respectful",
+        ) -> dict[str, object]:
+            return {
+                "status": "completed",
+                "asset_path": asset_path,
+                "prompt_alignment_score": 90.0,
+                "cultural_fit_score": 90.0,
+                "brand_voice_score": 90.0,
+                "publish_readiness_score": 90.0,
+                "duration_seconds": 0.01,
+                "notes": f"Scored with {tool.scoring_model}.",
+                "error": None,
+            }
+
+        with patch.object(OpenAIImageGenerationTool, "_run", fake_image_generation_run):
+            with patch.object(VisualAssetScoringTool, "_run", fake_visual_score_run):
+                _enrich_language_output(
+                    output,
+                    inputs,
+                    "ja",
+                    "Japan",
+                    {
+                        PROGRESS_CONTEXT_KEY: recorder,
+                        "openai_api_key": "sk-secret-test",
+                    },
+                )
+
+        stage_payloads = [
+            event["payload"]
+            for event in store.get_job_events("job-1")
+            if event["event_type"] == "content_stage"
+        ]
+        partial_payloads = [
+            event["payload"]
+            for event in store.get_job_events("job-1")
+            if event["event_type"] == "content_partial"
+        ]
+        stages = {payload["stage"] for payload in stage_payloads}
+        partial_types = {payload["preview_type"] for payload in partial_payloads}
+        serialized_payloads = json.dumps(
+            [*stage_payloads, *partial_payloads],
+            ensure_ascii=False,
+        )
+
+        self.assertIn("image_generation", stages)
+        self.assertIn("visual_scoring", stages)
+        self.assertIn("visual_brief", partial_types)
+        self.assertIn("seo_metadata", partial_types)
+        self.assertIn("compliance", partial_types)
+        self.assertIn("images", partial_types)
+        self.assertNotIn("sk-secret-test", serialized_payloads)
+        self.assertNotIn("b64_json", serialized_payloads)
+
+    def test_live_preview_groups_merge_out_of_order_partial_events(self) -> None:
+        events = [
+            {
+                "event_id": 3,
+                "event_type": "content_partial",
+                "payload": {
+                    "scope": "content",
+                    "stage": "image_generation",
+                    "language": "ja",
+                    "target_market": "Japan",
+                    "preview_type": "images",
+                    "content": {
+                        "status": "failed",
+                        "assets": [],
+                        "error_summary": "HTTP 520: upstream image API returned an HTML error page.",
+                    },
+                    "created_at": "2026-06-06T00:00:03Z",
+                },
+            },
+            {
+                "event_id": 1,
+                "event_type": "content_partial",
+                "payload": {
+                    "scope": "content",
+                    "stage": "content_generation",
+                    "language": "ja",
+                    "target_market": "Japan",
+                    "preview_type": "content_package",
+                    "content": {
+                        "localized_article": {
+                            "language": "ja",
+                            "title": "Japanese Title",
+                            "article": "Article body",
+                        },
+                        "social_media_posts": [],
+                        "seo_keywords": ["keyword"],
+                        "compliance_notes": "Reviewed.",
+                    },
+                    "created_at": "2026-06-06T00:00:01Z",
+                },
+            },
+        ]
+
+        groups = _content_live_preview_groups(events)
+
+        self.assertEqual(len(groups), 1)
+        previews = groups[0]["previews"]
+        self.assertEqual(
+            previews["content_package"]["localized_article"]["title"],
+            "Japanese Title",
+        )
+        self.assertEqual(previews["images"]["status"], "failed")
+        self.assertIn("HTTP 520", previews["images"]["error_summary"])
+
+    def test_live_preview_groups_include_failed_content_package(self) -> None:
+        events = [
+            {
+                "event_id": 1,
+                "event_type": "content_partial",
+                "payload": {
+                    "scope": "content",
+                    "stage": "content_generation",
+                    "language": "ja",
+                    "target_market": "Japan",
+                    "preview_type": "content_package",
+                    "content": {
+                        "status": "failed",
+                        "error_summary": "Output exceeded generation limit.",
+                        "retry_available": True,
+                    },
+                },
+            }
+        ]
+
+        groups = _content_live_preview_groups(events)
+
+        self.assertEqual(len(groups), 1)
+        content_package = groups[0]["previews"]["content_package"]
+        self.assertEqual(content_package["status"], "failed")
+        self.assertTrue(content_package["retry_available"])
+
+    def test_content_partial_image_failure_sanitizes_html_error(self) -> None:
+        store = InMemoryJobStore()
+        store.create_job("job-1", WorkflowType.CONTENT, {})
+        recorder = WorkflowProgressRecorder(
+            job_id="job-1",
+            workflow_type="content",
+            job_store=store,
+            backend="local",
+        )
+        output = {
+            "localized_article": {
+                "language": "ja",
+                "title": "Title",
+                "article": "Article body",
+            },
+            "social_media_posts": [],
+            "seo_keywords": ["keyword"],
+            "compliance_notes": "Reviewed.",
+        }
+        inputs = {
+            "subject": "Smart Thermos",
+            "product_category": "Drinkware",
+            "target_markets": "Japan",
+            "target_languages": ["ja"],
+            "platforms": ["Instagram"],
+            "generate_visual_assets": True,
+            "image_generation_count": 1,
+            "image_quality": "low",
+            "image_size": "1024x1024",
+        }
+        html_error = (
+            "HTTP 520: <!DOCTYPE html><html><head><title>"
+            "api.openai.com | 520: Web server is returning an unknown error"
+            "</title></head></html>"
+        )
+
+        def fake_failed_image_generation(
+            tool: OpenAIImageGenerationTool,
+            prompt: str,
+            output_slug: str = "content-visual",
+            image_generation_count: int = 1,
+            image_quality: str = "auto",
+            image_size: str = "1024x1024",
+        ) -> dict[str, object]:
+            return {
+                "status": "failed",
+                "model": tool.image_model,
+                "prompt": prompt,
+                "assets": [],
+                "duration_seconds": 1.0,
+                "attempts": 3,
+                "last_status_code": 520,
+                "retryable_status": True,
+                "error": html_error,
+            }
+
+        with patch.object(OpenAIImageGenerationTool, "_run", fake_failed_image_generation):
+            _enrich_language_output(
+                output,
+                inputs,
+                "ja",
+                "Japan",
+                {PROGRESS_CONTEXT_KEY: recorder, "openai_api_key": "sk-secret-test"},
+            )
+
+        image_partials = [
+            event["payload"]
+            for event in store.get_job_events("job-1")
+            if event["event_type"] == "content_partial"
+            and event["payload"]["preview_type"] == "images"
+        ]
+
+        self.assertTrue(image_partials)
+        serialized = json.dumps(image_partials, ensure_ascii=False)
+        self.assertIn("HTTP 520", serialized)
+        self.assertNotIn("<html", serialized.lower())
+        self.assertNotIn("sk-secret-test", serialized)
+
+    def test_error_summary_sanitizes_generation_limit_and_secrets(self) -> None:
+        summary = _error_summary(
+            "Could not parse response content as the length limit was reached - "
+            "CompletionUsage(completion_tokens=16384, api_key=sk-secret-test-value)"
+        )
+
+        self.assertEqual(
+            summary,
+            "Output exceeded generation limit; content was truncated before valid JSON could be parsed.",
+        )
+
+    def test_content_workflow_merges_successful_language_when_another_fails(self) -> None:
+        inputs = {
+            "subject": "Sustainable Activewear",
+            "product_category": "Sportswear",
+            "target_markets": "Japan, China",
+            "target_languages": ["ja", "zh-CN"],
+            "platforms": ["Instagram"],
+            "generate_visual_assets": False,
+        }
+
+        def fake_language_generation(
+            language: str,
+            language_index: int,
+            inputs: dict[str, object],
+            strategy_context: dict[str, object],
+            agents_config: dict[str, object],
+            tasks_config: dict[str, object],
+            config_context: dict[str, object],
+        ) -> dict[str, object]:
+            if language == "ja":
+                raise RuntimeError(
+                    "Could not parse response content as the length limit was reached - "
+                    "CompletionUsage(completion_tokens=16384, api_key=sk-secret-test-value)"
+                )
+            return {
+                "localized_article": {
+                    "language": language,
+                    "title": "中文标题",
+                    "article": "中文正文",
+                },
+                "social_media_posts": [
+                    {
+                        "platform": "Instagram",
+                        "language": language,
+                        "content": "中文社媒文案",
+                    }
+                ],
+                "seo_keywords": ["可持续运动服"],
+                "compliance_notes": "Reviewed.",
+                "visual_assets": [],
+                "visual_asset_scores": [],
+            }
+
+        with patch("crews.content_crew._run_research_strategy", return_value={"strategy": "ok"}):
+            with patch("crews.content_crew._run_language_generation", side_effect=fake_language_generation):
+                result = run_content_crew(inputs, {})
+
+        self.assertEqual(len(result["localized_articles"]), 1)
+        self.assertEqual(result["localized_articles"][0]["language"], "zh-CN")
+        self.assertIn("Generation failed for ja", result["compliance_notes"])
+        self.assertIn("Coverage notice", result["compliance_notes"])
+        self.assertNotIn("sk-secret-test", result["compliance_notes"])
 
     def test_content_workflow_enrichment_keeps_visual_generation_disabled_by_default(self) -> None:
         output = {

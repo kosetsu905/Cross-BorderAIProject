@@ -36,7 +36,7 @@ WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
         "primary_keywords": ["thermal activewear", "winter training layer", "recycled sportswear"],
         "generate_visual_assets": False,
         "image_generation_count": 1,
-        "image_quality": "auto",
+        "image_quality": "low",
         "image_size": "1024x1024",
     },
     "support": {
@@ -86,6 +86,7 @@ PROGRESS_BY_EVENT = {
     "task_plan": 0.2,
     "task_started": 0.25,
     "task_completed": 0.4,
+    "task_failed": 0.4,
     "retrying": 0.5,
     "cache_hit": 1.0,
     "completed": 1.0,
@@ -143,6 +144,52 @@ SUPPORT_FORM_KEYS = [
     "support_item_condition",
     "support_region",
 ]
+CONTENT_FORM_KEYS = [
+    "content_subject",
+    "content_product_category",
+    "content_product_features",
+    "content_target_markets",
+    "content_target_languages",
+    "content_platforms",
+    "content_brand_voice",
+    "content_primary_keywords",
+    "content_generate_visual_assets",
+    "content_image_generation_count",
+    "content_image_quality",
+    "content_image_size",
+    "content_submit_raw_json",
+]
+CONTENT_IMAGE_QUALITIES = ["auto", "low", "medium", "high"]
+CONTENT_IMAGE_SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"]
+
+CONTENT_STAGE_LABELS = {
+    "workflow_submitted": "Workflow submitted",
+    "workflow_queued": "Workflow queued",
+    "workflow_running": "Workflow running",
+    "task_plan": "Task plan",
+    "research_strategy": "Research and strategy",
+    "content_generation": "Localized content generation",
+    "visual_localization": "Visual localization",
+    "seo_metadata": "SEO metadata",
+    "cultural_compliance": "Cultural compliance",
+    "image_generation": "Image generation",
+    "visual_scoring": "Visual scoring",
+    "content_assembly": "Final assembly",
+    "workflow_completed": "Workflow completed",
+    "workflow_failed": "Workflow failed",
+    "cache_hit": "Cache hit",
+}
+CONTENT_STATUS_LABELS = {
+    "submitted": "Submitted",
+    "queued": "Queued",
+    "planned": "Planned",
+    "running": "Running",
+    "started": "Running",
+    "completed": "Completed",
+    "retrying": "Retrying",
+    "failed": "Failed",
+    "skipped": "Skipped",
+}
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -212,6 +259,178 @@ def _clean_optional_fields(fields: dict[str, Any]) -> dict[str, Any]:
         for key, value in fields.items()
         if value is not None and str(value).strip()
     }
+
+
+def _split_csv_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _content_inputs_from_form_values(
+    subject: str,
+    product_category: str,
+    product_features: str,
+    target_markets: str,
+    target_languages: str,
+    platforms: str,
+    brand_voice: str,
+    primary_keywords: str,
+    generate_visual_assets: bool,
+    image_generation_count: int,
+    image_quality: str,
+    image_size: str,
+) -> dict[str, Any]:
+    content_inputs: dict[str, Any] = {
+        "subject": str(subject).strip(),
+        "product_category": str(product_category).strip(),
+        "target_markets": str(target_markets).strip(),
+        "target_languages": _split_csv_values(target_languages),
+        "platforms": _split_csv_values(platforms),
+        "generate_visual_assets": bool(generate_visual_assets),
+        "image_generation_count": int(image_generation_count),
+        "image_quality": str(image_quality).strip() or "low",
+        "image_size": str(image_size).strip() or "1024x1024",
+    }
+    optional_fields = _clean_optional_fields(
+        {
+            "product_features": product_features,
+            "brand_voice": brand_voice,
+        }
+    )
+    content_inputs.update(optional_fields)
+    keywords = _split_csv_values(primary_keywords)
+    if keywords:
+        content_inputs["primary_keywords"] = keywords
+    return content_inputs
+
+
+def _reset_content_form() -> None:
+    for key in CONTENT_FORM_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.inputs_json = _format_json(WORKFLOW_EXAMPLES["content"])
+
+
+def _render_content_builder(selected_example: dict[str, Any]) -> dict[str, Any]:
+    current_inputs = _parse_inputs_json(st.session_state.get("inputs_json", "{}"), selected_example)
+    reset_col, apply_col = st.columns([1, 2])
+    if reset_col.button("Reset content form", width="stretch"):
+        _reset_content_form()
+        st.rerun()
+
+    basic_cols = st.columns(2)
+    subject = basic_cols[0].text_input(
+        "Subject",
+        value=str(current_inputs.get("subject") or selected_example["subject"]),
+        key="content_subject",
+    )
+    product_category = basic_cols[1].text_input(
+        "Product category",
+        value=str(current_inputs.get("product_category") or selected_example["product_category"]),
+        key="content_product_category",
+    )
+    product_features = st.text_area(
+        "Product features",
+        value=str(current_inputs.get("product_features") or selected_example.get("product_features") or ""),
+        height=90,
+        key="content_product_features",
+    )
+
+    target_cols = st.columns(3)
+    target_markets = target_cols[0].text_input(
+        "Target markets",
+        value=str(current_inputs.get("target_markets") or selected_example["target_markets"]),
+        key="content_target_markets",
+    )
+    target_languages = target_cols[1].text_input(
+        "Target languages",
+        value=", ".join(
+            _split_csv_values(
+                current_inputs.get("target_languages") or selected_example["target_languages"]
+            )
+        ),
+        key="content_target_languages",
+    )
+    platforms = target_cols[2].text_input(
+        "Platforms",
+        value=", ".join(_split_csv_values(current_inputs.get("platforms") or selected_example["platforms"])),
+        key="content_platforms",
+    )
+
+    guidance_cols = st.columns(2)
+    brand_voice = guidance_cols[0].text_area(
+        "Brand voice",
+        value=str(current_inputs.get("brand_voice") or selected_example.get("brand_voice") or ""),
+        height=90,
+        key="content_brand_voice",
+    )
+    primary_keywords = guidance_cols[1].text_area(
+        "Primary keywords",
+        value=", ".join(
+            _split_csv_values(
+                current_inputs.get("primary_keywords")
+                or selected_example.get("primary_keywords")
+                or []
+            )
+        ),
+        height=90,
+        key="content_primary_keywords",
+    )
+
+    visual_cols = st.columns([1, 1, 1, 1])
+    generate_visual_assets = visual_cols[0].toggle(
+        "Generate visual assets",
+        value=bool(current_inputs.get("generate_visual_assets", selected_example.get("generate_visual_assets", False))),
+        key="content_generate_visual_assets",
+    )
+    image_generation_count = visual_cols[1].number_input(
+        "Image count",
+        min_value=1,
+        max_value=4,
+        value=int(current_inputs.get("image_generation_count") or selected_example.get("image_generation_count") or 1),
+        step=1,
+        disabled=not generate_visual_assets,
+        key="content_image_generation_count",
+    )
+    image_quality = visual_cols[2].selectbox(
+        "Image quality",
+        CONTENT_IMAGE_QUALITIES,
+        index=_select_index(
+            CONTENT_IMAGE_QUALITIES,
+            current_inputs.get("image_quality") or selected_example.get("image_quality"),
+        ),
+        disabled=not generate_visual_assets,
+        key="content_image_quality",
+    )
+    image_size = visual_cols[3].selectbox(
+        "Image size",
+        CONTENT_IMAGE_SIZES,
+        index=_select_index(
+            CONTENT_IMAGE_SIZES,
+            current_inputs.get("image_size") or selected_example.get("image_size"),
+        ),
+        disabled=not generate_visual_assets,
+        key="content_image_size",
+    )
+
+    content_inputs = _content_inputs_from_form_values(
+        subject=subject,
+        product_category=product_category,
+        product_features=product_features,
+        target_markets=target_markets,
+        target_languages=target_languages,
+        platforms=platforms,
+        brand_voice=brand_voice,
+        primary_keywords=primary_keywords,
+        generate_visual_assets=generate_visual_assets,
+        image_generation_count=int(image_generation_count),
+        image_quality=image_quality,
+        image_size=image_size,
+    )
+    if apply_col.button("Apply content fields to JSON", width="stretch"):
+        st.session_state.inputs_json = _format_json(content_inputs)
+        st.rerun()
+    return content_inputs
 
 
 def _render_support_builder(selected_example: dict[str, Any]) -> None:
@@ -405,14 +624,18 @@ def _latest_event(events: list[dict[str, Any]] | None) -> dict[str, Any] | None:
 
 
 def _progress_value(status: str, events: list[dict[str, Any]] | None) -> float:
-    latest = _latest_event(events)
-    if latest:
-        payload = latest.get("payload")
+    progress_values: list[float] = []
+    for event in events or []:
+        payload = event.get("payload") if isinstance(event, dict) else None
         if isinstance(payload, dict) and isinstance(payload.get("progress"), (int, float)):
-            return float(payload["progress"])
-        event_progress = PROGRESS_BY_EVENT.get(str(latest.get("event_type")), 0)
-        if event_progress:
-            return event_progress
+            progress_values.append(float(payload["progress"]))
+            continue
+        if isinstance(event, dict):
+            event_progress = PROGRESS_BY_EVENT.get(str(event.get("event_type")), 0)
+            if event_progress:
+                progress_values.append(event_progress)
+    if progress_values:
+        return max(progress_values)
     return PROGRESS_BY_STATUS.get(status, 0.25)
 
 
@@ -424,7 +647,7 @@ def _progress_label(status: str, latest_job: dict[str, Any], events: list[dict[s
             payload = latest.get("payload")
             if isinstance(payload, dict) and payload.get("task_index") and payload.get("total_tasks"):
                 agent = payload.get("agent_role")
-                suffix = f" · {agent}" if agent else ""
+                suffix = f" - {agent}" if agent else ""
                 return f"{status}: {message}{suffix}"
             return f"{status}: {message}"
 
@@ -432,6 +655,407 @@ def _progress_label(status: str, latest_job: dict[str, Any], events: list[dict[s
     if isinstance(result, dict) and result.get("status"):
         return f"{status}: {result['status']}"
     return status
+
+
+def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _task_stage(task_name: Any) -> str:
+    normalized = str(task_name or "")
+    if normalized == "research_and_strategy":
+        return "research_strategy"
+    if normalized.startswith("content_creation_and_qa"):
+        return "content_generation"
+    return normalized or "task_plan"
+
+
+def _timeline_status(event_type: str, payload: dict[str, Any]) -> str:
+    status = str(payload.get("status") or "").strip().lower()
+    if status:
+        return status
+    if event_type == "submitted":
+        return "submitted"
+    if event_type == "queued":
+        return "queued"
+    if event_type in {"running", "task_started"}:
+        return "running"
+    if event_type in {"completed", "task_completed", "cache_hit"}:
+        return "completed"
+    if event_type == "failed":
+        return "failed"
+    if event_type == "task_plan":
+        return "planned"
+    return event_type
+
+
+def _timeline_stage(event_type: str, payload: dict[str, Any]) -> str:
+    if payload.get("stage"):
+        return str(payload["stage"])
+    if event_type == "submitted":
+        return "workflow_submitted"
+    if event_type == "queued":
+        return "workflow_queued"
+    if event_type == "running":
+        return "workflow_running"
+    if event_type == "completed":
+        return "workflow_completed"
+    if event_type == "failed":
+        return "workflow_failed"
+    if event_type == "cache_hit":
+        return "cache_hit"
+    return _task_stage(payload.get("task_name"))
+
+
+def _is_content_event(event: dict[str, Any]) -> bool:
+    payload = _event_payload(event)
+    if payload.get("scope") == "content":
+        return True
+    if payload.get("workflow_type") == "content":
+        return True
+    task_name = str(payload.get("task_name") or "")
+    return task_name == "research_and_strategy" or task_name.startswith("content_creation_and_qa")
+
+
+def _content_timeline_entries(events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not events:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict) or not _is_content_event(event):
+            continue
+        payload = _event_payload(event)
+        event_type = str(event.get("event_type") or "")
+        if event_type == "content_partial":
+            continue
+        stage = _timeline_stage(event_type, payload)
+        status = _timeline_status(event_type, payload)
+        entries.append(
+            {
+                "event_id": event.get("event_id"),
+                "created_at": event.get("created_at"),
+                "event_type": event_type,
+                "stage": stage,
+                "step": CONTENT_STAGE_LABELS.get(stage, stage.replace("_", " ").title()),
+                "status": status,
+                "status_label": CONTENT_STATUS_LABELS.get(status, status.title()),
+                "message": event.get("message") or "",
+                "language": payload.get("language"),
+                "target_market": payload.get("target_market"),
+                "agent_role": payload.get("agent_role"),
+                "duration_seconds": payload.get("duration_seconds"),
+                "asset_count": payload.get("asset_count"),
+                "score_count": payload.get("score_count"),
+                "error_summary": payload.get("error_summary"),
+                "payload": payload,
+            }
+        )
+    return entries
+
+
+def _is_content_partial_event(event: dict[str, Any]) -> bool:
+    payload = _event_payload(event)
+    return (
+        str(event.get("event_type") or "") == "content_partial"
+        and payload.get("scope") == "content"
+        and isinstance(payload.get("content"), dict)
+    )
+
+
+def _preview_group_key(language: Any, target_market: Any) -> str:
+    language_text = str(language or "").strip()
+    market_text = str(target_market or "").strip()
+    return f"{language_text}|{market_text}"
+
+
+def _content_live_preview_groups(events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    sorted_events = sorted(
+        [event for event in events or [] if isinstance(event, dict)],
+        key=lambda event: int(event.get("event_id") or 0),
+    )
+    for event in sorted_events:
+        if not isinstance(event, dict) or not _is_content_partial_event(event):
+            continue
+        payload = _event_payload(event)
+        language = payload.get("language")
+        target_market = payload.get("target_market")
+        preview_type = str(payload.get("preview_type") or payload.get("stage") or "")
+        if not preview_type:
+            continue
+        key = _preview_group_key(language, target_market)
+        group = groups.setdefault(
+            key,
+            {
+                "language": language,
+                "target_market": target_market,
+                "previews": {},
+                "updated_at": None,
+            },
+        )
+        group["previews"][preview_type] = payload["content"]
+        group["updated_at"] = payload.get("created_at") or event.get("created_at")
+
+    return sorted(
+        groups.values(),
+        key=lambda group: (
+            str(group.get("language") or ""),
+            str(group.get("target_market") or ""),
+        ),
+    )
+
+
+def _preview_tab_label(group: dict[str, Any]) -> str:
+    language = str(group.get("language") or "").strip()
+    target_market = str(group.get("target_market") or "").strip()
+    if language and target_market:
+        return f"{language} - {target_market}"
+    return language or target_market or "Content"
+
+
+def _render_social_posts(posts: list[Any]) -> None:
+    if not posts:
+        st.caption("No social posts preview yet.")
+        return
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{post.get('platform') or 'Platform'}**")
+            st.write(post.get("content") or "")
+
+
+def _render_live_article(content_package: dict[str, Any]) -> None:
+    status = str(content_package.get("status") or "").strip().lower()
+    if status == "failed":
+        st.error("Needs retry")
+        if content_package.get("error_summary"):
+            st.warning(str(content_package["error_summary"]))
+        return
+    if status == "retrying":
+        st.info("Retrying content generation")
+        if content_package.get("error_summary"):
+            st.caption(str(content_package["error_summary"]))
+        return
+
+    article = content_package.get("localized_article")
+    if isinstance(article, dict):
+        title = str(article.get("title") or "Localized Article")
+        st.markdown(f"#### {title}")
+        st.markdown(str(article.get("article") or ""))
+    else:
+        st.caption("Article preview is not available yet.")
+
+    posts = content_package.get("social_media_posts")
+    keywords = content_package.get("seo_keywords")
+    compliance_notes = str(content_package.get("compliance_notes") or "").strip()
+    st.markdown("**Social Posts**")
+    _render_social_posts(posts if isinstance(posts, list) else [])
+    if isinstance(keywords, list) and keywords:
+        st.caption(f"Keywords: {', '.join(str(keyword) for keyword in keywords)}")
+    if compliance_notes:
+        st.info(compliance_notes)
+
+
+def _render_live_visual_brief(visual_brief: dict[str, Any]) -> None:
+    visual_spec = visual_brief.get("visual_spec")
+    if not isinstance(visual_spec, dict):
+        st.caption("Visual brief is not available yet.")
+        return
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Style", visual_spec.get("style_guide") or "n/a")
+    metric_cols[1].metric("Palette", visual_spec.get("color_palette") or "n/a")
+    metric_cols[2].metric("Scene", visual_spec.get("background_scene") or "n/a")
+    if visual_spec.get("model_demographics"):
+        st.caption(f"Casting: {visual_spec['model_demographics']}")
+    cultural_notes = visual_spec.get("cultural_notes")
+    if isinstance(cultural_notes, list) and cultural_notes:
+        st.markdown("**Cultural notes**")
+        for note in cultural_notes:
+            st.write(f"- {note}")
+    if visual_spec.get("ai_image_prompt"):
+        with st.expander("Image prompt", expanded=False):
+            st.write(visual_spec["ai_image_prompt"])
+    if visual_brief.get("image_text_consistency_check"):
+        st.caption(str(visual_brief["image_text_consistency_check"]))
+
+
+def _render_live_seo(seo_metadata: dict[str, Any]) -> None:
+    if not seo_metadata:
+        st.caption("SEO preview is not available yet.")
+        return
+    if seo_metadata.get("canonical_url_slug"):
+        st.caption(f"Canonical slug: {seo_metadata['canonical_url_slug']}")
+    strategies = seo_metadata.get("engine_specific_metadata")
+    if isinstance(strategies, list):
+        for strategy in strategies[:6]:
+            if not isinstance(strategy, dict):
+                continue
+            with st.container(border=True):
+                st.markdown(f"**{strategy.get('engine') or 'Search engine'}**")
+                st.write(strategy.get("title_template") or "")
+                st.caption(strategy.get("meta_description_template") or "")
+    alt_texts = seo_metadata.get("alt_text_variants")
+    if isinstance(alt_texts, list) and alt_texts:
+        with st.expander("Alt text variants", expanded=False):
+            st.json(alt_texts)
+
+
+def _render_live_compliance(compliance: dict[str, Any]) -> None:
+    risk_flags = compliance.get("risk_flags")
+    if isinstance(risk_flags, list) and risk_flags:
+        st.markdown("**Risk flags**")
+        for flag in risk_flags:
+            st.write(f"- {flag}")
+    checklist = compliance.get("compliance_checklist")
+    if isinstance(checklist, list) and checklist:
+        st.markdown("**Checklist**")
+        for item in checklist:
+            st.write(f"- {item}")
+    actions = compliance.get("recommended_actions")
+    if isinstance(actions, list) and actions:
+        st.markdown("**Recommended actions**")
+        for action in actions:
+            st.write(f"- {action}")
+
+
+def _render_live_images(images: dict[str, Any]) -> None:
+    status = str(images.get("status") or "pending")
+    st.caption(f"Image generation status: {status}")
+    if images.get("error_summary"):
+        st.warning(str(images["error_summary"]))
+    assets = images.get("assets")
+    if not isinstance(assets, list) or not assets:
+        return
+    for index, asset in enumerate(assets, start=1):
+        if not isinstance(asset, dict):
+            continue
+        with st.container(border=True):
+            st.markdown(f"**Image {index}: {asset.get('status') or 'unknown'}**")
+            safe_path, _ = _safe_artifact_path(asset.get("asset_path"))
+            if safe_path:
+                st.image(str(safe_path), caption=safe_path.name, use_container_width=True)
+            elif asset.get("asset_url"):
+                st.image(str(asset["asset_url"]), caption="Remote generated asset", use_container_width=True)
+            elif asset.get("error_summary"):
+                st.warning(str(asset["error_summary"]))
+            meta = []
+            if asset.get("attempts") is not None:
+                meta.append(f"attempts={asset['attempts']}")
+            if asset.get("last_status_code"):
+                meta.append(f"http={asset['last_status_code']}")
+            if asset.get("duration_seconds") is not None:
+                meta.append(f"duration={_format_seconds(asset['duration_seconds'])}")
+            if meta:
+                st.caption(" | ".join(meta))
+
+
+def _render_live_content_group(group: dict[str, Any]) -> None:
+    previews = group.get("previews")
+    if not isinstance(previews, dict):
+        return
+    updated_at = group.get("updated_at")
+    if updated_at:
+        st.caption(f"Last update: {updated_at}")
+
+    content_package = previews.get("content_package")
+    if isinstance(content_package, dict):
+        st.markdown("### Article and Posts")
+        _render_live_article(content_package)
+
+    visual_brief = previews.get("visual_brief")
+    if isinstance(visual_brief, dict):
+        st.markdown("### Visual Brief")
+        _render_live_visual_brief(visual_brief)
+
+    seo_metadata = previews.get("seo_metadata")
+    if isinstance(seo_metadata, dict):
+        st.markdown("### SEO")
+        _render_live_seo(seo_metadata)
+
+    compliance = previews.get("compliance")
+    if isinstance(compliance, dict):
+        st.markdown("### Compliance")
+        _render_live_compliance(compliance)
+
+    images = previews.get("images")
+    if isinstance(images, dict):
+        st.markdown("### Images")
+        _render_live_images(images)
+
+
+def _render_live_content_preview(events: list[dict[str, Any]] | None) -> None:
+    groups = _content_live_preview_groups(events)
+    if not groups:
+        return
+
+    st.subheader("Live Content Preview")
+    tabs = st.tabs([_preview_tab_label(group) for group in groups])
+    for tab, group in zip(tabs, groups):
+        with tab:
+            _render_live_content_group(group)
+
+
+def _content_visual_assets(latest_job: dict[str, Any]) -> list[dict[str, Any]]:
+    content_result = _content_result_payload(latest_job)
+    if not content_result:
+        return []
+    return [
+        asset
+        for asset in content_result.get("visual_assets", [])
+        if isinstance(asset, dict)
+    ]
+
+
+def _content_visual_generation_requested(
+    latest_job: dict[str, Any],
+    events: list[dict[str, Any]] | None,
+    current_inputs: dict[str, Any] | None,
+) -> bool:
+    if current_inputs and bool(current_inputs.get("generate_visual_assets")):
+        return True
+    if _content_visual_assets(latest_job):
+        return True
+    return any(
+        _event_payload(event).get("stage") == "image_generation"
+        for event in events or []
+        if isinstance(event, dict)
+    )
+
+
+def _latest_content_image_event(events: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for event in reversed(events or []):
+        if not isinstance(event, dict):
+            continue
+        payload = _event_payload(event)
+        if payload.get("stage") == "image_generation":
+            return event
+    return None
+
+
+def _should_show_content_image_placeholder(
+    latest_job: dict[str, Any],
+    events: list[dict[str, Any]] | None,
+    current_inputs: dict[str, Any] | None,
+) -> bool:
+    status = str(latest_job.get("status") or "")
+    if status not in ACTIVE_STATUSES:
+        return False
+    if not _content_visual_generation_requested(latest_job, events, current_inputs):
+        return False
+    if _content_visual_assets(latest_job):
+        return False
+
+    image_event = _latest_content_image_event(events)
+    if image_event:
+        payload = _event_payload(image_event)
+        image_status = str(payload.get("status") or "").lower()
+        if image_status in {"completed", "failed", "skipped"} and not payload.get("asset_count"):
+            return False
+    return True
 
 
 def _support_result_payload(latest_job: dict[str, Any]) -> dict[str, Any] | None:
@@ -578,6 +1202,36 @@ def _bounded_score(value: Any) -> float:
     return max(0.0, min(score, 100.0))
 
 
+def _compact_error_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if "<!doctype html" in lowered or "<html" in lowered:
+        if "520" in text:
+            return "HTTP 520: upstream image API returned an HTML error page."
+        return "Upstream image API returned an HTML error page."
+    return text[:240]
+
+
+def _safe_display_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        safe_payload: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key).lower() == "error":
+                safe_payload[key] = _compact_error_text(item)
+            else:
+                safe_payload[key] = _safe_display_payload(item)
+        return safe_payload
+    if isinstance(value, list):
+        return [_safe_display_payload(item) for item in value]
+    if isinstance(value, str):
+        return _compact_error_text(value) or ""
+    return value
+
+
 def _visual_asset_failure_note(asset: dict[str, Any]) -> str | None:
     if not asset.get("error") and str(asset.get("status") or "").lower() != "failed":
         return None
@@ -595,8 +1249,153 @@ def _visual_asset_failure_note(asset: dict[str, Any]) -> str | None:
     elif retryable_status is False and last_status_code:
         parts.append("Non-retryable final status.")
     if asset.get("error"):
-        parts.append(str(asset["error"]))
+        parts.append(_compact_error_text(asset["error"]) or str(asset["error"]))
     return "\n".join(parts) if parts else None
+
+
+def _render_content_image_placeholder() -> None:
+    st.markdown(
+        """
+        <style>
+        .content-image-scanner {
+            position: relative;
+            min-height: 220px;
+            overflow: hidden;
+            border: 1px solid #d8dee9;
+            border-radius: 8px;
+            background:
+                repeating-linear-gradient(
+                    0deg,
+                    #f7f9fb 0,
+                    #f7f9fb 10px,
+                    #eef3f6 10px,
+                    #eef3f6 20px
+                );
+        }
+        .content-image-scanner::before {
+            content: "";
+            position: absolute;
+            inset: -35% 0 auto 0;
+            height: 42%;
+            background: linear-gradient(
+                180deg,
+                rgba(255, 255, 255, 0) 0%,
+                rgba(86, 141, 133, 0.28) 48%,
+                rgba(255, 255, 255, 0) 100%
+            );
+            animation: contentImageScan 1.8s linear infinite;
+        }
+        .content-image-scanner__label {
+            position: absolute;
+            left: 18px;
+            bottom: 16px;
+            color: #25313a;
+            font-size: 0.92rem;
+            font-weight: 600;
+        }
+        @keyframes contentImageScan {
+            from { transform: translateY(-20%); }
+            to { transform: translateY(360%); }
+        }
+        </style>
+        <div class="content-image-scanner">
+            <div class="content-image-scanner__label">Generating visual asset preview...</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_content_timeline(entries: list[dict[str, Any]]) -> None:
+    if not entries:
+        st.caption("No content execution events have been recorded yet.")
+        return
+
+    for entry in entries:
+        status = str(entry["status"])
+        if status in {"failed"}:
+            icon = "[failed]"
+        elif status in {"completed", "cache_hit"}:
+            icon = "[done]"
+        elif status in {"skipped"}:
+            icon = "[skipped]"
+        elif status in {"retrying"}:
+            icon = "[retrying]"
+        elif status in {"running", "started"}:
+            icon = "[running]"
+        else:
+            icon = "[queued]"
+
+        with st.container(border=True):
+            top_cols = st.columns([1.4, 1, 1, 1])
+            top_cols[0].markdown(f"**{icon} {entry['step']}**")
+            top_cols[1].caption(f"Status: {entry['status_label']}")
+            if entry.get("language"):
+                top_cols[2].caption(f"Language: {entry['language']}")
+            if entry.get("target_market"):
+                top_cols[3].caption(f"Market: {entry['target_market']}")
+
+            detail_cols = st.columns([2, 1, 1])
+            detail_cols[0].write(entry["message"])
+            if entry.get("agent_role"):
+                detail_cols[1].caption(str(entry["agent_role"]))
+            if entry.get("duration_seconds") is not None:
+                detail_cols[2].caption(f"Duration: {_format_seconds(entry['duration_seconds'])}")
+            elif entry.get("created_at"):
+                detail_cols[2].caption(f"Time: {entry['created_at']}")
+
+            metrics: dict[str, Any] = {}
+            if entry.get("asset_count") is not None:
+                metrics["assets"] = entry["asset_count"]
+            if entry.get("score_count") is not None:
+                metrics["scores"] = entry["score_count"]
+            if metrics:
+                st.caption(" | ".join(f"{key}: {value}" for key, value in metrics.items()))
+            if entry.get("error_summary"):
+                st.warning(str(entry["error_summary"]))
+
+
+def _render_technical_event_logs(events: list[dict[str, Any]]) -> None:
+    if not events:
+        st.caption("No events returned.")
+        return
+
+    rows = [
+        {
+            "event_id": event.get("event_id"),
+            "created_at": event.get("created_at"),
+            "event_type": event.get("event_type"),
+            "message": event.get("message"),
+            "payload": event.get("payload"),
+        }
+        for event in events
+        if isinstance(event, dict)
+    ]
+    st.dataframe(rows, width="stretch", hide_index=True)
+    options = {
+        f"#{event.get('event_id')} {event.get('event_type')} - {str(event.get('message') or '')[:80]}": event
+        for event in events
+        if isinstance(event, dict)
+    }
+    if options:
+        selected = st.selectbox("Inspect raw event", list(options.keys()))
+        st.json(options[selected])
+
+
+def _render_execution_observability(events: list[dict[str, Any]] | None) -> None:
+    if not events:
+        return
+
+    st.subheader("Execution Events")
+    timeline_entries = _content_timeline_entries(events)
+    if timeline_entries:
+        timeline_tab, technical_tab = st.tabs(["Content timeline", "Technical logs"])
+        with timeline_tab:
+            _render_content_timeline(timeline_entries)
+        with technical_tab:
+            _render_technical_event_logs(events)
+    else:
+        _render_technical_event_logs(events)
 
 
 def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
@@ -604,11 +1403,7 @@ def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
     if not content_result:
         return
 
-    visual_assets = [
-        asset
-        for asset in content_result.get("visual_assets", [])
-        if isinstance(asset, dict)
-    ]
+    visual_assets = _content_visual_assets(latest_job)
     scores = [
         score
         for score in content_result.get("visual_asset_scores", [])
@@ -617,7 +1412,10 @@ def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
 
     st.subheader("Content Visual Assets")
     if not visual_assets:
-        st.info("No generated images yet. Set generate_visual_assets=true and provide an OpenAI key to generate visual assets.")
+        st.info(
+            "No generated images yet. Set generate_visual_assets=true and provide "
+            "an OpenAI key to generate visual assets."
+        )
         return
 
     for index, asset in enumerate(visual_assets, start=1):
@@ -630,7 +1428,7 @@ def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
         elif asset.get("asset_url"):
             media_col.image(str(asset["asset_url"]), caption="Remote generated asset", use_container_width=True)
         else:
-            media_col.warning(asset.get("error") or "No local image file was returned.")
+            media_col.warning(_compact_error_text(asset.get("error")) or "No local image file was returned.")
             failure_note = _visual_asset_failure_note(asset)
             if failure_note:
                 media_col.info(failure_note)
@@ -654,7 +1452,7 @@ def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
             if score:
                 if score.get("notes"):
                     st.caption(f"Scoring notes: {score['notes']}")
-                st.json(score)
+                st.json(_safe_display_payload(score))
 
 
 def _render_support_result_summary(latest_job: dict[str, Any]) -> None:
@@ -828,23 +1626,43 @@ def main() -> None:
         )
 
     col_inputs, col_status = st.columns([1, 1])
+    content_form_inputs: dict[str, Any] | None = None
+    content_submit_raw_json = False
 
     with col_inputs:
         st.subheader("Request")
-        if workflow_type == "support":
+        if workflow_type == "content":
+            with st.expander("Content Creation fields", expanded=True):
+                content_form_inputs = _render_content_builder(selected_example)
+            with st.expander("Advanced request JSON", expanded=False):
+                content_submit_raw_json = st.toggle(
+                    "Submit raw Inputs JSON instead of form fields",
+                    value=False,
+                    key="content_submit_raw_json",
+                )
+                inputs_json = st.text_area("Inputs JSON", key="inputs_json", height=300)
+        elif workflow_type == "support":
             with st.expander("Customer Service 1.1 fields", expanded=True):
                 _render_support_builder(selected_example)
-        inputs_json = st.text_area("Inputs JSON", key="inputs_json", height=300)
+            inputs_json = st.text_area("Inputs JSON", key="inputs_json", height=300)
+        else:
+            inputs_json = st.text_area("Inputs JSON", key="inputs_json", height=300)
         provider_credentials_json = st.text_area(
             "Provider credentials JSON",
             key="provider_credentials_json",
             height=120,
-            help="Optional request-scoped provider settings. For support, use llm_profile to select a server-side LLM profile.",
+            help=(
+                "Optional request-scoped provider settings. For support, use llm_profile "
+                "to select a server-side LLM profile."
+            ),
         )
 
         if st.button("Submit workflow", type="primary", width="stretch"):
             try:
-                inputs = json.loads(inputs_json)
+                if workflow_type == "content" and content_form_inputs is not None and not content_submit_raw_json:
+                    inputs = content_form_inputs
+                else:
+                    inputs = json.loads(inputs_json)
                 provider_credentials = json.loads(provider_credentials_json or "{}")
             except json.JSONDecodeError as exc:
                 st.error(f"Invalid JSON: {exc}")
@@ -899,14 +1717,20 @@ def main() -> None:
             usage_cols[3].metric("Status", status)
             if latest_job.get("cache_hit"):
                 st.info(f"Served from cache: {latest_job.get('source_job_id')}")
+            _render_live_content_preview(latest_events)
+            if _should_show_content_image_placeholder(
+                latest_job,
+                latest_events,
+                content_form_inputs or _parse_inputs_json(st.session_state.get("inputs_json", "{}"), selected_example),
+            ):
+                _render_content_image_placeholder()
             _render_content_visual_assets(latest_job)
             _render_support_result_summary(latest_job)
-            st.json(latest_job)
+            with st.expander("Raw job payload", expanded=False):
+                st.json(latest_job)
 
     latest_events = st.session_state.get("latest_events")
-    if latest_events:
-        st.subheader("Execution Events")
-        st.dataframe(latest_events, width="stretch", hide_index=True)
+    _render_execution_observability(latest_events)
 
     with st.expander("Omni-channel support inbox", expanded=False):
         _render_support_inbox(api_base_url, bearer_token)

@@ -73,6 +73,35 @@ def llm_reasoning_compat_params(config_context: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _optional_positive_int(config_context: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = config_context.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def llm_token_limit_params(config_context: dict[str, Any]) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    max_tokens = _optional_positive_int(config_context, "llm_max_tokens", "max_tokens")
+    if max_tokens is not None:
+        params["max_tokens"] = max_tokens
+    max_completion_tokens = _optional_positive_int(
+        config_context,
+        "llm_max_completion_tokens",
+        "max_completion_tokens",
+    )
+    if max_completion_tokens is not None:
+        params["max_completion_tokens"] = max_completion_tokens
+    return params
+
+
 def build_llm(config_context: dict[str, Any]) -> LLM:
     base_url = llm_base_url(config_context)
     return LLM(
@@ -80,5 +109,6 @@ def build_llm(config_context: dict[str, Any]) -> LLM:
         api_key=llm_api_key(config_context),
         base_url=base_url,
         api_base=base_url,
+        **llm_token_limit_params(config_context),
         **llm_reasoning_compat_params(config_context),
     )

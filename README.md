@@ -887,7 +887,7 @@ $body = @{
     primary_keywords = @("thermal activewear", "winter training layer", "recycled sportswear")
     generate_visual_assets = $false
     image_generation_count = 1
-    image_quality = "auto"
+    image_quality = "low"
     image_size = "1024x1024"
   }
 } | ConvertTo-Json -Depth 5

@@ -72,7 +72,7 @@ class ContentInputs(StrictInputModel):
         description="Number of images to generate per language/market when visual generation is enabled.",
     )
     image_quality: str = Field(
-        "auto",
+        "low",
         min_length=1,
         description="OpenAI image generation quality setting, such as auto, low, medium, or high.",
     )

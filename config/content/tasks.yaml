@@ -22,6 +22,14 @@ content_creation_and_qa:
     Write one full localized blog/article in markdown format about {subject} for the requested language
     {target_language} and target market scope {target_market}. Then generate localized platform-specific social media posts for {target_language}
     that cover the requested platforms: {platforms}.
+    Keep the output compact and parseable. Hard limits: localized_article.title must be at most
+    {content_title_max_chars} characters; localized_article.article must be at most
+    {content_article_max_chars} characters; each social_media_posts item must be at most
+    {content_social_post_max_chars} characters; seo_keywords must contain at most
+    {content_seo_keywords_max_count} short keywords; compliance_notes must be at most
+    {content_compliance_notes_max_chars} characters. Return at most one social post per requested
+    platform. Do not add long background analysis, research notes, drafts, outlines, or duplicate
+    variants outside the required structured fields.
     Ensure cultural adaptation, useful hashtags or mentions where appropriate, clear CTAs, SEO quality,
     and regional compliance notes for {target_markets}. Do a final self-review before returning the
     structured output. Treat this as an independent single-language deliverable: use only strategy details
@@ -45,4 +53,4 @@ content_creation_and_qa:
     If you include multimodal, SEO metadata, cultural risk, or visual asset fields, treat them as
     planning metadata only. Do not claim that an image was generated or scored; external image
     generation and visual scoring are controlled by the workflow after your task completes.
-  expected_output: "A final structured single-language content package with localized_article, social_media_posts, seo_keywords, compliance_notes, and optional multimodal/SEO/compliance planning metadata."
+  expected_output: "A compact final structured single-language content package with one bounded localized_article, at most one bounded social_media_posts item per requested platform, up to 12 seo_keywords, concise compliance_notes, and optional multimodal/SEO/compliance planning metadata."
