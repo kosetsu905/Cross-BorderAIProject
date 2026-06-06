@@ -3,16 +3,21 @@ data_collection:
     Collect recent sales, ad spend, conversion, and inventory data for {product_category} across {target_markets}.
     Pull metrics from available platform APIs, web sources, and historical tracking systems.
     Ensure data covers the specified date range: {date_range}.
-    If tools return data_source=development_fallback_sample or confidence_level=low, explicitly label the dataset as illustrative sample data,
-    not factual platform performance.
-  expected_output: "A consolidated dataset of sales, ad performance, inventory levels, regional metrics, data source, confidence level, and assumptions."
+    Report platform monetary metrics using ISO 4217 currency code {currency}; never output a bare "$" amount.
+    Pass currency={currency} to platform metric tools when available.
+    If the platform metrics tool returns data_source=metrics_unavailable, status=unavailable, or an empty metrics object,
+    do not create substitute KPI values. Treat sales volume, conversion rate, ROAS, CPC, inventory status, and top SKU
+    as unavailable from platform data.
+  expected_output: "A consolidated dataset of available live platform metrics, or an explicit metrics-unavailable note with empty metrics, data source, confidence level, and assumptions."
 
 performance_analysis:
   description: >
     Analyze the collected data to identify top-performing regions, underperforming channels,
     ROI trends, and potential bottlenecks in the sales funnel for {product_category}.
-    Do not present fallback/sample metrics as real business performance. If sample data is used, phrase conclusions as illustrative examples.
-  expected_output: "A performance analysis summary highlighting key metrics, trends, optimization opportunities by region, and source-confidence caveats."
+    Do not present fallback/sample metrics as real business performance. If platform metrics are unavailable or empty,
+    do not rank markets by sales, conversion, or ROAS and do not infer ROI trends. State that regional KPI analysis is
+    unavailable until live commerce or analytics data is connected.
+  expected_output: "A performance analysis summary based only on available live platform metrics; if none are available, state that KPI analysis is unavailable and list source-confidence caveats."
 
 market_research:
   description: >
@@ -22,27 +27,70 @@ market_research:
     or serper_deep_read, ground competitor observations in the returned search snippets, evidence page excerpts,
     and source URLs. Prefer evidence entries with read_status=ok. Avoid inventing exact market share, growth rates,
     average prices, or competitor facts that are not present in the tool output.
+    Use the tool's source_bibliography and source_id values when available. Prepare public_market_facts for public web
+    facts such as sales, pricing, availability, policy, demand, and competitor observations. Public web facts must stay
+    separate from regional_kpis, which are reserved for live platform metrics only.
+    Use the tool's market_alignment, likely_markets, assigned_market, and market_currency_code fields to keep evidence
+    tied to the correct market. A source marked cross_market_reference must not be used as evidence for the assigned
+    market's pricing, availability, demand, or channel claims; mention it only as a source-coverage caveat.
+    Before making product-specific market claims, verify that the product is actually available or sold in that market.
+    If same-market availability evidence is missing or contradicts availability, set product_availability to unavailable
+    or unverified and do not infer pricing or demand from another country.
+    For monetary claims, include ISO 4217 currency codes such as AUD, JPY, or USD. Do not use a bare "$", and do not
+    convert source-market prices into another market unless the source provides the conversion.
     For each major competitor or market observation, prepare source evidence with market, claim, evidence summary,
-    source URLs, and confidence. Use URLs from source_urls, market_results.sources, or market_results.evidence.
+    source URLs, confidence, currency_context, market_alignment, and source_ids. Use URLs and source IDs from
+    source_bibliography, source_urls, market_results.sources, or market_results.evidence.
     Organize findings by region, separating competitor signals, pricing signals, demand signals, and channel signals.
     If a category has no source-backed finding for a region, state that the evidence is unavailable instead of guessing.
     If benchmark data is fallback data, mark it as illustrative and low confidence.
-  expected_output: "A competitive landscape report grounded in benchmark tool output, with region-by-region competitor, pricing, demand, and channel signals, source evidence candidates, strategic positioning recommendations, data source, confidence level, and assumptions."
+  expected_output: "A competitive landscape report grounded in benchmark tool output, with region-by-region public_market_facts, market_verdicts, product_availability, market_currency_code, competitor, pricing, demand, and channel signals, source evidence candidates with source_ids, currency_context, and market_alignment, strategic positioning recommendations, data source, confidence level, and assumptions."
 
 insight_report:
   description: >
     Synthesize the performance analysis and market research into a structured executive report.
-    Include KPI dashboards, actionable recommendations, risk alerts, and a 30/60/90 day action plan.
-    Include data_source, confidence_level, and assumptions. If source data is fallback/sample data, state clearly that the report is illustrative
+    Include KPI dashboards only when live platform KPI data is available. Otherwise set regional_kpis=[] and do not
+    create substitute KPI rows.
+    Start with answer_first_summary: 3-5 direct conclusions that answer the user's request before detailed analysis.
+    Then provide market_verdicts with one item per requested market. Each verdict must include the market's performance
+    verdict, opportunity, risk, key findings, confidence, and evidence_ids. Keep verdicts generic and product-category
+    neutral; do not rely on hardcoded industry or brand rules.
+    Include data_source, confidence_level, reporting_currency, and assumptions. If source data is fallback/sample data, state clearly that the report is illustrative
     and requires validation with real platform analytics before business decisions are made. If market research uses
     Serper search snippets or source-page excerpts, keep competitive insights tied to those evidence items and do
     not convert them into unsupported exact growth rates, market shares, or average prices.
-    Include source_evidence as a list. Each item must contain market, claim, evidence_summary, sources, and confidence.
+    Use ISO 4217 currency codes in every monetary value. regional_kpis items must contain region, sales_volume,
+    currency_code, conversion_rate, and roas. sales_volume must include the currency code, for example "AUD 45,000.00",
+    "JPY 3,980,000", or "USD 45,000.00"; never output only "$45,000.00". If live platform KPI data is unavailable,
+    regional_kpis must be an empty list.
+    Include public_market_facts as a list of public-source sales, pricing, availability, policy, demand, and competitor
+    facts. Each fact must include market, fact_type, statement, value, actual time_period from the source, source_ids,
+    and confidence. If the requested date_range is not exactly available in public sources, use the closest source
+    time_period and explicitly say so; never relabel annual, cumulative, or monthly public data as the requested period.
+    Include source_bibliography as a numbered list of all sources used by source_evidence, public_market_facts, and
+    market_verdicts. All important numeric, pricing, sales, availability, and market judgment claims must cite
+    source_bibliography source_id values.
+    Include source_evidence as a list. Each item must contain market, claim, evidence_summary, sources, confidence,
+    currency_context, market_alignment, and source_ids.
     Every major claim in competitive_insights should have a matching source_evidence item. If a claim has no source URL,
     either remove the claim or mark the evidence confidence as low and explain the limitation in assumptions.
+    Do not put a source_evidence item under a target market if the source is marked cross_market_reference for that market.
+    If a source discusses Australia, it cannot support a United States/America claim unless the source explicitly discusses
+    United States availability or pricing too.
     Include market_intelligence_by_region with one item per requested region. Each item must include competitor_signals,
-    pricing_signals, demand_signals, channel_signals, source_urls, and confidence.
+    pricing_signals, demand_signals, channel_signals, source_urls, confidence, market_currency_code, and product_availability.
+    If product_availability is unavailable or unverified, keep pricing_signals and demand_signals conservative and explain
+    that same-market evidence is missing instead of borrowing another market's data.
     Include evidence_synthesis with strongest_supported_findings, weak_or_unverified_findings, and source_coverage_notes.
-    Include data_quality_notes that clearly separates fallback commerce metrics from live search or deep-read evidence.
+    Include data_quality_notes that clearly separates unavailable platform KPI metrics from live search or deep-read evidence.
+    Web search evidence can support market and competitor findings, but must not be converted into internal platform KPIs.
     Include recommended_next_research for missing provider integrations, better source coverage, or validation work.
-  expected_output: "A comprehensive, structured analytics report with executive summary, regional KPI breakdowns, market_intelligence_by_region, source_evidence, evidence_synthesis, data_quality_notes, recommended_next_research, prioritized next steps, data source, confidence level, and assumptions."
+    The final output must be an AnalyticsReportOutput-compatible JSON object with:
+    data_source, confidence_level, assumptions, reporting_currency, executive_summary, answer_first_summary,
+    regional_kpis, market_verdicts, public_market_facts, source_bibliography,
+    competitive_insights, market_intelligence_by_region, source_evidence, evidence_synthesis,
+    actionable_recommendations, risk_alerts, data_quality_notes, and recommended_next_research.
+    Place the 30/60/90 day action plan and prioritized next steps in actionable_recommendations.
+    Place inventory, policy, market, execution, and data-confidence warnings in risk_alerts.
+    Include every required field even when evidence is limited, using conservative validation caveats instead of omitting fields.
+  expected_output: "An AnalyticsReportOutput-compatible JSON object with data_source, confidence_level, assumptions, reporting_currency, executive_summary, answer_first_summary, regional_kpis, market_verdicts, public_market_facts, source_bibliography, competitive_insights, market_intelligence_by_region, source_evidence, evidence_synthesis, actionable_recommendations, risk_alerts, data_quality_notes, and recommended_next_research."

@@ -29,4 +29,9 @@ playbook_generation:
     Include a 30/60/90 day implementation roadmap, team responsibilities, success metrics, and risk mitigation steps.
     Include data_source, confidence_level, and assumptions. If source data is fallback/sample data, state clearly that the playbook is illustrative
     and requires validation with real CRM/platform analytics before execution.
-  expected_output: "A structured, actionable sales improvement playbook with data source, confidence level, assumptions, and validation requirements."
+    The final output must be a SalesImprovementOutput-compatible JSON object with:
+    data_source, confidence_level, assumptions, funnel_analysis_summary, cro_test_matrix,
+    pricing_recommendations, implementation_roadmap, and risk_mitigation.
+    Place the 30/60/90 day action plan in implementation_roadmap and implementation risks in risk_mitigation.
+    Include every required field even when source data is fallback/sample data.
+  expected_output: "A SalesImprovementOutput-compatible JSON object with data_source, confidence_level, assumptions, funnel_analysis_summary, cro_test_matrix, pricing_recommendations, implementation_roadmap, and risk_mitigation."

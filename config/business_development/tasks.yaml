@@ -24,4 +24,8 @@ pipeline_sync:
     If lead enrichment tools return development fallback data, explicitly mark data_source as development_fallback,
     set confidence_level to Low or Illustrative, and add assumptions explaining that contacts, milestones, and fit scores
     are placeholders until CRUNCHBASE_API_KEY/APOLLO_API_KEY-backed provider data is connected.
-  expected_output: "A CRM-ready JSON payload, structured follow-up calendar, compliance verification notes, and explicit data-source caveats when fallback lead data is used."
+    The final output must be a BizDevOutput-compatible JSON object with:
+    data_source, confidence_level, assumptions, target_leads, value_proposition,
+    outreach_sequences, follow_up_cadence, and crm_payload.
+    Include every required field even when provider data is unavailable, using fallback caveats in assumptions.
+  expected_output: "A BizDevOutput-compatible JSON object with data_source, confidence_level, assumptions, target_leads, value_proposition, outreach_sequences, follow_up_cadence, and crm_payload."

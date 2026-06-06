@@ -31,4 +31,8 @@ notification_reminder_setup:
     If timezone/holiday tools return development fallback data, explicitly mark data_source as development_fallback,
     set confidence_level to Low or Illustrative, and add assumptions explaining that holiday and timezone context should
     be verified with a live provider before production scheduling.
-  expected_output: "A structured notification plan with channel routing, timing triggers, escalation paths, compliance notes, data-source caveats, and a final schedule constrained to the requested launch window."
+    The final output must be a SchedulerOutput-compatible JSON object with:
+    data_source, confidence_level, assumptions, optimized_schedule, regional_calendar_notes,
+    reminder_sequence, conflict_resolution_log, and export_instructions.
+    Include every required field even when timezone or holiday data is fallback data.
+  expected_output: "A SchedulerOutput-compatible JSON object with data_source, confidence_level, assumptions, optimized_schedule, regional_calendar_notes, reminder_sequence, conflict_resolution_log, and export_instructions."

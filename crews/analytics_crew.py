@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 from typing import Any
 
 import yaml
@@ -19,7 +19,11 @@ class RegionalKPI(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     region: str = Field(..., description="Target market or region")
-    sales_volume: str = Field(..., description="Total sales or revenue")
+    sales_volume: str = Field(
+        ...,
+        description="Total sales or revenue with an ISO 4217 currency code, never a bare currency symbol",
+    )
+    currency_code: str = Field(..., description="ISO 4217 currency code for sales_volume")
     conversion_rate: str = Field(..., description="Conversion rate percentage")
     roas: str = Field(..., description="Return on ad spend")
 
@@ -32,12 +36,72 @@ class SourceEvidence(BaseModel):
     evidence_summary: str = Field(..., description="Short summary of the supporting evidence")
     sources: list[str] = Field(..., description="Source URLs used to support the claim")
     confidence: str = Field(..., description="Evidence confidence level for this claim")
+    currency_context: str = Field(
+        ...,
+        description="ISO 4217 currency context for monetary claims, or not_applicable/source_unspecified",
+    )
+    market_alignment: str = Field(
+        ...,
+        description="same_market, mixed_market, cross_market_reference, or unknown_market",
+    )
+    source_ids: list[str] = Field(
+        ..., description="Source bibliography IDs supporting this evidence item"
+    )
+
+
+class MarketVerdict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market: str = Field(..., description="Target market or region")
+    performance_verdict: str = Field(
+        ..., description="Answer-first market verdict based on available platform and public evidence"
+    )
+    opportunity_assessment: str = Field(..., description="Main opportunity or upside in this market")
+    risk_assessment: str = Field(..., description="Main risk, constraint, or uncertainty in this market")
+    key_findings: list[str] = Field(
+        ..., description="Short market-specific findings, separating facts from inferences"
+    )
+    evidence_ids: list[str] = Field(..., description="Source bibliography IDs used for this verdict")
+    confidence: str = Field(..., description="Confidence level for this market verdict")
+
+
+class PublicMarketFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market: str = Field(..., description="Target market or region for the public-source fact")
+    fact_type: str = Field(..., description="Type such as sales, pricing, availability, policy, demand, or competitor")
+    statement: str = Field(..., description="Source-backed factual statement")
+    value: str = Field(..., description="Specific value if present, otherwise not_applicable")
+    time_period: str = Field(..., description="Actual time window from the source, or source_unspecified")
+    source_ids: list[str] = Field(..., description="Source bibliography IDs supporting this fact")
+    confidence: str = Field(..., description="Confidence level for this fact")
+
+
+class SourceBibliographyItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(..., description="Stable source identifier such as S1")
+    title: str = Field(..., description="Source title")
+    url: str = Field(..., description="Source URL")
+    domain: str = Field(..., description="Source domain")
+    market: str = Field(..., description="Assigned or most relevant market for this source")
+    source_type: str = Field(..., description="Source type such as organic, shopping, or page_excerpt")
+    read_status: str = Field(..., description="Deep-read status such as ok, failed, skipped, or snippet_only")
+    market_alignment: str = Field(..., description="same_market, mixed_market, cross_market_reference, or unknown_market")
+    currency_context: str = Field(..., description="ISO currency context, not_applicable, or source_unspecified")
+    key_points: list[str] = Field(..., description="Short source-backed points useful for the report")
+    reliability: str = Field(..., description="Reliability assessment for this source")
 
 
 class MarketIntelligence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     region: str = Field(..., description="Target market or region")
+    market_currency_code: str = Field(..., description="Default ISO 4217 currency code for this market")
+    product_availability: str = Field(
+        ...,
+        description="Whether the product/category is available, unavailable, or unverified in this market",
+    )
     competitor_signals: list[str] = Field(
         ..., description="Competitor names, positioning, product, or messaging signals found in sources"
     )
@@ -84,11 +148,27 @@ class AnalyticsReportOutput(BaseModel):
     assumptions: list[str] = Field(
         ..., description="Assumptions and validation caveats for the analysis"
     )
+    reporting_currency: str = Field(
+        ...,
+        description="ISO 4217 currency used for platform KPI reporting, usually the request currency",
+    )
     executive_summary: str = Field(
         ..., description="High-level overview of performance and key findings"
     )
+    answer_first_summary: list[str] = Field(
+        ..., description="Three to five direct conclusions before detailed market analysis"
+    )
     regional_kpis: list[RegionalKPI] = Field(
         ..., description="Key performance indicators broken down by region"
+    )
+    market_verdicts: list[MarketVerdict] = Field(
+        ..., description="One answer-first verdict per requested market with evidence IDs"
+    )
+    public_market_facts: list[PublicMarketFact] = Field(
+        ..., description="Public web-source facts such as sales, pricing, availability, policy, demand, or competitor facts"
+    )
+    source_bibliography: list[SourceBibliographyItem] = Field(
+        ..., description="Numbered public-source bibliography used by facts and verdicts"
     )
     competitive_insights: str = Field(
         ..., description="Competitor benchmarking and market positioning analysis"
@@ -158,7 +238,7 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
     return bool(config_context.get("crewai_memory_enabled"))
 
 
-def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
+def _has_configured_commerce_provider(config_context: dict[str, Any]) -> bool:
     has_shopify = bool(
         config_context.get("shopify_store_domain")
         and (config_context.get("shopify_admin_access_token") or config_context.get("ecom_api_token"))
@@ -168,27 +248,40 @@ def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
         and (config_context.get("amazon_sp_api_access_token") or config_context.get("ecom_api_token"))
         and config_context.get("amazon_marketplace_ids")
     )
-    has_ecom_token = has_shopify or has_amazon
+    return has_shopify or has_amazon
+
+
+def _provider_status(
+    config_context: dict[str, Any],
+    has_live_platform_metrics: bool,
+) -> dict[str, Any]:
+    has_ecom_token = _has_configured_commerce_provider(config_context)
     has_serper_token = bool(config_context.get("serper_api_key"))
 
-    if not has_ecom_token and not has_serper_token:
+    if not has_live_platform_metrics and not has_serper_token:
         return {
-            "data_source": "development_fallback",
-            "confidence_level": "Illustrative",
+            "data_source": "platform_metrics_unavailable",
+            "confidence_level": "Low",
             "assumptions": [
-                "Analytics used development fallback metrics because ECOM_API_TOKEN is not configured.",
+                "Platform KPIs are unavailable because no successful Shopify or Amazon commerce metrics call completed.",
+                "regional_kpis is intentionally empty; sales volume, conversion rate, ROAS, CPC, inventory, and SKU metrics are not estimated.",
                 "Competitive benchmarking also used fallback data because SERPER_API_KEY is not configured.",
-                "Sales, conversion, ROAS, market, and competitor insights are sample values until validated with live platform data.",
             ],
         }
 
-    if not has_ecom_token:
+    if not has_live_platform_metrics:
+        platform_reason = (
+            "Configured commerce provider did not return live metrics."
+            if has_ecom_token
+            else "Shopify or Amazon commerce provider credentials are not configured."
+        )
         return {
             "data_source": "mixed",
             "confidence_level": "Low",
             "assumptions": [
-                "Analytics platform metrics used development fallback data because ECOM_API_TOKEN is not configured.",
-                "Competitive research uses live Serper search snippets and optional source-page deep reads when SERPER_API_KEY is configured, but regional KPIs remain illustrative until connected to a live commerce platform.",
+                f"Platform KPIs are unavailable: {platform_reason}",
+                "regional_kpis is intentionally empty; sales volume, conversion rate, ROAS, CPC, inventory, and SKU metrics are not estimated.",
+                "Competitive research uses live Serper search snippets and optional source-page deep reads when SERPER_API_KEY is configured, but those market signals are not platform KPIs.",
             ],
         }
 
@@ -203,10 +296,97 @@ def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _apply_provider_status(result: dict[str, Any], config_context: dict[str, Any]) -> dict[str, Any]:
+def _requested_currency(inputs: dict[str, Any]) -> str:
+    value = str(inputs.get("currency") or "USD").strip().upper()
+    return value if value else "USD"
+
+
+def _sales_volume_with_currency(value: Any, currency_code: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return f"{currency_code} 0"
+    upper_text = text.upper()
+    if upper_text.startswith(f"{currency_code} "):
+        return text
+    if text.startswith("$"):
+        return f"{currency_code} {text[1:].strip()}"
+    return text
+
+
+def _apply_currency_context(result: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
-    normalized.update(_provider_status(config_context))
+    reporting_currency = _requested_currency(inputs)
+    normalized["reporting_currency"] = str(
+        normalized.get("reporting_currency") or reporting_currency
+    ).strip().upper()
+
+    regional_kpis = normalized.get("regional_kpis")
+    if isinstance(regional_kpis, list):
+        normalized_kpis: list[Any] = []
+        for item in regional_kpis:
+            if not isinstance(item, dict):
+                normalized_kpis.append(item)
+                continue
+            kpi = dict(item)
+            currency_code = str(kpi.get("currency_code") or normalized["reporting_currency"]).strip().upper()
+            kpi["currency_code"] = currency_code
+            kpi["sales_volume"] = _sales_volume_with_currency(kpi.get("sales_volume"), currency_code)
+            normalized_kpis.append(kpi)
+        normalized["regional_kpis"] = normalized_kpis
+
+    source_evidence = normalized.get("source_evidence")
+    if isinstance(source_evidence, list):
+        normalized_evidence: list[Any] = []
+        for item in source_evidence:
+            if not isinstance(item, dict):
+                normalized_evidence.append(item)
+                continue
+            evidence = dict(item)
+            evidence.setdefault("currency_context", "source_unspecified")
+            evidence.setdefault("market_alignment", "unknown_market")
+            evidence.setdefault("source_ids", [])
+            normalized_evidence.append(evidence)
+        normalized["source_evidence"] = normalized_evidence
+
     return normalized
+
+
+def _append_unique_text(values: Any, text: str) -> list[str]:
+    items = [str(item) for item in values] if isinstance(values, list) else []
+    if text not in items:
+        items.append(text)
+    return items
+
+
+def _apply_platform_kpi_guardrail(
+    result: dict[str, Any],
+    has_live_platform_metrics: bool,
+) -> dict[str, Any]:
+    normalized = dict(result)
+    if has_live_platform_metrics:
+        return normalized
+
+    normalized["regional_kpis"] = []
+    normalized["data_quality_notes"] = _append_unique_text(
+        normalized.get("data_quality_notes"),
+        (
+            "Platform KPI metrics are unavailable from live commerce providers; "
+            "regional_kpis is intentionally empty rather than populated with fallback values."
+        ),
+    )
+    return normalized
+
+
+def _apply_provider_status(
+    result: dict[str, Any],
+    config_context: dict[str, Any],
+    inputs: dict[str, Any],
+    has_live_platform_metrics: bool,
+) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.update(_provider_status(config_context, has_live_platform_metrics))
+    normalized = _apply_platform_kpi_guardrail(normalized, has_live_platform_metrics)
+    return _apply_currency_context(normalized, inputs)
 
 
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
@@ -222,20 +402,20 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     tasks_config = _load_yaml_config("tasks.yaml")
     llm = build_llm(config_context)
 
+    platform_metrics_tool = EcomPlatformMetricsTool(
+        ecom_api_token=config_context.get("ecom_api_token"),
+        shopify_store_domain=config_context.get("shopify_store_domain"),
+        shopify_admin_access_token=config_context.get("shopify_admin_access_token"),
+        shopify_api_version=config_context.get("shopify_api_version") or "2025-07",
+        amazon_sp_api_endpoint=config_context.get("amazon_sp_api_endpoint"),
+        amazon_sp_api_access_token=config_context.get("amazon_sp_api_access_token"),
+        amazon_marketplace_ids=config_context.get("amazon_marketplace_ids"),
+    )
+
     collector = Agent(
         config=agents_config["data_collector"],
         llm=llm,
-        tools=[
-            EcomPlatformMetricsTool(
-                ecom_api_token=config_context.get("ecom_api_token"),
-                shopify_store_domain=config_context.get("shopify_store_domain"),
-                shopify_admin_access_token=config_context.get("shopify_admin_access_token"),
-                shopify_api_version=config_context.get("shopify_api_version") or "2025-07",
-                amazon_sp_api_endpoint=config_context.get("amazon_sp_api_endpoint"),
-                amazon_sp_api_access_token=config_context.get("amazon_sp_api_access_token"),
-                amazon_marketplace_ids=config_context.get("amazon_marketplace_ids"),
-            )
-        ],
+        tools=[platform_metrics_tool],
     )
     analyst = Agent(
         config=agents_config["data_analyst"],
@@ -281,4 +461,10 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     )
 
     result = _serialize_crew_result(analytics_crew.kickoff(inputs=inputs))
-    return _apply_provider_status(result, config_context)
+    return _apply_provider_status(
+        result,
+        config_context,
+        inputs,
+        platform_metrics_tool.successful_live_fetch_count > 0,
+    )
+
