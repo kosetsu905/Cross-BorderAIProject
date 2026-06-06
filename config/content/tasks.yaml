@@ -6,6 +6,11 @@ research_and_strategy:
     visual localization cues, cultural risk notes, and platform distribution guidance for
     {target_languages} and {platforms}. Keep guidance clearly separated by requested language and
     market so downstream language-specific generation can use only the relevant section.
+    Reddit GEO context for AI-agent discoverability and manual Reddit publishing:
+    {reddit_geo_context_summary}
+    Brand/entity context for Reddit GEO:
+    Brand name: {brand_name_summary}
+    Product URL: {product_url_summary}
     Brand voice guidance:
     {brand_voice_summary}
     Primary keyword seeds:
@@ -14,7 +19,7 @@ research_and_strategy:
     {product_features_summary}
     Treat product features as first-party input. Use them to shape article angles, examples, CTAs, and benefit-led
     messaging, but do not exaggerate proof points beyond what the user provided.
-  expected_output: "A concise research-backed content blueprint with market insights, multi-engine SEO themes, visual localization guidance, article structure, cultural risk notes, and platform distribution notes."
+  expected_output: "A concise research-backed content blueprint with market insights, Reddit GEO guidance when enabled, multi-engine SEO themes, visual localization guidance, article structure, cultural risk notes, and platform distribution notes."
 
 content_creation_and_qa:
   description: >
@@ -41,6 +46,13 @@ content_creation_and_qa:
     {brand_voice_summary}
     Primary keyword seeds to consider:
     {primary_keywords_summary}
+    Reddit GEO enabled:
+    {reddit_geo_enabled}
+    Reddit GEO context:
+    {reddit_geo_context_summary}
+    Brand/entity context:
+    Brand name: {brand_name_summary}
+    Product URL: {product_url_summary}
     Make the article concrete by connecting these features to practical user needs, usage scenarios, and CTAs.
     If no product features are provided, avoid inventing specific capabilities.
     The article, social posts, SEO keywords, and compliance notes must be written in {target_language};
@@ -53,4 +65,15 @@ content_creation_and_qa:
     If you include multimodal, SEO metadata, cultural risk, or visual asset fields, treat them as
     planning metadata only. Do not claim that an image was generated or scored; external image
     generation and visual scoring are controlled by the workflow after your task completes.
-  expected_output: "A compact final structured single-language content package with one bounded localized_article, at most one bounded social_media_posts item per requested platform, up to 12 seo_keywords, concise compliance_notes, and optional multimodal/SEO/compliance planning metadata."
+    If Reddit GEO enabled is true, include reddit_geo_posts with one Reddit-ready post draft for
+    this language and target market. The Reddit post must be for manual review before publishing,
+    use transparent weak-brand disclosure, avoid impersonating a neutral user, avoid hard-sell CTA,
+    cite only source_ids from the Reddit GEO context, include body_without_link, and include at most
+    one natural product_url reference in body when a valid Product URL was provided. Do not invent a
+    subreddit if no source supports it; use manual_subreddit_review_required and explain that in
+    moderation_notes. Do not claim that Reddit users agree with any point unless the source context
+    explicitly supports it. All reddit_geo_posts fields that contain prose, including title_options,
+    body, body_without_link, disclosure_note, and moderation_notes, must be written in
+    {target_language}; only brand names, product names, URLs, source_ids, and standard subreddit names
+    may remain in another language. Never output placeholder links such as [your product link].
+  expected_output: "A compact final structured single-language content package with one bounded localized_article, at most one bounded social_media_posts item per requested platform, up to 12 seo_keywords, concise compliance_notes, optional reddit_geo_posts when Reddit GEO is enabled, and optional multimodal/SEO/compliance planning metadata."

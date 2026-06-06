@@ -226,6 +226,7 @@ If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Aut
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
 Content Creation also produces multimodal localization specs, video storyboard guidance, multi-engine SEO metadata, hreflang tags, JSON-LD, and cultural risk notes. Set request input `generate_visual_assets=true` to call the OpenAI Image API; generated files are stored under `CONTENT_IMAGE_ARTIFACT_DIR`, which defaults to ignored `artifacts/content_creation`. Without an OpenAI API key, the workflow still completes and marks image generation as `skipped_missing_credentials`.
+Content Creation can also produce a manual-review Reddit GEO publishing package. Set `generate_reddit_geo=true` or include `Reddit` in `platforms`; when `SERPER_API_KEY` is configured, the workflow searches `site:reddit.com` for community context and returns `reddit_geo_posts` plus `reddit_geo_sources`. It does not publish to Reddit or use Reddit OAuth.
 Marketing runs one shared strategy/channel-planning task and then generates market-specific creative/compliance packages in parallel. `MARKETING_MARKET_CONCURRENCY` controls the maximum number of market workers.
 Analytics competitive research can optionally deep-read Serper result URLs. When `SERPER_DEEP_READ_ENABLED=true`, `CompetitorBenchmarkTool` reads up to `SERPER_DEEP_READ_MAX_PAGES` pages per market with `SERPER_DEEP_READ_CONCURRENCY` workers and passes source excerpts to CrewAI.
 Customer Service keeps external Serper search off by default for faster support responses. Set `SUPPORT_SERPER_PRE_SALES_ENABLED=true`, `SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED=true`, or `SUPPORT_SERPER_POST_SALES_ENABLED=true` together with `SERPER_API_KEY` to enable live search only for that stage.
@@ -401,7 +402,7 @@ Required `inputs` by workflow:
 
 ```text
 marketing: product_category, product_usp, target_markets, budget
-content: subject, product_category, target_markets, target_languages, platforms (optional: product_features, brand_voice, primary_keywords, generate_visual_assets, image_generation_count, image_quality, image_size)
+content: subject, product_category, target_markets, target_languages, platforms (optional: product_features, brand_voice, brand_name, product_url, primary_keywords, generate_reddit_geo, generate_visual_assets, image_generation_count, image_quality, image_size)
 support: customer, person, inquiry (optional: ticket_id, customer_email, phone_number, inquiry_text, order_id, item_sku, return_reason, order_history, detected_language, channel, channel_thread_id, channel_message_id, sender_profile, attachments, conversation_history)
 analytics: product_category, target_markets, date_range, currency
 bizdev: product_category, partnership_type, target_markets, target_languages, key_decision_maker_roles
@@ -872,6 +873,7 @@ This request starts the Content Creation CrewAI workflow and may consume OpenAI 
 For multilingual inputs, the workflow runs research/strategy once, then generates each requested language in parallel up to `CONTENT_LANGUAGE_CONCURRENCY`.
 Use `product_features` when you want the article to focus on your actual product instead of broad category-level trends.
 Use `brand_voice` and `primary_keywords` to steer localization and SEO metadata. `generate_visual_assets` defaults to `false`; when set to `true`, the workflow calls the OpenAI Image API, saves generated files under `artifacts/content_creation`, and scores local assets with a vision-capable model. If no OpenAI API key is configured, the workflow returns visual prompts/specs and marks image generation as skipped instead of failing the content job.
+Use `generate_reddit_geo=true` to produce a Reddit-ready GEO post package for manual review. The workflow uses `SERPER_API_KEY` for `site:reddit.com` context when available, returns `reddit_geo_posts` and `reddit_geo_sources`, always includes a no-link post variant, and never posts to Reddit automatically. Provide `brand_name` and `product_url` when you want transparent weak-brand disclosure and one contextual product reference.
 
 ```powershell
 $body = @{
@@ -884,7 +886,10 @@ $body = @{
     target_languages = @("de", "ja", "en")
     platforms = @("Instagram", "LinkedIn", "X")
     brand_voice = "Premium, practical, sustainability-minded, and culturally respectful"
+    brand_name = "NorthPeak Layers"
+    product_url = "https://example.com/products/sustainable-activewear"
     primary_keywords = @("thermal activewear", "winter training layer", "recycled sportswear")
+    generate_reddit_geo = $false
     generate_visual_assets = $false
     image_generation_count = 1
     image_quality = "low"

@@ -10,13 +10,17 @@ from threading import Lock
 from unittest.mock import patch
 
 import httpx
+from pydantic import ValidationError
 
 from admin_dashboard import (
     ARTIFACT_ROOT,
     _content_inputs_from_form_values,
     _content_live_preview_groups,
+    _content_result_payload,
     _content_timeline_entries,
+    _content_reddit_geo_review_assets,
     _normalized_visual_score,
+    _reddit_geo_display_sections,
     _safe_artifact_path,
     _should_show_content_image_placeholder,
 )
@@ -35,12 +39,155 @@ from models import ContentInputs, WorkflowType
 from tools.custom.content_tools import (
     MultimodalLocalizationTool,
     OpenAIImageGenerationTool,
+    RedditGeoSearchTool,
     VisualAssetScoringTool,
 )
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
 
 
 class ContentToolTests(unittest.TestCase):
+    def test_reddit_geo_search_without_serper_key_returns_fallback(self) -> None:
+        tool = RedditGeoSearchTool(serper_api_key=None)
+
+        result = tool._run(
+            subject="Smart Thermos",
+            product_category="Drinkware",
+            target_markets="Japan",
+            primary_keywords=["insulated bottle"],
+            brand_name="ThermoCo",
+        )
+
+        self.assertEqual(result["status"], "skipped_missing_credentials")
+        self.assertEqual(result["data_source"], "serper_unavailable")
+        self.assertEqual(result["confidence_level"], "low")
+        self.assertEqual(result["sources"], [])
+        self.assertGreaterEqual(len(result["query_pack"]), 1)
+
+    def test_reddit_geo_search_extracts_subreddit_sources(self) -> None:
+        request = httpx.Request("POST", "https://google.serper.dev/search")
+        response = httpx.Response(
+            200,
+            json={
+                "organic": [
+                    {
+                        "title": "Best thermos for winter hikes?",
+                        "link": "https://www.reddit.com/r/BuyItForLife/comments/abc123/best_thermos/",
+                        "snippet": "People discuss durable insulated bottles for cold weather.",
+                    },
+                    {
+                        "title": "Best thermos for winter hikes?",
+                        "link": "https://www.reddit.com/r/BuyItForLife/comments/abc123/best_thermos/?utm_source=x",
+                        "snippet": "Duplicate URL should be removed.",
+                    },
+                ]
+            },
+            request=request,
+        )
+        tool = RedditGeoSearchTool(serper_api_key="serper-test-key")
+
+        with patch("tools.custom.content_tools.httpx.post", return_value=response) as post:
+            result = tool._run(
+                subject="Smart Thermos",
+                product_category="Drinkware",
+                target_markets="Japan",
+                primary_keywords=["insulated bottle"],
+                brand_name="ThermoCo",
+            )
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(result["status"], "live_search")
+        self.assertEqual(result["data_source"], "serper_search")
+        self.assertEqual(len(result["sources"]), 1)
+        self.assertEqual(result["sources"][0]["source_id"], "R1")
+        self.assertEqual(result["sources"][0]["subreddit"], "BuyItForLife")
+
+    def test_reddit_geo_search_filters_non_target_translation_urls(self) -> None:
+        request = httpx.Request("POST", "https://google.serper.dev/search")
+        response = httpx.Response(
+            200,
+            json={
+                "organic": [
+                    {
+                        "title": "Translated Reddit page",
+                        "link": "https://www.reddit.com/r/soccer/comments/abc123/cards/?tl=zh-hans",
+                        "snippet": "这是中文翻译内容，不应该进入德语GEO上下文。",
+                    },
+                    {
+                        "title": "Soccer card collectors in Germany",
+                        "link": "https://www.reddit.com/r/SoccerCards/comments/def456/germany_cards/?utm_source=search",
+                        "snippet": "Collectors discuss German market availability and card grading.",
+                    },
+                ]
+            },
+            request=request,
+        )
+        tool = RedditGeoSearchTool(serper_api_key="serper-test-key")
+
+        with patch("tools.custom.content_tools.httpx.post", return_value=response):
+            result = tool._run(
+                subject="World Cup Soccer Cards",
+                product_category="Sports Collectibles",
+                target_markets="Germany",
+                target_languages=["de"],
+            )
+
+        self.assertEqual(len(result["sources"]), 1)
+        self.assertEqual(result["sources"][0]["target_language"], "de")
+        self.assertEqual(result["sources"][0]["subreddit"], "SoccerCards")
+        self.assertNotIn("tl=zh", result["sources"][0]["url"])
+        self.assertNotIn("中文", result["sources"][0]["snippet"])
+
+    def test_reddit_geo_search_retries_retryable_status(self) -> None:
+        request = httpx.Request("POST", "https://google.serper.dev/search")
+        retry_response = httpx.Response(520, text="temporary error", request=request)
+        ok_response = httpx.Response(
+            200,
+            json={
+                "organic": [
+                    {
+                        "title": "Thermos discussion",
+                        "link": "https://www.reddit.com/r/CampingGear/comments/abc123/thermos/",
+                        "snippet": "Campers compare insulated bottles.",
+                    }
+                ]
+            },
+            request=request,
+        )
+        tool = RedditGeoSearchTool(serper_api_key="serper-test-key")
+
+        with patch(
+            "tools.custom.content_tools.httpx.post",
+            side_effect=[retry_response, ok_response, ok_response],
+        ) as post:
+            result = tool._run(
+                subject="Smart Thermos",
+                product_category="Drinkware",
+                target_markets="Japan",
+            )
+
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(result["status"], "live_search")
+        self.assertEqual(result["sources"][0]["subreddit"], "CampingGear")
+
+    def test_reddit_geo_search_provider_error_returns_fallback(self) -> None:
+        tool = RedditGeoSearchTool(serper_api_key="serper-test-key")
+
+        with patch(
+            "tools.custom.content_tools.httpx.post",
+            side_effect=httpx.ConnectError("network unavailable"),
+        ) as post:
+            result = tool._run(
+                subject="Smart Thermos",
+                product_category="Drinkware",
+                target_markets="Japan",
+            )
+
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(result["status"], "fallback_after_provider_error")
+        self.assertEqual(result["data_source"], "serper_error")
+        self.assertEqual(result["confidence_level"], "low")
+        self.assertIn("network unavailable", result["provider_error"])
+
     def test_image_generation_without_api_key_is_skipped(self) -> None:
         tool = OpenAIImageGenerationTool(openai_api_key=None)
 
@@ -77,6 +224,72 @@ class ContentToolTests(unittest.TestCase):
             self.assertTrue(saved_path.is_file())
             self.assertEqual(saved_path.read_bytes(), b"fake image bytes")
             self.assertGreaterEqual(result["assets"][0]["duration_seconds"], 0)
+
+    def test_image_generation_moderation_block_uses_safe_fallback_prompt(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/images/generations")
+        image_payload = base64.b64encode(b"safe fallback image bytes").decode("ascii")
+        responses = [
+            httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "Your request was rejected by the safety system.",
+                        "type": "image_generation_user_error",
+                        "code": "moderation_blocked",
+                    }
+                },
+                request=request,
+            ),
+            httpx.Response(200, json={"data": [{"b64_json": image_payload}]}, request=request),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tool = OpenAIImageGenerationTool(
+                openai_api_key="test-key",
+                artifact_dir=temp_dir,
+            )
+            with patch("tools.custom.content_tools.httpx.post", side_effect=responses) as post:
+                result = tool._run(prompt="World Cup athlete investment card prompt", output_slug="safe-image")
+
+            self.assertEqual(post.call_count, 2)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["attempts"], 2)
+            self.assertEqual(result["last_status_code"], 200)
+            self.assertIn("generic sports collectible", result["prompt"])
+            self.assertNotIn("World Cup athlete", result["prompt"])
+            saved_path = Path(result["assets"][0]["asset_path"])
+            self.assertEqual(saved_path.read_bytes(), b"safe fallback image bytes")
+
+    def test_image_generation_moderation_block_reports_failed_fallback(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/images/generations")
+        blocked_response = httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "Your request was rejected by the safety system.",
+                    "type": "image_generation_user_error",
+                    "code": "moderation_blocked",
+                }
+            },
+            request=request,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tool = OpenAIImageGenerationTool(
+                openai_api_key="test-key",
+                artifact_dir=temp_dir,
+            )
+            with patch(
+                "tools.custom.content_tools.httpx.post",
+                side_effect=[blocked_response, blocked_response],
+            ) as post:
+                result = tool._run(prompt="World Cup athlete investment card prompt")
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(result["last_status_code"], 400)
+        self.assertIn("safe fallback prompt also failed", result["error"])
 
     def test_image_generation_reports_520_after_retry_exhaustion(self) -> None:
         request = httpx.Request("POST", "https://api.openai.com/v1/images/generations")
@@ -284,7 +497,10 @@ class ContentToolTests(unittest.TestCase):
             target_languages="de, ja, en",
             platforms="Instagram, LinkedIn, X",
             brand_voice="Premium",
+            brand_name="NorthPeak Layers",
+            product_url="https://example.com/products/sustainable-activewear",
             primary_keywords="thermal activewear, recycled sportswear",
+            generate_reddit_geo=True,
             generate_visual_assets=True,
             image_generation_count=2,
             image_quality="high",
@@ -298,6 +514,9 @@ class ContentToolTests(unittest.TestCase):
             payload["primary_keywords"],
             ["thermal activewear", "recycled sportswear"],
         )
+        self.assertEqual(payload["brand_name"], "NorthPeak Layers")
+        self.assertEqual(payload["product_url"], "https://example.com/products/sustainable-activewear")
+        self.assertTrue(payload["generate_reddit_geo"])
         self.assertTrue(payload["generate_visual_assets"])
         self.assertEqual(payload["image_generation_count"], 2)
         self.assertEqual(ContentInputs.model_validate(payload).image_quality, "high")
@@ -308,6 +527,150 @@ class ContentToolTests(unittest.TestCase):
             ContentInputs.model_validate(payload_without_quality).image_quality,
             "low",
         )
+
+    def test_content_inputs_accept_reddit_geo_and_reject_invalid_product_url(self) -> None:
+        payload = {
+            "subject": "Smart Thermos",
+            "product_category": "Drinkware",
+            "target_markets": "Japan",
+            "target_languages": ["ja"],
+            "platforms": ["Reddit"],
+            "brand_name": "ThermoCo",
+            "product_url": "https://example.com/products/smart-thermos",
+            "generate_reddit_geo": True,
+        }
+
+        validated = ContentInputs.model_validate(payload)
+
+        self.assertTrue(validated.generate_reddit_geo)
+        self.assertEqual(validated.product_url, "https://example.com/products/smart-thermos")
+
+        invalid_payload = dict(payload)
+        invalid_payload["product_url"] = "ftp://example.com/products/smart-thermos"
+        with self.assertRaises(ValidationError):
+            ContentInputs.model_validate(invalid_payload)
+
+        extra_payload = dict(payload)
+        extra_payload["reddit_api_token"] = "secret"
+        with self.assertRaises(ValidationError):
+            ContentInputs.model_validate(extra_payload)
+
+    def test_content_result_payload_detects_reddit_geo_only_result(self) -> None:
+        latest_job = {
+            "result": {
+                "reddit_geo_posts": [],
+                "reddit_geo_sources": [],
+            }
+        }
+
+        self.assertIs(_content_result_payload(latest_job), latest_job["result"])
+
+    def test_reddit_geo_display_sections_hide_translated_sources(self) -> None:
+        content_result = {
+            "reddit_geo_posts": [
+                {
+                    "language": "de",
+                    "target_market": "Germany",
+                    "recommended_subreddit": "r/SoccerCards",
+                    "title_options": ["Welche Karten sind sinnvoll?"],
+                    "body": "Disclosure: Wir sind mit der Produktseite verbunden.",
+                    "body_without_link": "Disclosure: Wir sind mit der Produktseite verbunden.",
+                    "disclosure_note": "Disclosure: Wir sind mit der Produktseite verbunden.",
+                    "ai_search_entity_signals": ["World Cup Soccer Cards", "Germany"],
+                    "source_ids": ["R1", "R2"],
+                    "moderation_notes": ["Regeln vor dem Posten prüfen."],
+                    "data_source": "serper_search",
+                    "confidence_level": "medium",
+                }
+            ],
+            "reddit_geo_sources": [
+                {
+                    "source_id": "R1",
+                    "target_market": "Germany",
+                    "target_language": "de",
+                    "subreddit": "SoccerCards",
+                    "title": "German collectors",
+                    "snippet": "Collectors discuss grading and availability.",
+                    "url": "https://www.reddit.com/r/SoccerCards/comments/abc/cards/",
+                    "query_type": "reddit_need_discussion",
+                    "query": "site:reddit.com/r cards",
+                    "data_source": "serper_search",
+                    "confidence_level": "medium",
+                },
+                {
+                    "source_id": "R2",
+                    "target_market": "Germany",
+                    "target_language": "de",
+                    "subreddit": "soccer",
+                    "title": "Translated page",
+                    "snippet": "这是中文翻译内容。",
+                    "url": "https://www.reddit.com/r/soccer/comments/abc/cards/?tl=zh-hans",
+                    "query_type": "reddit_need_discussion",
+                    "query": "site:reddit.com/r cards",
+                    "data_source": "serper_search",
+                    "confidence_level": "medium",
+                },
+            ],
+        }
+
+        sections = _reddit_geo_display_sections(content_result)
+
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["recommended_subreddit"], "r/SoccerCards")
+        self.assertEqual([source["source_id"] for source in sections[0]["sources"]], ["R1"])
+
+    def test_reddit_geo_review_assets_include_production_ready_assets(self) -> None:
+        latest_job = {
+            "result": {
+                "reddit_geo_posts": [
+                    {
+                        "language": "en",
+                        "target_market": "United States",
+                        "recommended_subreddit": "r/SoccerCards",
+                        "title_options": ["How do you compare card sleeves?"],
+                        "body": "Disclosure: connected to the product page.",
+                        "body_without_link": "Disclosure: connected to the product page.",
+                        "disclosure_note": "Disclosure: connected to the product page.",
+                        "ai_search_entity_signals": ["Soccer card sleeves"],
+                        "source_ids": ["R1"],
+                        "moderation_notes": ["Review subreddit rules first."],
+                        "data_source": "serper_search",
+                        "confidence_level": "medium",
+                    }
+                ],
+                "reddit_geo_sources": [
+                    {
+                        "source_id": "R1",
+                        "target_market": "United States",
+                        "target_language": "en",
+                        "subreddit": "SoccerCards",
+                        "title": "Sleeve recommendations",
+                        "snippet": "Collectors compare sleeve quality.",
+                        "url": "https://www.reddit.com/r/SoccerCards/comments/abc/sleeves/",
+                        "query_type": "reddit_need_discussion",
+                        "query": "site:reddit.com/r/SoccerCards sleeves",
+                        "data_source": "serper_search",
+                        "confidence_level": "medium",
+                    }
+                ],
+                "production_ready_assets": [
+                    {
+                        "asset_type": "reddit_geo_post",
+                        "language": "en",
+                        "target_market": "United States",
+                        "recommended_subreddit": "r/SoccerCards",
+                        "status": "ready_for_manual_reddit_review",
+                    }
+                ],
+            }
+        }
+
+        review_assets = _content_reddit_geo_review_assets(latest_job)
+
+        self.assertEqual(len(review_assets), 1)
+        self.assertEqual(review_assets[0]["status"], "ready_for_manual_reddit_review")
+        self.assertEqual(review_assets[0]["source_ids"], ["R1"])
+        self.assertEqual(review_assets[0]["title_options"], ["How do you compare card sleeves?"])
 
     def test_content_generation_defaults_to_bounded_llm_context(self) -> None:
         context = _content_generation_llm_context({})
@@ -342,6 +705,9 @@ class ContentToolTests(unittest.TestCase):
         self.assertIn("{content_social_post_max_chars}", prompt)
         self.assertIn("{content_seo_keywords_max_count}", prompt)
         self.assertIn("Return at most one social post per requested", prompt)
+        self.assertIn("All reddit_geo_posts fields that contain prose", prompt)
+        self.assertIn("must be written in", prompt)
+        self.assertIn("Never output placeholder links", prompt)
 
     def test_content_timeline_entries_normalize_task_and_stage_events(self) -> None:
         events = [
@@ -728,6 +1094,150 @@ class ContentToolTests(unittest.TestCase):
             summary,
             "Output exceeded generation limit; content was truncated before valid JSON could be parsed.",
         )
+
+    def test_content_workflow_injects_reddit_geo_context_and_merges_outputs(self) -> None:
+        inputs = {
+            "subject": "Smart Thermos",
+            "product_category": "Drinkware",
+            "target_markets": "Japan",
+            "target_languages": ["ja"],
+            "platforms": ["Reddit"],
+            "brand_name": "ThermoCo",
+            "product_url": "https://example.com/products/smart-thermos",
+            "generate_reddit_geo": True,
+            "generate_visual_assets": False,
+        }
+        reddit_context = {
+            "status": "live_search",
+            "data_source": "serper_search",
+            "confidence_level": "medium",
+            "assumption_notice": "Review subreddit rules before posting.",
+            "query_pack": [],
+            "sources": [
+                {
+                    "source_id": "R1",
+                    "target_market": "Japan",
+                    "subreddit": "BuyItForLife",
+                    "title": "Best thermos for winter hikes?",
+                    "snippet": "People compare durable insulated bottles.",
+                    "url": "https://www.reddit.com/r/BuyItForLife/comments/abc123/best_thermos/",
+                    "query_type": "reddit_need_discussion",
+                    "query": "site:reddit.com/r/ thermos",
+                }
+            ],
+            "duration_seconds": 0.01,
+            "provider_error": None,
+        }
+        captured_strategy_inputs: dict[str, object] = {}
+
+        def fake_research_strategy(
+            normalized_inputs: dict[str, object],
+            agents_config: dict[str, object],
+            tasks_config: dict[str, object],
+            config_context: dict[str, object],
+        ) -> dict[str, object]:
+            captured_strategy_inputs.update(normalized_inputs)
+            return {"strategy": "ok"}
+
+        def fake_language_generation(
+            language: str,
+            language_index: int,
+            normalized_inputs: dict[str, object],
+            strategy_context: dict[str, object],
+            agents_config: dict[str, object],
+            tasks_config: dict[str, object],
+            config_context: dict[str, object],
+        ) -> dict[str, object]:
+            self.assertIn("R1", str(normalized_inputs["reddit_geo_context_summary"]))
+            return {
+                "localized_article": {
+                    "language": language,
+                    "title": "Smart Thermos buying guide",
+                    "article": "Article body",
+                },
+                "social_media_posts": [],
+                "seo_keywords": ["smart thermos"],
+                "compliance_notes": "Reviewed.",
+                "visual_assets": [],
+                "visual_asset_scores": [],
+                "reddit_geo_posts": [
+                    {
+                        "target_market": "Japan",
+                        "language": language,
+                        "recommended_subreddit": "r/BuyItForLife",
+                        "title_options": ["Smart Thermos buying questions"],
+                        "body": "Disclosure: I am affiliated with ThermoCo.\n\nUseful context: https://example.com/products/smart-thermos",
+                        "body_without_link": "Disclosure: I am affiliated with ThermoCo.\n\nUseful context.",
+                        "disclosure_note": "Disclosure: I am affiliated with ThermoCo.",
+                        "ai_search_entity_signals": ["ThermoCo", "Smart Thermos", "Japan"],
+                        "source_ids": ["R1"],
+                        "moderation_notes": ["Check subreddit self-promotion rules."],
+                        "data_source": "serper_search",
+                        "confidence_level": "medium",
+                    }
+                ],
+            }
+
+        with patch("crews.content_crew.RedditGeoSearchTool._run", return_value=reddit_context):
+            with patch("crews.content_crew._run_research_strategy", side_effect=fake_research_strategy):
+                with patch("crews.content_crew._run_language_generation", side_effect=fake_language_generation):
+                    result = run_content_crew(inputs, {"serper_api_key": "serper-test-key"})
+
+        self.assertTrue(captured_strategy_inputs["reddit_geo_enabled"])
+        self.assertIn("R1", str(captured_strategy_inputs["reddit_geo_context_summary"]))
+        self.assertEqual(result["reddit_geo_sources"][0]["source_id"], "R1")
+        self.assertEqual(result["reddit_geo_sources"][0]["data_source"], "serper_search")
+        self.assertEqual(result["reddit_geo_posts"][0]["recommended_subreddit"], "r/BuyItForLife")
+        self.assertTrue(
+            any(asset["asset_type"] == "reddit_geo_post" for asset in result["production_ready_assets"])
+        )
+
+    def test_content_workflow_keeps_reddit_geo_empty_when_disabled(self) -> None:
+        inputs = {
+            "subject": "Smart Thermos",
+            "product_category": "Drinkware",
+            "target_markets": "Japan",
+            "target_languages": ["ja"],
+            "platforms": ["Instagram"],
+            "generate_visual_assets": False,
+        }
+
+        def fake_language_generation(
+            language: str,
+            language_index: int,
+            normalized_inputs: dict[str, object],
+            strategy_context: dict[str, object],
+            agents_config: dict[str, object],
+            tasks_config: dict[str, object],
+            config_context: dict[str, object],
+        ) -> dict[str, object]:
+            return {
+                "localized_article": {
+                    "language": language,
+                    "title": "Title",
+                    "article": "Article body",
+                },
+                "social_media_posts": [
+                    {
+                        "platform": "Instagram",
+                        "language": language,
+                        "content": "Post",
+                    }
+                ],
+                "seo_keywords": ["keyword"],
+                "compliance_notes": "Reviewed.",
+                "visual_assets": [],
+                "visual_asset_scores": [],
+            }
+
+        with patch("crews.content_crew.RedditGeoSearchTool._run") as search:
+            with patch("crews.content_crew._run_research_strategy", return_value={"strategy": "ok"}):
+                with patch("crews.content_crew._run_language_generation", side_effect=fake_language_generation):
+                    result = run_content_crew(inputs, {})
+
+        search.assert_not_called()
+        self.assertEqual(result["reddit_geo_posts"], [])
+        self.assertEqual(result["reddit_geo_sources"], [])
 
     def test_content_workflow_merges_successful_language_when_another_fails(self) -> None:
         inputs = {

@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 OPENAI_IMAGE_GENERATION_URL = "https://api.openai.com/v1/images/generations"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+SERPER_SEARCH_URL = "https://google.serper.dev/search"
 DEFAULT_CONTENT_ARTIFACT_DIR = "artifacts/content_creation"
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
@@ -72,6 +74,54 @@ class VisualAssetScoringInput(BaseModel):
     target_market: str = Field(..., min_length=1)
     language: str = Field(..., min_length=1)
     brand_voice: str = Field(default="Premium, trustworthy, and culturally respectful")
+
+
+class RedditGeoSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(..., min_length=1)
+    product_category: str = Field(..., min_length=1)
+    target_markets: str = Field(..., min_length=1)
+    primary_keywords: list[str] | None = None
+    target_languages: list[str] | None = None
+    brand_name: str | None = None
+    max_results_per_query: int = Field(default=5, ge=1, le=10)
+
+
+class RedditGeoQueryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_market: str = Field(..., min_length=1)
+    target_language: str = Field(default="", description="Language assigned to this target market")
+    query_type: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1)
+
+
+class RedditGeoSourceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(..., min_length=1)
+    target_market: str = Field(..., min_length=1)
+    target_language: str = Field(default="", description="Language assigned to this Reddit source")
+    subreddit: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1)
+    snippet: str = Field(..., min_length=1)
+    url: str = Field(..., min_length=1)
+    query_type: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1)
+
+
+class RedditGeoSearchOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., min_length=1)
+    data_source: str = Field(..., min_length=1)
+    confidence_level: str = Field(..., min_length=1)
+    assumption_notice: str = Field(..., min_length=1)
+    query_pack: list[RedditGeoQueryResult] = Field(default_factory=list)
+    sources: list[RedditGeoSourceResult] = Field(default_factory=list)
+    duration_seconds: float = Field(..., ge=0)
+    provider_error: str | None = None
 
 
 class MultimodalLocalizationTool(BaseTool):
@@ -224,6 +274,91 @@ class CulturalComplianceCheckerTool(BaseTool):
         }
 
 
+class RedditGeoSearchTool(BaseTool):
+    name: str = "Reddit GEO Search Tool"
+    description: str = (
+        "Finds Reddit discussion context by target market through Serper site:reddit.com "
+        "searches for manual Reddit GEO content planning."
+    )
+    args_schema: type[BaseModel] = RedditGeoSearchInput
+    serper_api_key: str | None = None
+
+    def _run(
+        self,
+        subject: str,
+        product_category: str,
+        target_markets: str,
+        primary_keywords: list[str] | None = None,
+        target_languages: list[str] | None = None,
+        brand_name: str | None = None,
+        max_results_per_query: int = 5,
+    ) -> dict[str, Any]:
+        started_at = time.monotonic()
+        query_pack = _reddit_geo_query_pack(
+            subject,
+            product_category,
+            target_markets,
+            primary_keywords,
+            target_languages,
+            brand_name,
+        )
+        if not self.serper_api_key:
+            return _reddit_geo_output(
+                status="skipped_missing_credentials",
+                data_source="serper_unavailable",
+                confidence_level="low",
+                assumption_notice=(
+                    "SERPER_API_KEY is not configured, so Reddit GEO context is limited "
+                    "to generic manual-review guidance."
+                ),
+                query_pack=query_pack,
+                sources=[],
+                started_at=started_at,
+            )
+
+        try:
+            sources: list[dict[str, str]] = []
+            for query_def in query_pack:
+                payload = _post_serper_search(
+                    self.serper_api_key,
+                    query_def["query"],
+                    max_results_per_query,
+                )
+                sources.extend(_reddit_sources_from_serper_payload(payload, query_def))
+
+            sources = _dedupe_reddit_sources(sources)
+            for index, source in enumerate(sources, start=1):
+                source["source_id"] = f"R{index}"
+
+            return _reddit_geo_output(
+                status="live_search",
+                data_source="serper_search",
+                confidence_level="medium" if sources else "low",
+                assumption_notice=(
+                    "Reddit GEO context is based on live Serper search snippets from Reddit. "
+                    "Review each subreddit rule page and source thread before posting."
+                ),
+                query_pack=query_pack,
+                sources=sources,
+                started_at=started_at,
+            )
+        except Exception as exc:
+            logger.warning("Reddit GEO Serper lookup failed: %s", exc)
+            return _reddit_geo_output(
+                status="fallback_after_provider_error",
+                data_source="serper_error",
+                confidence_level="low",
+                assumption_notice=(
+                    "Reddit GEO search failed. Generated Reddit posts should be treated "
+                    "as draft templates until a human validates subreddit fit."
+                ),
+                query_pack=query_pack,
+                sources=[],
+                started_at=started_at,
+                provider_error=_safe_error(exc),
+            )
+
+
 class OpenAIImageGenerationTool(BaseTool):
     name: str = "OpenAI Image Generation Tool"
     description: str = (
@@ -298,6 +433,61 @@ class OpenAIImageGenerationTool(BaseTool):
                 "error": None,
             }
         except Exception as exc:
+            if _is_image_generation_moderation_block(exc):
+                fallback_prompt = _safe_image_generation_fallback_prompt()
+                fallback_payload = {
+                    **payload,
+                    "prompt": fallback_prompt,
+                }
+                try:
+                    response_payload = _post_openai_json(
+                        OPENAI_IMAGE_GENERATION_URL,
+                        self.openai_api_key,
+                        fallback_payload,
+                        timeout_seconds=120,
+                        attempt_recorder=lambda status_code: _record_http_attempt(
+                            attempt_metadata,
+                            status_code,
+                        ),
+                    )
+                    assets = _save_image_generation_payload(
+                        response_payload,
+                        self.artifact_dir,
+                        output_slug,
+                        self.image_model,
+                        fallback_prompt,
+                        time.monotonic() - started_at,
+                    )
+                    return {
+                        "status": "completed" if assets else "completed_no_local_asset",
+                        "model": self.image_model,
+                        "prompt": fallback_prompt,
+                        "assets": assets,
+                        "duration_seconds": round(time.monotonic() - started_at, 3),
+                        "attempts": attempt_metadata["attempts"],
+                        "last_status_code": attempt_metadata["last_status_code"],
+                        "retryable_status": _is_retryable_status_code(
+                            attempt_metadata["last_status_code"]
+                        ),
+                        "error": None,
+                    }
+                except Exception as fallback_exc:
+                    logger.warning("OpenAI safe fallback image generation failed: %s", fallback_exc)
+                    last_status_code = _last_status_code(attempt_metadata, fallback_exc)
+                    return {
+                        "status": "failed",
+                        "model": self.image_model,
+                        "prompt": fallback_prompt,
+                        "assets": [],
+                        "duration_seconds": round(time.monotonic() - started_at, 3),
+                        "attempts": attempt_metadata["attempts"],
+                        "last_status_code": last_status_code,
+                        "retryable_status": _is_retryable_status_code(last_status_code),
+                        "error": (
+                            "Initial image prompt was blocked by moderation and the safe "
+                            f"fallback prompt also failed: {_safe_error(fallback_exc)}"
+                        ),
+                    }
             logger.warning("OpenAI image generation failed: %s", exc)
             last_status_code = _last_status_code(attempt_metadata, exc)
             return {
@@ -435,6 +625,37 @@ def _is_retryable_status_code(status_code: int | None) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
+def _is_image_generation_moderation_block(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code != 400:
+        return False
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        payload = {}
+    error_payload = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error_payload, dict):
+        code = str(error_payload.get("code") or "").lower()
+        error_type = str(error_payload.get("type") or "").lower()
+        if code == "moderation_blocked" or error_type == "image_generation_user_error":
+            return True
+    text = exc.response.text.lower()
+    return "moderation_blocked" in text or "image_generation_user_error" in text
+
+
+def _safe_image_generation_fallback_prompt() -> str:
+    return (
+        "Premium e-commerce studio product display of generic sports collectible "
+        "trading card packs and protective card sleeves on a clean neutral table. "
+        "No real athletes, celebrities, teams, leagues, flags, medals, official event "
+        "marks, logos, brand names, jersey designs, investment claims, pricing claims, "
+        "readable text, labels, signage, watermarks, or unsupported product claims. "
+        "Use neutral lighting, clear product detail, soft depth of field, and safe "
+        "commercial catalog styling."
+    )
+
+
 @retry(
     retry=retry_if_exception(_is_retryable_exception),
     stop=stop_after_attempt(3),
@@ -463,6 +684,253 @@ def _post_openai_json(
         attempt_recorder(response.status_code)
     response.raise_for_status()
     return response.json()
+
+
+@retry(
+    retry=retry_if_exception(_is_retryable_exception),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.25, min=0, max=2),
+    reraise=True,
+)
+def _post_serper_search(
+    serper_api_key: str,
+    query: str,
+    max_results: int,
+) -> dict[str, Any]:
+    response = httpx.post(
+        SERPER_SEARCH_URL,
+        headers={
+            "X-API-KEY": serper_api_key,
+            "Content-Type": "application/json",
+        },
+        json={"q": query, "num": max_results},
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _reddit_geo_output(
+    *,
+    status: str,
+    data_source: str,
+    confidence_level: str,
+    assumption_notice: str,
+    query_pack: list[dict[str, str]],
+    sources: list[dict[str, str]],
+    started_at: float,
+    provider_error: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "status": status,
+        "data_source": data_source,
+        "confidence_level": confidence_level,
+        "assumption_notice": assumption_notice,
+        "query_pack": query_pack,
+        "sources": sources,
+        "duration_seconds": round(time.monotonic() - started_at, 3),
+        "provider_error": provider_error,
+    }
+    return RedditGeoSearchOutput.model_validate(payload).model_dump()
+
+
+def _reddit_geo_query_pack(
+    subject: str,
+    product_category: str,
+    target_markets: str,
+    primary_keywords: list[str] | None,
+    target_languages: list[str] | None,
+    brand_name: str | None,
+) -> list[dict[str, str]]:
+    markets = _split_target_markets(target_markets)
+    keyword = _first_keyword(primary_keywords, subject)
+    brand_term = f' "{brand_name.strip()}"' if isinstance(brand_name, str) and brand_name.strip() else ""
+    query_pack: list[dict[str, str]] = []
+    for index, market in enumerate(markets):
+        target_language = _target_language_for_market_index(target_languages, index, len(markets))
+        query_pack.extend(
+            [
+                {
+                    "target_market": market,
+                    "target_language": target_language,
+                    "query_type": "reddit_need_discussion",
+                    "query": (
+                        f'site:reddit.com/r/ "{subject}" "{market}" '
+                        f'"{keyword}" advice OR recommendations{brand_term}'
+                    ),
+                },
+                {
+                    "target_market": market,
+                    "target_language": target_language,
+                    "query_type": "reddit_category_questions",
+                    "query": (
+                        f'site:reddit.com/r/ "{product_category}" "{market}" '
+                        '"what should I buy" OR "is it worth it"'
+                    ),
+                },
+            ]
+        )
+    return query_pack
+
+
+def _target_language_for_market_index(
+    target_languages: list[str] | None,
+    market_index: int,
+    market_count: int,
+) -> str:
+    languages = [
+        str(language).strip()
+        for language in target_languages or []
+        if str(language).strip()
+    ]
+    if len(languages) == market_count:
+        return languages[market_index]
+    if len(languages) == 1:
+        return languages[0]
+    return ""
+
+
+def _split_target_markets(value: str) -> list[str]:
+    markets = [
+        market.strip()
+        for market in str(value or "").split(",")
+        if market.strip()
+    ]
+    return markets or ["Global"]
+
+
+def _first_keyword(primary_keywords: list[str] | None, subject: str) -> str:
+    for keyword in primary_keywords or []:
+        if isinstance(keyword, str) and keyword.strip():
+            return keyword.strip()
+    return subject.strip()
+
+
+def _reddit_sources_from_serper_payload(
+    payload: dict[str, Any],
+    query_def: dict[str, str],
+) -> list[dict[str, str]]:
+    sources: list[dict[str, str]] = []
+    for item in payload.get("organic") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("link") or "").strip()
+        title = str(item.get("title") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+        url = _normalized_reddit_url_for_language(
+            url,
+            query_def.get("target_language", ""),
+        )
+        if url is None:
+            continue
+        if _snippet_is_obvious_translation_mismatch(
+            snippet,
+            query_def.get("target_language", ""),
+        ):
+            continue
+        subreddit = _subreddit_from_url(url)
+        if not url or not title or not snippet or not subreddit:
+            continue
+        sources.append(
+            {
+                "source_id": "",
+                "target_market": query_def["target_market"],
+                "target_language": query_def.get("target_language", ""),
+                "subreddit": subreddit,
+                "title": title,
+                "snippet": snippet,
+                "url": url,
+                "query_type": query_def["query_type"],
+                "query": query_def["query"],
+            }
+        )
+    return sources
+
+
+def _normalized_reddit_url_for_language(url: str, target_language: str) -> str | None:
+    if not url:
+        return None
+    parsed = urlsplit(url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    translation_languages = [
+        value
+        for key, value in query_items
+        if key.lower() == "tl" and value
+    ]
+    for translation_language in translation_languages:
+        if not _reddit_translation_matches_target(translation_language, target_language):
+            return None
+    filtered_query_items = [
+        (key, value)
+        for key, value in query_items
+        if key.lower() != "tl"
+    ]
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(filtered_query_items, doseq=True),
+            parsed.fragment,
+        )
+    )
+
+
+def _reddit_translation_matches_target(translation_language: str, target_language: str) -> bool:
+    if not target_language:
+        return False
+    translation = translation_language.strip().lower()
+    target = target_language.strip().lower().replace("_", "-")
+    if not translation or not target:
+        return False
+    if target.startswith("zh"):
+        return translation.startswith("zh")
+    target_base = target.split("-", 1)[0]
+    translation_base = translation.split("-", 1)[0]
+    return target_base == translation_base
+
+
+def _snippet_is_obvious_translation_mismatch(snippet: str, target_language: str) -> bool:
+    target = target_language.strip().lower()
+    if target.startswith(("zh", "ja", "ko")):
+        return False
+    cjk_count = sum(1 for character in snippet if "\u4e00" <= character <= "\u9fff")
+    return cjk_count >= 8
+
+
+def _subreddit_from_url(url: str) -> str:
+    match = re.search(r"reddit\.com/r/([^/?#]+)", url, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    subreddit = match.group(1).strip()
+    if not subreddit or subreddit.lower() in {"all", "popular"}:
+        return ""
+    return subreddit
+
+
+def _reddit_source_key(source: dict[str, str]) -> str:
+    url = source.get("url", "").strip()
+    if url:
+        return re.sub(r"[?#].*$", "", url).rstrip("/").lower()
+    return "|".join(
+        [
+            source.get("subreddit", "").lower(),
+            source.get("title", "").strip().lower(),
+            source.get("snippet", "").strip().lower(),
+        ]
+    )
+
+
+def _dedupe_reddit_sources(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    unique_sources: list[dict[str, str]] = []
+    for source in sources:
+        key = _reddit_source_key(source)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique_sources.append(source)
+    return unique_sources
 
 
 def _save_image_generation_payload(

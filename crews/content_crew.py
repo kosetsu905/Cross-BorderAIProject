@@ -15,6 +15,7 @@ from tools.custom.content_tools import (
     MultiEngineSEOOptimizerTool,
     MultimodalLocalizationTool,
     OpenAIImageGenerationTool,
+    RedditGeoSearchTool,
     VisualAssetScoringTool,
 )
 from utils.crew_result import serialize_crew_result
@@ -170,6 +171,41 @@ class VisualAssetScore(BaseModel):
     error: str | None = Field(None, description="Scoring error or skip reason")
 
 
+class RedditGeoSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(..., description="Stable source identifier used by Reddit GEO posts")
+    target_market: str = Field(..., description="Market associated with the Reddit search query")
+    target_language: str = Field(default="", description="Target language associated with the source")
+    subreddit: str = Field(..., description="Subreddit extracted from the source URL")
+    title: str = Field(..., description="Reddit thread or result title")
+    snippet: str = Field(..., description="Search snippet used for context")
+    url: str = Field(..., description="Reddit source URL")
+    query_type: str = Field(..., description="Search query category that found this source")
+    query: str = Field(..., description="Serper search query that found this source")
+    data_source: str = Field(..., description="Provider status such as serper_search or serper_error")
+    confidence_level: str = Field(..., description="Confidence level for this Reddit context source")
+
+
+class RedditGeoPost(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_market: str = Field(..., description="Target market for the Reddit post")
+    language: str = Field(..., description="Language code or name for the Reddit post")
+    recommended_subreddit: str = Field(..., description="Recommended subreddit or manual review placeholder")
+    title_options: list[str] = Field(..., description="Reddit-ready title options")
+    body: str = Field(..., description="Transparent weak-brand Reddit post body with at most one contextual link")
+    body_without_link: str = Field(..., description="Alternative Reddit post body without product links")
+    disclosure_note: str = Field(..., description="Transparent affiliation or relationship disclosure")
+    ai_search_entity_signals: list[str] = Field(
+        ..., description="Product, brand, category, market, and use-case entity signals"
+    )
+    source_ids: list[str] = Field(..., description="Reddit GEO source IDs used to ground this post")
+    moderation_notes: list[str] = Field(..., description="Manual subreddit rule and tone checks before posting")
+    data_source: str = Field(..., description="Provider status used to build the Reddit post")
+    confidence_level: str = Field(..., description="Confidence level based on source availability")
+
+
 class MarketMultimodalOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -214,6 +250,14 @@ class ContentOutput(BaseModel):
         default_factory=list,
         description="Optional generated visual asset scores",
     )
+    reddit_geo_posts: list[RedditGeoPost] = Field(
+        default_factory=list,
+        description="Optional Reddit-ready GEO posts for manual review and publication",
+    )
+    reddit_geo_sources: list[RedditGeoSource] = Field(
+        default_factory=list,
+        description="Reddit search sources used to ground the Reddit GEO posts",
+    )
 
 
 class PerLanguageContentOutput(BaseModel):
@@ -248,6 +292,10 @@ class PerLanguageContentOutput(BaseModel):
     visual_asset_scores: list[VisualAssetScore] = Field(
         default_factory=list,
         description="Optional vision scores for generated visual assets",
+    )
+    reddit_geo_posts: list[RedditGeoPost] = Field(
+        default_factory=list,
+        description="Optional Reddit-ready GEO posts for this language and market",
     )
 
 
@@ -328,7 +376,11 @@ def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
         normalized.get("product_features")
     )
     normalized["brand_voice_summary"] = _brand_voice(normalized)
+    normalized["brand_name_summary"] = _brand_name_summary(normalized)
+    normalized["product_url_summary"] = _product_url_summary(normalized)
     normalized["primary_keywords_summary"] = ", ".join(_primary_keywords(normalized))
+    normalized["reddit_geo_enabled"] = _reddit_geo_enabled(normalized)
+    normalized["reddit_geo_context_summary"] = "Reddit GEO generation is disabled for this request."
     normalized["content_article_max_chars"] = CONTENT_ARTICLE_MAX_CHARS
     normalized["content_title_max_chars"] = CONTENT_TITLE_MAX_CHARS
     normalized["content_social_post_max_chars"] = CONTENT_SOCIAL_POST_MAX_CHARS
@@ -369,6 +421,25 @@ def _primary_keywords(inputs: dict[str, Any]) -> list[str]:
     return [f"{seed} buying guide", f"{seed} benefits", f"{seed} review"]
 
 
+def _brand_name_summary(inputs: dict[str, Any]) -> str:
+    value = str(inputs.get("brand_name") or "").strip()
+    return value or "No brand name was provided; avoid inventing a named brand."
+
+
+def _product_url_summary(inputs: dict[str, Any]) -> str:
+    value = str(inputs.get("product_url") or "").strip()
+    return value or "No product URL was provided; produce a no-link Reddit variant."
+
+
+def _reddit_geo_enabled(inputs: dict[str, Any]) -> bool:
+    if bool(inputs.get("generate_reddit_geo")):
+        return True
+    return any(
+        str(platform).strip().casefold() == "reddit"
+        for platform in inputs.get("platforms", [])
+    )
+
+
 def _product_name(inputs: dict[str, Any]) -> str:
     return str(inputs.get("subject") or inputs.get("product_category") or "Product").strip()
 
@@ -397,6 +468,101 @@ def _target_market_for_language(inputs: dict[str, Any], language_index: int) -> 
     if len(markets) == len(languages):
         return markets[language_index]
     return str(inputs.get("target_markets", ""))
+
+
+def _build_reddit_geo_context(
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> dict[str, Any]:
+    if not _reddit_geo_enabled(inputs):
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "data_source": "not_requested",
+            "confidence_level": "none",
+            "assumption_notice": "Reddit GEO generation was not requested.",
+            "sources": [],
+            "query_pack": [],
+            "provider_error": None,
+        }
+
+    tool = RedditGeoSearchTool(serper_api_key=config_context.get("serper_api_key"))
+    context = tool._run(
+        subject=str(inputs.get("subject") or ""),
+        product_category=str(inputs.get("product_category") or ""),
+        target_markets=str(inputs.get("target_markets") or ""),
+        primary_keywords=_primary_keywords(inputs),
+        target_languages=[
+            str(language).strip()
+            for language in inputs.get("target_languages", [])
+            if str(language).strip()
+        ],
+        brand_name=str(inputs.get("brand_name") or "").strip() or None,
+    )
+    context["enabled"] = True
+    return context
+
+
+def _reddit_geo_context_summary(context: dict[str, Any]) -> str:
+    if not context.get("enabled"):
+        return "Reddit GEO generation is disabled for this request."
+
+    lines = [
+        (
+            "Reddit GEO generation is enabled. "
+            f"Status: {context.get('status')}; "
+            f"data_source: {context.get('data_source')}; "
+            f"confidence_level: {context.get('confidence_level')}."
+        ),
+        str(context.get("assumption_notice") or "").strip(),
+    ]
+    provider_error = str(context.get("provider_error") or "").strip()
+    if provider_error:
+        lines.append(f"Provider error summary: {provider_error}")
+
+    sources = [
+        source
+        for source in context.get("sources", [])
+        if isinstance(source, dict)
+    ]
+    if not sources:
+        lines.append(
+            "No live Reddit source snippets are available; generate a cautious draft "
+            "and mark subreddit fit for human validation."
+        )
+        return "\n".join(line for line in lines if line).strip()
+
+    lines.append("Use these Reddit snippets as context only; do not claim Reddit consensus:")
+    for source in sources[:10]:
+        lines.append(
+            "- "
+            f"{source.get('source_id')}: r/{source.get('subreddit')} "
+            f"({source.get('target_market')}) - {source.get('title')} "
+            f"| snippet: {source.get('snippet')}"
+        )
+    return "\n".join(line for line in lines if line).strip()[:4000]
+
+
+def _reddit_geo_sources_from_context(context: dict[str, Any]) -> list[dict[str, Any]]:
+    data_source = str(context.get("data_source") or "not_requested")
+    confidence_level = str(context.get("confidence_level") or "none")
+    return [
+        {
+            "source_id": str(source.get("source_id") or ""),
+            "target_market": str(source.get("target_market") or ""),
+            "target_language": str(source.get("target_language") or ""),
+            "subreddit": str(source.get("subreddit") or ""),
+            "title": str(source.get("title") or ""),
+            "snippet": str(source.get("snippet") or ""),
+            "url": str(source.get("url") or ""),
+            "query_type": str(source.get("query_type") or ""),
+            "query": str(source.get("query") or ""),
+            "data_source": data_source,
+            "confidence_level": confidence_level,
+        }
+        for source in context.get("sources", [])
+        if isinstance(source, dict)
+    ]
 
 
 def _openai_api_key_for_images(config_context: dict[str, Any]) -> str | None:
@@ -805,6 +971,7 @@ def _failed_language_output(
         "compliance_notes": f"Generation failed for {language} ({target_market}): {error_summary}",
         "visual_assets": [],
         "visual_asset_scores": [],
+        "reddit_geo_posts": [],
         "error_summary": error_summary,
     }
 
@@ -1100,6 +1267,7 @@ def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
     cultural_risk_assessments: list[dict[str, Any]] = []
     visual_assets: list[dict[str, Any]] = []
     visual_asset_scores: list[dict[str, Any]] = []
+    reddit_geo_posts: list[dict[str, Any]] = []
 
     for output in outputs:
         article = output.get("localized_article")
@@ -1133,6 +1301,11 @@ def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
             for score in output.get("visual_asset_scores", [])
             if isinstance(score, dict)
         )
+        reddit_geo_posts.extend(
+            post
+            for post in output.get("reddit_geo_posts", [])
+            if isinstance(post, dict)
+        )
 
     return {
         "localized_articles": articles,
@@ -1144,11 +1317,14 @@ def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
         "cultural_risk_assessments": cultural_risk_assessments,
         "visual_assets": visual_assets,
         "visual_asset_scores": visual_asset_scores,
+        "reddit_geo_posts": reddit_geo_posts,
+        "reddit_geo_sources": [],
         "production_ready_assets": _production_ready_assets(
             articles,
             social_posts,
             seo_outputs,
             visual_assets,
+            reddit_geo_posts,
         ),
     }
 
@@ -1158,6 +1334,7 @@ def _production_ready_assets(
     social_posts: list[dict[str, Any]],
     seo_outputs: list[dict[str, Any]],
     visual_assets: list[dict[str, Any]],
+    reddit_geo_posts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     assets: list[dict[str, Any]] = []
     for article in articles:
@@ -1196,7 +1373,257 @@ def _production_ready_assets(
                 "status": visual_asset.get("status"),
             }
         )
+    for post in reddit_geo_posts:
+        assets.append(
+            {
+                "asset_type": "reddit_geo_post",
+                "language": post.get("language"),
+                "target_market": post.get("target_market"),
+                "recommended_subreddit": post.get("recommended_subreddit"),
+                "status": "ready_for_manual_reddit_review",
+            }
+        )
     return assets
+
+
+def _apply_reddit_geo_context(
+    result: dict[str, Any],
+    inputs: dict[str, Any],
+    reddit_geo_context: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = dict(result)
+    if not _reddit_geo_enabled(inputs):
+        normalized["reddit_geo_posts"] = []
+        normalized["reddit_geo_sources"] = []
+        normalized["production_ready_assets"] = _production_ready_assets(
+            normalized.get("localized_articles", []),
+            normalized.get("social_media_posts", []),
+            normalized.get("seo_outputs", []),
+            normalized.get("visual_assets", []),
+            [],
+        )
+        return normalized
+
+    normalized["reddit_geo_sources"] = _reddit_geo_sources_from_context(reddit_geo_context)
+    reddit_geo_posts = [
+        post
+        for post in normalized.get("reddit_geo_posts", [])
+        if isinstance(post, dict)
+    ]
+    if not reddit_geo_posts:
+        reddit_geo_posts = _fallback_reddit_geo_posts(normalized, inputs, reddit_geo_context)
+    reddit_geo_posts = _sanitize_reddit_geo_posts(reddit_geo_posts, inputs)
+    normalized["reddit_geo_posts"] = reddit_geo_posts
+    normalized["production_ready_assets"] = _production_ready_assets(
+        normalized.get("localized_articles", []),
+        normalized.get("social_media_posts", []),
+        normalized.get("seo_outputs", []),
+        normalized.get("visual_assets", []),
+        reddit_geo_posts,
+    )
+    return normalized
+
+
+def _fallback_reddit_geo_posts(
+    result: dict[str, Any],
+    inputs: dict[str, Any],
+    reddit_geo_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    articles = [
+        article
+        for article in result.get("localized_articles", [])
+        if isinstance(article, dict)
+    ]
+    posts: list[dict[str, Any]] = []
+    for index, article in enumerate(articles):
+        language = str(article.get("language") or "").strip()
+        target_market = _target_market_for_language(inputs, index)
+        sources = _reddit_sources_for_market(reddit_geo_context, target_market)
+        source_ids = [str(source.get("source_id")) for source in sources[:3] if source.get("source_id")]
+        recommended_subreddit = _recommended_subreddit(sources)
+        title = str(article.get("title") or inputs.get("subject") or "Product discussion").strip()
+        body_without_link = _fallback_reddit_body_without_link(article, inputs, target_market)
+        product_url = str(inputs.get("product_url") or "").strip()
+        body = (
+            f"{body_without_link}\n\nProduct reference for context: {product_url}"
+            if product_url
+            else body_without_link
+        )
+        posts.append(
+            {
+                "target_market": target_market,
+                "language": language or "unspecified",
+                "recommended_subreddit": recommended_subreddit,
+                "title_options": [
+                    title[:180],
+                    f"What should buyers in {target_market} check before choosing {inputs.get('subject') or inputs.get('product_category')}?"[:180],
+                ],
+                "body": body,
+                "body_without_link": body_without_link,
+                "disclosure_note": _reddit_disclosure_note(inputs),
+                "ai_search_entity_signals": _reddit_entity_signals(inputs, target_market, language),
+                "source_ids": source_ids,
+                "moderation_notes": [
+                    "Manual review required before posting; verify subreddit rules, flair, and self-promotion limits.",
+                    "Use transparent affiliation disclosure and avoid presenting the post as neutral user consensus.",
+                    "If the subreddit discourages links, use body_without_link.",
+                ],
+                "data_source": str(reddit_geo_context.get("data_source") or "serper_unavailable"),
+                "confidence_level": str(reddit_geo_context.get("confidence_level") or "low"),
+            }
+        )
+    return posts
+
+
+def _sanitize_reddit_geo_posts(
+    reddit_geo_posts: list[dict[str, Any]],
+    inputs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        _sanitize_reddit_geo_post(post, inputs)
+        for post in reddit_geo_posts
+        if isinstance(post, dict)
+    ]
+
+
+def _sanitize_reddit_geo_post(
+    post: dict[str, Any],
+    inputs: dict[str, Any],
+) -> dict[str, Any]:
+    product_url = str(inputs.get("product_url") or "").strip()
+    sanitized = dict(post)
+    body_without_link = _remove_product_links_and_placeholders(
+        str(sanitized.get("body_without_link") or sanitized.get("body") or ""),
+        product_url,
+    )
+    body = str(sanitized.get("body") or body_without_link)
+    if product_url:
+        body = _replace_product_link_placeholders(body, product_url)
+    else:
+        body = body_without_link
+    sanitized["body"] = body
+    sanitized["body_without_link"] = body_without_link
+    sanitized["moderation_notes"] = _ensure_reddit_moderation_notes(
+        sanitized.get("moderation_notes")
+    )
+    return sanitized
+
+
+def _replace_product_link_placeholders(text: str, product_url: str) -> str:
+    value = text
+    for placeholder in (
+        "[your product link]",
+        "[product link]",
+        "{product_url}",
+        "<product_url>",
+        "your product link",
+        "product link",
+    ):
+        value = value.replace(placeholder, product_url)
+    return value
+
+
+def _remove_product_links_and_placeholders(text: str, product_url: str) -> str:
+    value = text
+    if product_url:
+        value = value.replace(product_url, "")
+    value = re.sub(
+        r"\[[^\]]*(?:product link|your product link)[^\]]*\]\([^)]+\)",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    for placeholder in (
+        "[your product link]",
+        "[product link]",
+        "{product_url}",
+        "<product_url>",
+        "your product link",
+        "product link",
+    ):
+        value = re.sub(re.escape(placeholder), "", value, flags=re.IGNORECASE)
+    value = re.sub(r"https?://\S+", "", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _ensure_reddit_moderation_notes(value: Any) -> list[str]:
+    notes = [
+        str(item).strip()
+        for item in value
+        if str(item).strip()
+    ] if isinstance(value, list) else []
+    required_note = "Use body_without_link if the subreddit discourages promotional links."
+    if required_note not in notes:
+        notes.append(required_note)
+    return notes
+
+
+def _reddit_sources_for_market(
+    reddit_geo_context: dict[str, Any],
+    target_market: str,
+) -> list[dict[str, Any]]:
+    sources = [
+        source
+        for source in reddit_geo_context.get("sources", [])
+        if isinstance(source, dict)
+    ]
+    matching = [
+        source
+        for source in sources
+        if str(source.get("target_market") or "").casefold() == target_market.casefold()
+    ]
+    return matching or sources
+
+
+def _recommended_subreddit(sources: list[dict[str, Any]]) -> str:
+    for source in sources:
+        subreddit = str(source.get("subreddit") or "").strip()
+        if subreddit:
+            return f"r/{subreddit}"
+    return "manual_subreddit_review_required"
+
+
+def _fallback_reddit_body_without_link(
+    article: dict[str, Any],
+    inputs: dict[str, Any],
+    target_market: str,
+) -> str:
+    excerpt = _compact_reddit_excerpt(str(article.get("article") or ""))
+    subject = str(inputs.get("subject") or inputs.get("product_category") or "this product").strip()
+    return (
+        f"{_reddit_disclosure_note(inputs)}\n\n"
+        f"I am preparing a practical buyer-focused post about {subject} for {target_market}. "
+        "The angle I would like feedback on is below:\n\n"
+        f"{excerpt}\n\n"
+        "What would you want clarified before trusting or buying something like this?"
+    )
+
+
+def _compact_reddit_excerpt(value: str) -> str:
+    text = re.sub(r"(?m)^#+\s*", "", value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:1200] or "Draft content is available, but the article body was empty."
+
+
+def _reddit_disclosure_note(inputs: dict[str, Any]) -> str:
+    brand_name = str(inputs.get("brand_name") or "").strip()
+    if brand_name:
+        return f"Disclosure: I am affiliated with {brand_name}."
+    return "Disclosure: I am affiliated with the product team behind this topic."
+
+
+def _reddit_entity_signals(inputs: dict[str, Any], target_market: str, language: str) -> list[str]:
+    values = [
+        str(inputs.get("brand_name") or "").strip(),
+        str(inputs.get("subject") or "").strip(),
+        str(inputs.get("product_category") or "").strip(),
+        target_market,
+        language,
+        str(inputs.get("product_url") or "").strip(),
+    ]
+    return [value for value in values if value]
 
 
 def _output_language(output: dict[str, Any]) -> str:
@@ -1237,6 +1664,12 @@ def _annotate_localized_output(result: dict[str, Any], inputs: dict[str, Any]) -
         str(platform).strip()
         for platform in inputs.get("platforms", [])
     }
+    if _reddit_geo_enabled(inputs):
+        expected_platforms = {
+            platform
+            for platform in expected_platforms
+            if platform.casefold() != "reddit"
+        }
     article_languages = {
         str(article.get("language", "")).strip()
         for article in result.get("localized_articles", [])
@@ -1401,6 +1834,8 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     """Callable wrapper for FastAPI orchestration."""
     config_context = config_context or {}
     normalized_inputs = _normalize_inputs(inputs)
+    reddit_geo_context = _build_reddit_geo_context(normalized_inputs, config_context)
+    normalized_inputs["reddit_geo_context_summary"] = _reddit_geo_context_summary(reddit_geo_context)
 
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='content')
@@ -1557,6 +1992,11 @@ def run_content_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         if usage_metrics:
             result[INTERNAL_USAGE_KEY] = usage_metrics
         annotated_result = _annotate_localized_output(result, normalized_inputs)
+        annotated_result = _apply_reddit_geo_context(
+            annotated_result,
+            normalized_inputs,
+            reddit_geo_context,
+        )
     except Exception as exc:
         _emit_content_stage(
             assembly_context,

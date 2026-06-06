@@ -33,7 +33,10 @@ WORKFLOW_EXAMPLES: dict[str, dict[str, Any]] = {
         "target_languages": ["de", "ja", "en"],
         "platforms": ["Instagram", "LinkedIn", "X"],
         "brand_voice": "Premium, practical, sustainability-minded, and culturally respectful",
+        "brand_name": "NorthPeak Layers",
+        "product_url": "https://example.com/products/sustainable-activewear",
         "primary_keywords": ["thermal activewear", "winter training layer", "recycled sportswear"],
+        "generate_reddit_geo": False,
         "generate_visual_assets": False,
         "image_generation_count": 1,
         "image_quality": "low",
@@ -152,7 +155,10 @@ CONTENT_FORM_KEYS = [
     "content_target_languages",
     "content_platforms",
     "content_brand_voice",
+    "content_brand_name",
+    "content_product_url",
     "content_primary_keywords",
+    "content_generate_reddit_geo",
     "content_generate_visual_assets",
     "content_image_generation_count",
     "content_image_quality",
@@ -275,7 +281,10 @@ def _content_inputs_from_form_values(
     target_languages: str,
     platforms: str,
     brand_voice: str,
+    brand_name: str,
+    product_url: str,
     primary_keywords: str,
+    generate_reddit_geo: bool,
     generate_visual_assets: bool,
     image_generation_count: int,
     image_quality: str,
@@ -287,6 +296,7 @@ def _content_inputs_from_form_values(
         "target_markets": str(target_markets).strip(),
         "target_languages": _split_csv_values(target_languages),
         "platforms": _split_csv_values(platforms),
+        "generate_reddit_geo": bool(generate_reddit_geo),
         "generate_visual_assets": bool(generate_visual_assets),
         "image_generation_count": int(image_generation_count),
         "image_quality": str(image_quality).strip() or "low",
@@ -296,6 +306,8 @@ def _content_inputs_from_form_values(
         {
             "product_features": product_features,
             "brand_voice": brand_voice,
+            "brand_name": brand_name,
+            "product_url": product_url,
         }
     )
     content_inputs.update(optional_fields)
@@ -377,6 +389,23 @@ def _render_content_builder(selected_example: dict[str, Any]) -> dict[str, Any]:
         key="content_primary_keywords",
     )
 
+    entity_cols = st.columns([1, 1, 1])
+    brand_name = entity_cols[0].text_input(
+        "Brand name",
+        value=str(current_inputs.get("brand_name") or selected_example.get("brand_name") or ""),
+        key="content_brand_name",
+    )
+    product_url = entity_cols[1].text_input(
+        "Product URL",
+        value=str(current_inputs.get("product_url") or selected_example.get("product_url") or ""),
+        key="content_product_url",
+    )
+    generate_reddit_geo = entity_cols[2].toggle(
+        "Generate Reddit GEO",
+        value=bool(current_inputs.get("generate_reddit_geo", selected_example.get("generate_reddit_geo", False))),
+        key="content_generate_reddit_geo",
+    )
+
     visual_cols = st.columns([1, 1, 1, 1])
     generate_visual_assets = visual_cols[0].toggle(
         "Generate visual assets",
@@ -421,7 +450,10 @@ def _render_content_builder(selected_example: dict[str, Any]) -> dict[str, Any]:
         target_languages=target_languages,
         platforms=platforms,
         brand_voice=brand_voice,
+        brand_name=brand_name,
+        product_url=product_url,
         primary_keywords=primary_keywords,
+        generate_reddit_geo=generate_reddit_geo,
         generate_visual_assets=generate_visual_assets,
         image_generation_count=int(image_generation_count),
         image_quality=image_quality,
@@ -1010,6 +1042,39 @@ def _content_visual_assets(latest_job: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _content_reddit_geo_review_assets(latest_job: dict[str, Any]) -> list[dict[str, Any]]:
+    content_result = _content_result_payload(latest_job)
+    if not content_result:
+        return []
+    reddit_sections = _reddit_geo_display_sections(content_result)
+    sections_by_key = {
+        _reddit_geo_asset_key(section): section
+        for section in reddit_sections
+        if _reddit_geo_asset_key(section)
+    }
+    review_assets: list[dict[str, Any]] = []
+    for asset in content_result.get("production_ready_assets", []):
+        if not isinstance(asset, dict) or asset.get("asset_type") != "reddit_geo_post":
+            continue
+        enriched_asset = dict(asset)
+        matched_section = sections_by_key.get(_reddit_geo_asset_key(asset))
+        if matched_section:
+            enriched_asset["data_source"] = matched_section.get("data_source")
+            enriched_asset["confidence_level"] = matched_section.get("confidence_level")
+            enriched_asset["source_ids"] = matched_section.get("source_ids")
+            enriched_asset["title_options"] = matched_section.get("title_options")
+        review_assets.append(enriched_asset)
+    return review_assets
+
+
+def _reddit_geo_asset_key(value: dict[str, Any]) -> str:
+    parts = [
+        str(value.get(key) or "").strip().casefold()
+        for key in ("language", "target_market", "recommended_subreddit")
+    ]
+    return "|".join(parts) if any(parts) else ""
+
+
 def _content_visual_generation_requested(
     latest_job: dict[str, Any],
     events: list[dict[str, Any]] | None,
@@ -1067,7 +1132,14 @@ def _content_result_payload(latest_job: dict[str, Any]) -> dict[str, Any] | None
     result = latest_job.get("result")
     if not isinstance(result, dict):
         return None
-    content_keys = {"visual_assets", "multimodal_outputs", "seo_outputs", "visual_asset_scores"}
+    content_keys = {
+        "visual_assets",
+        "multimodal_outputs",
+        "seo_outputs",
+        "visual_asset_scores",
+        "reddit_geo_posts",
+        "reddit_geo_sources",
+    }
     return result if any(key in result for key in content_keys) else None
 
 
@@ -1133,6 +1205,73 @@ def _format_seconds(value: Any) -> str:
     except (TypeError, ValueError):
         return "n/a"
     return f"{seconds:.2f}s"
+
+
+def _reddit_geo_display_sections(content_result: dict[str, Any]) -> list[dict[str, Any]]:
+    posts = [
+        post
+        for post in content_result.get("reddit_geo_posts", [])
+        if isinstance(post, dict)
+    ]
+    sources = [
+        source
+        for source in content_result.get("reddit_geo_sources", [])
+        if isinstance(source, dict) and not _hide_reddit_geo_source_for_display(source)
+    ]
+    sources_by_id = {
+        str(source.get("source_id") or ""): source
+        for source in sources
+        if source.get("source_id")
+    }
+    sections: list[dict[str, Any]] = []
+    for post in posts:
+        source_ids = [
+            str(source_id)
+            for source_id in post.get("source_ids", [])
+            if str(source_id).strip()
+        ] if isinstance(post.get("source_ids"), list) else []
+        sections.append(
+            {
+                "language": post.get("language"),
+                "target_market": post.get("target_market"),
+                "recommended_subreddit": post.get("recommended_subreddit"),
+                "title_options": post.get("title_options") if isinstance(post.get("title_options"), list) else [],
+                "body": str(post.get("body") or ""),
+                "body_without_link": str(post.get("body_without_link") or ""),
+                "disclosure_note": str(post.get("disclosure_note") or ""),
+                "ai_search_entity_signals": (
+                    post.get("ai_search_entity_signals")
+                    if isinstance(post.get("ai_search_entity_signals"), list)
+                    else []
+                ),
+                "source_ids": source_ids,
+                "moderation_notes": (
+                    post.get("moderation_notes")
+                    if isinstance(post.get("moderation_notes"), list)
+                    else []
+                ),
+                "data_source": post.get("data_source"),
+                "confidence_level": post.get("confidence_level"),
+                "sources": [
+                    sources_by_id[source_id]
+                    for source_id in source_ids
+                    if source_id in sources_by_id
+                ],
+            }
+        )
+    return sections
+
+
+def _hide_reddit_geo_source_for_display(source: dict[str, Any]) -> bool:
+    url = str(source.get("url") or "").lower()
+    if "tl=zh" in url:
+        return True
+    target_language = str(source.get("target_language") or "").strip().lower()
+    if target_language.startswith(("zh", "ja", "ko")):
+        return False
+    snippet = str(source.get("snippet") or "")
+    cjk_count = sum(1 for character in snippet if "\u4e00" <= character <= "\u9fff")
+    return cjk_count >= 8
 
 
 def _score_for_asset(
@@ -1213,6 +1352,10 @@ def _compact_error_text(value: Any) -> str | None:
         if "520" in text:
             return "HTTP 520: upstream image API returned an HTML error page."
         return "Upstream image API returned an HTML error page."
+    if "moderation_blocked" in lowered or "image_generation_user_error" in lowered:
+        request_match = re.search(r"request ID\s+([A-Za-z0-9_-]+)", text)
+        request_text = f" Request ID: {request_match.group(1)}." if request_match else ""
+        return f"Image generation was blocked by the provider safety system.{request_text}"
     return text[:240]
 
 
@@ -1453,6 +1596,102 @@ def _render_content_visual_assets(latest_job: dict[str, Any]) -> None:
                 if score.get("notes"):
                     st.caption(f"Scoring notes: {score['notes']}")
                 st.json(_safe_display_payload(score))
+
+
+def _render_content_reddit_geo(latest_job: dict[str, Any]) -> None:
+    content_result = _content_result_payload(latest_job)
+    if not content_result:
+        return
+
+    sections = _reddit_geo_display_sections(content_result)
+    if not sections:
+        return
+
+    st.subheader("Reddit GEO Publishing Package")
+    for index, section in enumerate(sections, start=1):
+        title = (
+            f"{section.get('language') or 'Language'} - "
+            f"{section.get('target_market') or 'Market'}"
+        )
+        with st.container(border=True):
+            st.markdown(f"**Post {index}: {title}**")
+            st.caption(
+                " | ".join(
+                    value
+                    for value in [
+                        f"Subreddit: {section.get('recommended_subreddit') or 'manual review'}",
+                        f"Source: {section.get('data_source') or 'n/a'}",
+                        f"Confidence: {section.get('confidence_level') or 'n/a'}",
+                    ]
+                    if value
+                )
+            )
+            title_options = section.get("title_options")
+            if isinstance(title_options, list) and title_options:
+                st.markdown("**Title options**")
+                for option in title_options:
+                    st.write(f"- {option}")
+            if section.get("disclosure_note"):
+                st.info(str(section["disclosure_note"]))
+            st.markdown("**Post body**")
+            st.markdown(str(section.get("body") or ""))
+            if section.get("body_without_link"):
+                with st.expander("No-link body", expanded=False):
+                    st.markdown(str(section["body_without_link"]))
+            entity_signals = section.get("ai_search_entity_signals")
+            if isinstance(entity_signals, list) and entity_signals:
+                st.caption(
+                    "Entity signals: "
+                    + ", ".join(str(signal) for signal in entity_signals if str(signal).strip())
+                )
+            source_ids = section.get("source_ids")
+            if isinstance(source_ids, list) and source_ids:
+                st.caption("Source IDs: " + ", ".join(str(source_id) for source_id in source_ids))
+            moderation_notes = section.get("moderation_notes")
+            if isinstance(moderation_notes, list) and moderation_notes:
+                st.markdown("**Moderation notes**")
+                for note in moderation_notes:
+                    st.write(f"- {note}")
+            sources = section.get("sources")
+            if isinstance(sources, list) and sources:
+                with st.expander("Matched Reddit sources", expanded=False):
+                    for source in sources:
+                        st.markdown(
+                            f"**{source.get('source_id')} - r/{source.get('subreddit')}**"
+                        )
+                        st.write(source.get("title") or "")
+                        st.caption(source.get("url") or "")
+                        if source.get("snippet"):
+                            st.write(source["snippet"])
+
+
+def _render_content_reddit_geo_review_assets(latest_job: dict[str, Any]) -> None:
+    review_assets = _content_reddit_geo_review_assets(latest_job)
+    if not review_assets:
+        return
+
+    st.subheader("Reddit GEO Review Assets")
+    for index, asset in enumerate(review_assets, start=1):
+        with st.container(border=True):
+            st.markdown(f"**Review asset {index}: {asset.get('status') or 'manual review'}**")
+            st.caption(
+                " | ".join(
+                    value
+                    for value in [
+                        f"Language: {asset.get('language') or 'n/a'}",
+                        f"Market: {asset.get('target_market') or 'n/a'}",
+                        f"Subreddit: {asset.get('recommended_subreddit') or 'manual review'}",
+                        f"Confidence: {asset.get('confidence_level') or 'n/a'}",
+                    ]
+                    if value
+                )
+            )
+            title_options = asset.get("title_options")
+            if isinstance(title_options, list) and title_options:
+                st.write("Suggested titles: " + " | ".join(str(title) for title in title_options[:3]))
+            source_ids = asset.get("source_ids")
+            if isinstance(source_ids, list) and source_ids:
+                st.caption("Source IDs: " + ", ".join(str(source_id) for source_id in source_ids))
 
 
 def _render_support_result_summary(latest_job: dict[str, Any]) -> None:
@@ -1724,6 +1963,8 @@ def main() -> None:
                 content_form_inputs or _parse_inputs_json(st.session_state.get("inputs_json", "{}"), selected_example),
             ):
                 _render_content_image_placeholder()
+            _render_content_reddit_geo(latest_job)
+            _render_content_reddit_geo_review_assets(latest_job)
             _render_content_visual_assets(latest_job)
             _render_support_result_summary(latest_job)
             with st.expander("Raw job payload", expanded=False):

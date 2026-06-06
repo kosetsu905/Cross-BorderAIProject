@@ -2,7 +2,7 @@ from enum import Enum
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 class WorkflowType(str, Enum):
@@ -57,9 +57,24 @@ class ContentInputs(StrictInputModel):
         None,
         description="Optional brand voice guidance for localized content and visual assets.",
     )
+    brand_name: str | None = Field(
+        None,
+        description="Optional brand or product entity name for transparent Reddit GEO content.",
+    )
+    product_url: str | None = Field(
+        None,
+        description="Optional http/https product URL used as a single contextual Reddit reference.",
+    )
     primary_keywords: list[str] | None = Field(
         None,
         description="Optional seed SEO keywords for multi-engine metadata generation.",
+    )
+    generate_reddit_geo: bool = Field(
+        False,
+        description=(
+            "When true, Content Creation returns a Reddit-ready GEO post package for "
+            "manual review and publication."
+        ),
     )
     generate_visual_assets: bool = Field(
         False,
@@ -81,6 +96,24 @@ class ContentInputs(StrictInputModel):
         min_length=1,
         description="OpenAI image generation size setting, such as 1024x1024.",
     )
+
+    @field_validator("brand_name", "product_url", mode="before")
+    @classmethod
+    def _strip_optional_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @field_validator("product_url")
+    @classmethod
+    def _validate_product_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.lower()
+        if not (normalized.startswith("http://") or normalized.startswith("https://")):
+            raise ValueError("product_url must start with http:// or https://")
+        return value
 
 
 class SupportInputs(StrictInputModel):
