@@ -272,6 +272,7 @@ class ProviderCredentials(StrictInputModel):
     meta_page_id: str | None = None
     tiktok_access_token: str | None = None
     tiktok_advertiser_id: str | None = None
+    workflow_async_execution_enabled: bool | None = None
 
 
 WORKFLOW_INPUT_MODELS: dict[WorkflowType, type[StrictInputModel]] = {
@@ -311,6 +312,66 @@ class WorkflowRequest(BaseModel):
             ) from exc
 
         self.inputs = validated_inputs.model_dump()
+        return self
+
+
+class WorkflowGroupItem(StrictInputModel):
+    name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        description="Optional unique name for this child workflow in the group result.",
+    )
+    workflow_type: WorkflowType
+    inputs: dict[str, Any] = Field(..., description="Workflow-specific input parameters")
+    provider_credentials: ProviderCredentials | None = Field(
+        None,
+        description="Optional request-scoped provider credentials for this child workflow.",
+    )
+    metadata: dict[str, Any] | None = Field(
+        None,
+        description="Optional tracing or request context metadata for this child workflow.",
+    )
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @model_validator(mode="after")
+    def validate_workflow_inputs(self) -> "WorkflowGroupItem":
+        input_model = WORKFLOW_INPUT_MODELS[self.workflow_type]
+        try:
+            validated_inputs = input_model.model_validate(self.inputs)
+        except ValidationError as exc:
+            raise ValueError(
+                f"Invalid inputs for workflow '{self.workflow_type.value}': {exc}"
+            ) from exc
+
+        self.inputs = validated_inputs.model_dump()
+        return self
+
+
+class WorkflowGroupRequest(StrictInputModel):
+    workflows: list[WorkflowGroupItem] = Field(..., min_length=2, max_length=7)
+    metadata: dict[str, Any] | None = Field(
+        None,
+        description="Optional tracing or request context metadata for the workflow group.",
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_child_names(self) -> "WorkflowGroupRequest":
+        names: set[str] = set()
+        for item in self.workflows:
+            resolved_name = item.name or item.workflow_type.value
+            if resolved_name in names:
+                raise ValueError(
+                    f"Workflow group child names must be unique; duplicate name '{resolved_name}'."
+                )
+            names.add(resolved_name)
         return self
 
 

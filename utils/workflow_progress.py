@@ -116,8 +116,32 @@ def attach_task_progress(
     if len(safe_task_names) < total:
         safe_task_names.extend(f"task_{index + 1}" for index in range(len(safe_task_names), total))
 
+    state_lock = Lock()
+    started_indices: set[int] = set()
+    completed_indices: set[int] = set()
+
+    def start_task(task_index: int) -> None:
+        if task_index in started_indices or task_index >= total:
+            return
+        started_indices.add(task_index)
+        recorder.task_started(
+            task_index,
+            total,
+            safe_task_names[task_index],
+            _agent_role(tasks[task_index]),
+        )
+
+    def start_async_block(first_index: int) -> None:
+        task_index = first_index
+        while task_index < total and _is_async_task(tasks[task_index]):
+            start_task(task_index)
+            task_index += 1
+
     recorder.emit_plan(safe_task_names)
-    recorder.task_started(0, total, safe_task_names[0], _agent_role(tasks[0]))
+    if _is_async_task(tasks[0]):
+        start_async_block(0)
+    else:
+        start_task(0)
 
     for index, task in enumerate(tasks):
         original_callback = getattr(task, "callback", None)
@@ -130,6 +154,11 @@ def attach_task_progress(
             next_task=tasks[index + 1] if index + 1 < total else None,
             next_task_name=safe_task_names[index + 1] if index + 1 < total else None,
             original_callback=original_callback,
+            tasks=tasks,
+            task_names=safe_task_names,
+            state_lock=state_lock,
+            started_indices=started_indices,
+            completed_indices=completed_indices,
         )
 
 
@@ -142,6 +171,11 @@ def _build_task_callback(
     next_task: Any | None,
     next_task_name: str | None,
     original_callback: Callable[[Any], Any] | None,
+    tasks: list[Any],
+    task_names: list[str],
+    state_lock: Lock,
+    started_indices: set[int],
+    completed_indices: set[int],
 ) -> Callable[[Any], Any]:
     def callback(output: Any) -> Any:
         callback_result = None
@@ -149,20 +183,106 @@ def _build_task_callback(
             callback_result = original_callback(output)
 
         try:
-            recorder.task_completed(task_index, total_tasks, task_name, _agent_role(task))
-            if next_task is not None and next_task_name is not None:
-                recorder.task_started(
-                    task_index + 1,
-                    total_tasks,
-                    next_task_name,
-                    _agent_role(next_task),
-                )
+            with state_lock:
+                completed_indices.add(task_index)
+                recorder.task_completed(task_index, total_tasks, task_name, _agent_role(task))
+
+                if _is_async_task(task):
+                    block_start, block_end = _async_block_bounds(tasks, task_index)
+                    if all(index in completed_indices for index in range(block_start, block_end)):
+                        _start_next_progress_task(
+                            recorder,
+                            tasks,
+                            task_names,
+                            block_end,
+                            total_tasks,
+                            started_indices,
+                        )
+                elif next_task is not None and next_task_name is not None:
+                    _start_next_progress_task(
+                        recorder,
+                        tasks,
+                        task_names,
+                        task_index + 1,
+                        total_tasks,
+                        started_indices,
+                    )
         except Exception:
             logger.exception("Failed to record workflow progress for task %s", task_name)
 
         return callback_result
 
     return callback
+
+
+def _start_next_progress_task(
+    recorder: WorkflowProgressRecorder,
+    tasks: list[Any],
+    task_names: list[str],
+    task_index: int,
+    total_tasks: int,
+    started_indices: set[int],
+) -> None:
+    if task_index >= total_tasks:
+        return
+
+    if _is_async_task(tasks[task_index]):
+        while task_index < total_tasks and _is_async_task(tasks[task_index]):
+            _start_progress_task(
+                recorder,
+                tasks,
+                task_names,
+                task_index,
+                total_tasks,
+                started_indices,
+            )
+            task_index += 1
+        return
+
+    _start_progress_task(
+        recorder,
+        tasks,
+        task_names,
+        task_index,
+        total_tasks,
+        started_indices,
+    )
+
+
+def _start_progress_task(
+    recorder: WorkflowProgressRecorder,
+    tasks: list[Any],
+    task_names: list[str],
+    task_index: int,
+    total_tasks: int,
+    started_indices: set[int],
+) -> None:
+    if task_index in started_indices:
+        return
+
+    started_indices.add(task_index)
+    recorder.task_started(
+        task_index,
+        total_tasks,
+        task_names[task_index],
+        _agent_role(tasks[task_index]),
+    )
+
+
+def _async_block_bounds(tasks: list[Any], task_index: int) -> tuple[int, int]:
+    block_start = task_index
+    while block_start > 0 and _is_async_task(tasks[block_start - 1]):
+        block_start -= 1
+
+    block_end = task_index + 1
+    while block_end < len(tasks) and _is_async_task(tasks[block_end]):
+        block_end += 1
+
+    return block_start, block_end
+
+
+def _is_async_task(task: Any) -> bool:
+    return bool(getattr(task, "async_execution", False))
 
 
 def _agent_role(task: Any) -> str | None:

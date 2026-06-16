@@ -207,6 +207,7 @@ CELERY_RETRY_BASE_DELAY_SECONDS=30
 CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
+WORKFLOW_ASYNC_EXECUTION_ENABLED=true
 CONTENT_LANGUAGE_CONCURRENCY=4
 CONTENT_IMAGE_MODEL=gpt-image-2
 CONTENT_IMAGE_SCORING_MODEL=gpt-4o-mini
@@ -224,10 +225,12 @@ PostgreSQL is used for persistent local-backend job state. The app creates the `
 Runtime configuration and secrets are centralized in `runtime_config.py`. FastAPI/Celery load `.env` once, pass a `config_context` into the orchestrator and crews, and provider tools receive credentials through constructors instead of reading global environment variables directly.
 If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
+`WORKFLOW_ASYNC_EXECUTION_ENABLED=true` lets eligible CrewAI tasks run as explicit async sibling tasks inside a workflow. Set it to `false` to force the older synchronous task order during rollback or provider troubleshooting.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
 Content Creation also produces multimodal localization specs, video storyboard guidance, multi-engine SEO metadata, hreflang tags, JSON-LD, and cultural risk notes. Set request input `generate_visual_assets=true` to call the OpenAI Image API; generated files are stored under `CONTENT_IMAGE_ARTIFACT_DIR`, which defaults to ignored `artifacts/content_creation`. Without an OpenAI API key, the workflow still completes and marks image generation as `skipped_missing_credentials`.
 Content Creation can also produce a manual-review Reddit GEO publishing package. Set `generate_reddit_geo=true` or include `Reddit` in `platforms`; when `SERPER_API_KEY` is configured, the workflow searches `site:reddit.com` for community context and returns `reddit_geo_posts` plus `reddit_geo_sources`. It does not publish to Reddit or use Reddit OAuth.
 Marketing runs one shared strategy/channel-planning task and then generates market-specific creative/compliance packages in parallel. `MARKETING_MARKET_CONCURRENCY` controls the maximum number of market workers.
+Analytics runs performance analysis and market research concurrently after data collection. Sales Improvement runs CRO recommendations and pricing optimization concurrently after funnel analysis.
 Analytics competitive research can optionally deep-read Serper result URLs. When `SERPER_DEEP_READ_ENABLED=true`, `CompetitorBenchmarkTool` reads up to `SERPER_DEEP_READ_MAX_PAGES` pages per market with `SERPER_DEEP_READ_CONCURRENCY` workers and passes source excerpts to CrewAI.
 Customer Service keeps external Serper search off by default for faster support responses. Set `SUPPORT_SERPER_PRE_SALES_ENABLED=true`, `SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED=true`, or `SUPPORT_SERPER_POST_SALES_ENABLED=true` together with `SERPER_API_KEY` to enable live search only for that stage.
 
@@ -565,8 +568,11 @@ The HTTP API endpoints stay the same in both modes:
 
 ```text
 POST /api/v1/workflow
+POST /api/v1/workflow-group
 GET  /api/v1/workflow/{job_id}
 ```
+
+`POST /api/v1/workflow-group` submits 2-7 validated child workflows at once and returns a parent `job_id`. Poll the parent with `GET /api/v1/workflow/{job_id}`; its `result.children` lists child job ids/statuses, `result.results` contains completed child outputs, and `result.summary` aggregates completion counts, token usage, and cost.
 
 ## Health Check
 

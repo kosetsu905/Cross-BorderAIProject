@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -404,6 +404,13 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
     return bool(config_context.get("crewai_memory_enabled"))
 
 
+def _workflow_async_enabled(config_context: dict[str, Any]) -> bool:
+    value = config_context.get("workflow_async_execution_enabled", True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
 def _has_configured_commerce_provider(config_context: dict[str, Any]) -> bool:
     has_shopify = bool(
         config_context.get("shopify_store_domain")
@@ -578,6 +585,7 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         amazon_sp_api_access_token=config_context.get("amazon_sp_api_access_token"),
         amazon_marketplace_ids=config_context.get("amazon_marketplace_ids"),
     )
+    async_enabled = _workflow_async_enabled(config_context)
 
     collector = Agent(
         config=agents_config["data_collector"],
@@ -610,11 +618,13 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         config=tasks_config["performance_analysis"],
         agent=analyst,
         context=[collect_task],
+        async_execution=async_enabled,
     )
     research_task = Task(
         config=tasks_config["market_research"],
         agent=researcher,
         context=[collect_task],
+        async_execution=async_enabled,
     )
     automation_task = Task(
         config=tasks_config["automation_planning"],

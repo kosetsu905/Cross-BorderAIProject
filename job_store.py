@@ -14,7 +14,7 @@ class JobStore(Protocol):
     def create_job(
         self,
         job_id: str,
-        workflow_type: WorkflowType,
+        workflow_type: WorkflowType | str,
         inputs: dict[str, Any],
         cache_key: str | None = None,
     ) -> None:
@@ -50,6 +50,10 @@ def _status_value(status: JobStatus | str) -> str:
     return status.value if isinstance(status, JobStatus) else status
 
 
+def _workflow_type_value(workflow_type: WorkflowType | str) -> str:
+    return workflow_type.value if isinstance(workflow_type, WorkflowType) else str(workflow_type)
+
+
 class InMemoryJobStore:
     name = "memory"
 
@@ -59,13 +63,14 @@ class InMemoryJobStore:
     def create_job(
         self,
         job_id: str,
-        workflow_type: WorkflowType,
+        workflow_type: WorkflowType | str,
         inputs: dict[str, Any],
         cache_key: str | None = None,
     ) -> None:
+        workflow_value = _workflow_type_value(workflow_type)
         self._jobs[job_id] = {
             "job_id": job_id,
-            "workflow_type": workflow_type.value,
+            "workflow_type": workflow_value,
             "status": JobStatus.PENDING,
             "inputs": inputs,
             "result": None,
@@ -84,8 +89,8 @@ class InMemoryJobStore:
                     "event_id": 1,
                     "job_id": job_id,
                     "event_type": "submitted",
-                    "message": f"Workflow job submitted: {workflow_type.value}",
-                    "payload": {"workflow_type": workflow_type.value},
+                    "message": f"Workflow job submitted: {workflow_value}",
+                    "payload": {"workflow_type": workflow_value},
                     "created_at": None,
                 }
             ],
@@ -162,15 +167,16 @@ class PostgresJobStore:
     def create_job(
         self,
         job_id: str,
-        workflow_type: WorkflowType,
+        workflow_type: WorkflowType | str,
         inputs: dict[str, Any],
         cache_key: str | None = None,
     ) -> None:
+        workflow_value = _workflow_type_value(workflow_type)
         with self._session_factory() as session:
             session.add(
                 JobRecord(
                     job_id=job_id,
-                    workflow_type=workflow_type.value,
+                    workflow_type=workflow_value,
                     status=JobStatus.PENDING.value,
                     inputs=_json_safe(inputs),
                     result=None,
@@ -191,8 +197,8 @@ class PostgresJobStore:
         self.log_event(
             job_id,
             "submitted",
-            f"Workflow job submitted: {workflow_type.value}",
-            {"workflow_type": workflow_type.value},
+            f"Workflow job submitted: {workflow_value}",
+            {"workflow_type": workflow_value},
         )
 
     def update_job(self, job_id: str, **fields: Any) -> None:

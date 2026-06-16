@@ -14,6 +14,13 @@ from models import JobStatus
 from runtime_config import apply_runtime_environment, load_runtime_config
 from utils.retry_policy import is_retryable_exception, retry_countdown_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
+from utils.workflow_group import (
+    WORKFLOW_GROUP_MONITOR_TASK,
+    build_workflow_group_result,
+    workflow_group_error,
+    workflow_group_status,
+    workflow_group_usage_fields,
+)
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
 
 
@@ -155,6 +162,87 @@ def _run_with_job_state(
 @celery_app.task(name="health_check")
 def health_check() -> dict[str, str]:
     return {"status": "healthy"}
+
+
+@celery_app.task(
+    bind=True,
+    name=WORKFLOW_GROUP_MONITOR_TASK,
+    max_retries=360,
+    soft_time_limit=1800,
+    time_limit=2100,
+)
+def run_workflow_group_monitor_task(
+    self: object,
+    parent_job_id: str,
+    children: list[dict[str, str]],
+    poll_interval_seconds: int = 5,
+) -> dict:
+    result = build_workflow_group_result(children, job_store.get_job)
+    group_status = workflow_group_status(result)
+    group_error = workflow_group_error(result)
+
+    if group_status == JobStatus.RUNNING:
+        job_store.update_job(
+            parent_job_id,
+            status=JobStatus.RUNNING,
+            result=result,
+            error=None,
+        )
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "status": "Waiting for child workflows.",
+                "summary": result.get("summary"),
+                "children": result.get("children"),
+            },
+        )
+        request = getattr(self, "request", None)
+        retries = int(getattr(request, "retries", 0) or 0)
+        max_retries = int(getattr(self, "max_retries", 360) or 360)
+        if retries >= max_retries:
+            error = "Workflow group monitor exceeded the maximum polling retries."
+            job_store.update_job(
+                parent_job_id,
+                status=JobStatus.FAILED,
+                result=result,
+                error=error,
+            )
+            job_store.log_event(
+                parent_job_id,
+                "failed",
+                error,
+                {"backend": "celery", "children": result.get("children")},
+            )
+            raise RuntimeError(error)
+        raise self.retry(countdown=poll_interval_seconds)
+
+    usage_fields = workflow_group_usage_fields(result)
+    job_store.update_job(
+        parent_job_id,
+        status=group_status,
+        result=result,
+        **usage_fields,
+        error=group_error,
+    )
+    job_store.log_event(
+        parent_job_id,
+        "completed" if group_status == JobStatus.COMPLETED else "failed",
+        "Workflow group execution completed."
+        if group_status == JobStatus.COMPLETED
+        else "Workflow group execution failed.",
+        {
+            "backend": "celery",
+            "summary": result.get("summary"),
+            "children": result.get("children"),
+        },
+    )
+    if group_status == JobStatus.FAILED:
+        raise RuntimeError(group_error or "Workflow group execution failed.")
+
+    return {
+        "data": result,
+        "meta": usage_fields,
+    }
 
 
 @celery_app.task(bind=True, name="workflow.marketing", soft_time_limit=1200, time_limit=1500)

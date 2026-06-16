@@ -169,6 +169,12 @@ class LLMConfigTests(unittest.TestCase):
 
         self.assertEqual(config.support_qa_mode, "adaptive_fast")
 
+    def test_runtime_config_reads_workflow_async_execution_flag(self) -> None:
+        with patch.dict(os.environ, {"WORKFLOW_ASYNC_EXECUTION_ENABLED": "false"}, clear=True):
+            config = load_runtime_config()
+
+        self.assertFalse(config.workflow_async_execution_enabled)
+
     def test_runtime_config_rejects_unknown_support_qa_mode(self) -> None:
         with patch.dict(os.environ, {"SUPPORT_QA_MODE": "skip_everything"}, clear=True):
             with self.assertRaisesRegex(ValueError, "SUPPORT_QA_MODE"):

@@ -8,10 +8,22 @@ from celery.result import AsyncResult
 
 from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
-from models import JobStatus, WorkflowType
+from models import JobStatus, WorkflowGroupRequest, WorkflowType
 from runtime_config import RuntimeConfig, apply_runtime_environment, resolve_workflow_runtime_context
 from utils.result_cache import build_workflow_cache_key, cache_enabled, cache_ttl_seconds
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
+from utils.workflow_group import (
+    WORKFLOW_GROUP_MONITOR_TASK,
+    WORKFLOW_GROUP_TYPE,
+    build_workflow_group_result,
+    workflow_group_child_metadata,
+    workflow_group_error,
+    workflow_group_item_name,
+    workflow_group_parent_inputs,
+    workflow_group_provider_credentials,
+    workflow_group_status,
+    workflow_group_usage_fields,
+)
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
 
 logger = logging.getLogger(__name__)
@@ -172,6 +184,122 @@ class MasterOrchestrator:
         asyncio.create_task(self._run_job(job_id, workflow_type, inputs, config_context))
         logger.info("Submitted job %s for workflow %s", job_id, workflow_type.value)
         return job_id
+
+    async def submit_workflow_group(self, request: WorkflowGroupRequest) -> str:
+        parent_job_id = str(uuid.uuid4())
+        children: list[dict[str, str]] = []
+        self._job_store.create_job(
+            parent_job_id,
+            WORKFLOW_GROUP_TYPE,
+            workflow_group_parent_inputs(request),
+        )
+        self._job_store.log_event(
+            parent_job_id,
+            "queued",
+            "Workflow group submitted.",
+            {"workflow_type": WORKFLOW_GROUP_TYPE, "backend": "local"},
+        )
+
+        try:
+            for item in request.workflows:
+                child_name = workflow_group_item_name(item)
+                child_job_id = await self.submit_job(
+                    item.workflow_type,
+                    item.inputs,
+                    provider_credentials=workflow_group_provider_credentials(item),
+                    metadata=workflow_group_child_metadata(
+                        parent_job_id,
+                        child_name,
+                        item,
+                        request.metadata,
+                    ),
+                )
+                children.append(
+                    {
+                        "name": child_name,
+                        "workflow_type": item.workflow_type.value,
+                        "job_id": child_job_id,
+                    }
+                )
+
+            result = build_workflow_group_result(children, self._job_store.get_job)
+            self._job_store.update_job(
+                parent_job_id,
+                status=JobStatus.RUNNING,
+                result=result,
+                error=None,
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "running",
+                "Workflow group child jobs submitted.",
+                {"backend": "local", "children": children},
+            )
+            asyncio.create_task(self._monitor_workflow_group(parent_job_id, children))
+        except Exception as exc:
+            logger.exception("Workflow group %s failed during submission", parent_job_id)
+            result = build_workflow_group_result(children, self._job_store.get_job)
+            self._job_store.update_job(
+                parent_job_id,
+                status=JobStatus.FAILED,
+                result=result,
+                error=str(exc),
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "failed",
+                "Workflow group submission failed.",
+                {"backend": "local", "error": str(exc), "children": children},
+            )
+        return parent_job_id
+
+    async def _monitor_workflow_group(
+        self,
+        parent_job_id: str,
+        children: list[dict[str, str]],
+    ) -> None:
+        try:
+            while True:
+                result = build_workflow_group_result(children, self._job_store.get_job)
+                group_status = workflow_group_status(result)
+                update_fields: dict[str, Any] = {
+                    "status": group_status,
+                    "result": result,
+                    "error": workflow_group_error(result),
+                }
+                if group_status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                    update_fields.update(workflow_group_usage_fields(result))
+                self._job_store.update_job(parent_job_id, **update_fields)
+
+                if group_status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                    self._job_store.log_event(
+                        parent_job_id,
+                        "completed" if group_status == JobStatus.COMPLETED else "failed",
+                        "Workflow group execution completed."
+                        if group_status == JobStatus.COMPLETED
+                        else "Workflow group execution failed.",
+                        {
+                            "backend": "local",
+                            "summary": result.get("summary"),
+                            "children": result.get("children"),
+                        },
+                    )
+                    return
+
+                await asyncio.sleep(1.0)
+        except Exception as exc:
+            logger.exception("Workflow group monitor failed for %s", parent_job_id)
+            self._job_store.update_job(
+                parent_job_id,
+                status=JobStatus.FAILED,
+                error=str(exc),
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "failed",
+                "Workflow group monitor failed.",
+                {"backend": "local", "error": str(exc)},
+            )
 
     async def _run_job(
         self,
@@ -346,6 +474,82 @@ class CeleryOrchestrator:
         logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)
         return job_id
 
+    async def submit_workflow_group(self, request: WorkflowGroupRequest) -> str:
+        parent_job_id = str(uuid.uuid4())
+        children: list[dict[str, str]] = []
+        self._job_store.create_job(
+            parent_job_id,
+            WORKFLOW_GROUP_TYPE,
+            workflow_group_parent_inputs(request),
+        )
+        self._job_store.log_event(
+            parent_job_id,
+            "queued",
+            "Workflow group submitted.",
+            {"workflow_type": WORKFLOW_GROUP_TYPE, "backend": "celery"},
+        )
+
+        try:
+            for item in request.workflows:
+                child_name = workflow_group_item_name(item)
+                child_job_id = await self.submit_job(
+                    item.workflow_type,
+                    item.inputs,
+                    provider_credentials=workflow_group_provider_credentials(item),
+                    metadata=workflow_group_child_metadata(
+                        parent_job_id,
+                        child_name,
+                        item,
+                        request.metadata,
+                    ),
+                )
+                children.append(
+                    {
+                        "name": child_name,
+                        "workflow_type": item.workflow_type.value,
+                        "job_id": child_job_id,
+                    }
+                )
+
+            result = build_workflow_group_result(children, self._job_store.get_job)
+            self._job_store.update_job(
+                parent_job_id,
+                status=JobStatus.RUNNING,
+                result=result,
+                error=None,
+            )
+            monitor_task = celery_app.send_task(
+                WORKFLOW_GROUP_MONITOR_TASK,
+                args=[parent_job_id, children],
+                task_id=parent_job_id,
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "running",
+                "Workflow group child jobs submitted and monitor queued.",
+                {
+                    "backend": "celery",
+                    "monitor_task_id": monitor_task.id,
+                    "children": children,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Workflow group %s failed during Celery submission", parent_job_id)
+            result = build_workflow_group_result(children, self._job_store.get_job)
+            self._job_store.update_job(
+                parent_job_id,
+                status=JobStatus.FAILED,
+                result=result,
+                error=str(exc),
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "failed",
+                "Workflow group submission failed.",
+                {"backend": "celery", "error": str(exc), "children": children},
+            )
+        return parent_job_id
+
     def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
         return self._job_store.get_job_events(job_id)
 
@@ -362,12 +566,13 @@ class CeleryOrchestrator:
 
         if result.state in {"STARTED", "PROGRESS", "RETRY"}:
             progress = result.info if isinstance(result.info, dict) else None
-            self._job_store.update_job(
-                job_id,
-                status=JobStatus.RUNNING,
-                result=progress,
-                error=None,
-            )
+            update_fields: dict[str, Any] = {
+                "status": JobStatus.RUNNING,
+                "error": None,
+            }
+            if progress is not None:
+                update_fields["result"] = progress
+            self._job_store.update_job(job_id, **update_fields)
             return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.RUNNING,
@@ -394,16 +599,16 @@ class CeleryOrchestrator:
             }
 
         if result.state == "FAILURE":
+            existing_job = self._job_store.get_job(job_id)
             self._job_store.update_job(
                 job_id,
                 status=JobStatus.FAILED,
-                result=None,
                 error=str(result.result),
             )
             return self._job_store.get_job(job_id) or {
                 "job_id": job_id,
                 "status": JobStatus.FAILED,
-                "result": None,
+                "result": existing_job.get("result") if existing_job else None,
                 "error": str(result.result),
             }
 

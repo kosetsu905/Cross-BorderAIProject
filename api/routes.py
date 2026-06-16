@@ -9,7 +9,15 @@ from sqlalchemy.orm import Session
 from api.auth import verify_bearer_token
 from database import get_db_session
 from db_models import SupportConversationRecord
-from models import JobEventResponse, JobResponse, JobStatus, ProviderCredentials, WorkflowRequest, WorkflowType
+from models import (
+    JobEventResponse,
+    JobResponse,
+    JobStatus,
+    ProviderCredentials,
+    WorkflowGroupRequest,
+    WorkflowRequest,
+    WorkflowType,
+)
 from runtime_config import load_runtime_config
 from services.whatsapp_provider import get_whatsapp_provider
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
@@ -320,6 +328,17 @@ def create_router(orchestrator: object) -> APIRouter:
                 provider_credentials=provider_credentials,
                 metadata=req.metadata,
             )
+            return JobResponse(**orchestrator.get_job_status(job_id))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/api/v1/workflow-group", response_model=JobResponse)
+    async def trigger_workflow_group(req: WorkflowGroupRequest, _: AuthDependency) -> JobResponse:
+        try:
+            submit_group = getattr(orchestrator, "submit_workflow_group", None)
+            if submit_group is None:
+                raise ValueError("The configured orchestrator does not support workflow groups.")
+            job_id = await submit_group(req)
             return JobResponse(**orchestrator.get_job_status(job_id))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

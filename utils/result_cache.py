@@ -9,6 +9,7 @@ DEFAULT_CACHE_TTL_SECONDS = 3600
 CACHE_CONTROL_KEYS = {
     "workflow_result_cache_enabled",
     "workflow_result_cache_ttl_seconds",
+    "workflow_async_execution_enabled",
     "content_language_concurrency",
     "marketing_market_concurrency",
     "serper_deep_read_enabled",

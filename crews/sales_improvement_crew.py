@@ -84,6 +84,13 @@ def _memory_enabled(config_context: dict[str, Any]) -> bool:
     return bool(config_context.get("crewai_memory_enabled"))
 
 
+def _workflow_async_enabled(config_context: dict[str, Any]) -> bool:
+    value = config_context.get("workflow_async_execution_enabled", True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
 def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
     has_shopify = bool(
         config_context.get("shopify_store_domain")
@@ -133,6 +140,7 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
     agents_config = augment_agents_config(agents_config, workflow='sales_improvement')
     tasks_config = _load_yaml_config("tasks.yaml")
     llm = build_llm(config_context)
+    async_enabled = _workflow_async_enabled(config_context)
 
     funnel_analyst = Agent(
         config=agents_config["funnel_analyst"],
@@ -169,11 +177,13 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
         config=tasks_config["cro_recommendations"],
         agent=cro_specialist,
         context=[funnel_task],
+        async_execution=async_enabled,
     )
     pricing_task = Task(
         config=tasks_config["pricing_optimization"],
         agent=pricing_strategist,
         context=[funnel_task],
+        async_execution=async_enabled,
     )
     playbook_task = Task(
         config=tasks_config["playbook_generation"],

@@ -93,6 +93,7 @@ RUNTIME_CONFIG_KEYS = {
     "openai_output_cost_per_1m_tokens",
     "workflow_result_cache_enabled",
     "workflow_result_cache_ttl_seconds",
+    "workflow_async_execution_enabled",
     "content_language_concurrency",
     "marketing_market_concurrency",
     "serper_deep_read_enabled",
@@ -217,6 +218,7 @@ class RuntimeConfig:
     openai_output_cost_per_1m_tokens: float = 0.0
     workflow_result_cache_enabled: bool = True
     workflow_result_cache_ttl_seconds: int = 3600
+    workflow_async_execution_enabled: bool = True
     content_language_concurrency: int = 4
     marketing_market_concurrency: int = 4
     serper_deep_read_enabled: bool = False
@@ -461,6 +463,7 @@ def load_runtime_config() -> RuntimeConfig:
         openai_output_cost_per_1m_tokens=_float_env("OPENAI_OUTPUT_COST_PER_1M_TOKENS"),
         workflow_result_cache_enabled=_bool_env("WORKFLOW_RESULT_CACHE_ENABLED", True),
         workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
+        workflow_async_execution_enabled=_bool_env("WORKFLOW_ASYNC_EXECUTION_ENABLED", True),
         content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
         marketing_market_concurrency=_int_env("MARKETING_MARKET_CONCURRENCY", 4),
         serper_deep_read_enabled=_bool_env("SERPER_DEEP_READ_ENABLED", False),
