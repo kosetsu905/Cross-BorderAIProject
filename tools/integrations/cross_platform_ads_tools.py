@@ -10,6 +10,9 @@ try:
 except ImportError:
     from crewai_tools import BaseTool
 
+from utils.tool_cache import cached_tool_call
+from utils.tool_execution import AsyncToolExecutionMixin
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +64,7 @@ def _retry_request(
     }
 
 
-class GoogleAdsKeywordTool(BaseTool):
+class GoogleAdsKeywordTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Google Ads Keyword & Budget Planner"
     description: str = (
         "Fetches keyword ideas, search-volume context, CPC estimates, and budget "
@@ -70,6 +73,7 @@ class GoogleAdsKeywordTool(BaseTool):
     google_ads_access_token: str | None = None
     google_ads_customer_id: str | None = None
     google_ads_developer_token: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -97,7 +101,23 @@ class GoogleAdsKeywordTool(BaseTool):
             "geoTargetConstants": [f"locations/{geo_map.get(region.upper(), '2840')}"],
             "pageSize": 50,
         }
-        result = _retry_request(url, method="POST", headers=headers, payload=payload)
+        result = cached_tool_call(
+            self.tool_cache_context,
+            tool_name=self.name,
+            tool_version="v1",
+            arguments={
+                "product_category": product_category,
+                "region": region,
+                "budget_usd": float(budget_usd or 0),
+                "geo_target": geo_map.get(region.upper(), "2840"),
+            },
+            provider_identity={
+                "provider": "google_ads",
+                "customer_id": customer_id,
+                "api_version": "v14",
+            },
+            fetcher=lambda: _retry_request(url, method="POST", headers=headers, payload=payload),
+        )
         result.setdefault("data_source", "live_provider")
         return result
 
@@ -127,7 +147,7 @@ class GoogleAdsKeywordTool(BaseTool):
         }
 
 
-class MetaAdsTool(BaseTool):
+class MetaAdsTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Meta Ads Creative & Audience Validator"
     description: str = (
         "Validates ad creative against Meta specs, estimates audience context, and "
@@ -136,6 +156,7 @@ class MetaAdsTool(BaseTool):
     meta_access_token: str | None = None
     meta_ad_account_id: str | None = None
     meta_page_id: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -183,7 +204,7 @@ class MetaAdsTool(BaseTool):
         }
 
 
-class TikTokAdsTool(BaseTool):
+class TikTokAdsTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "TikTok Ads Spec & Performance Validator"
     description: str = (
         "Validates TikTok ad specs, trend alignment, and performance benchmark "
@@ -191,6 +212,7 @@ class TikTokAdsTool(BaseTool):
     )
     tiktok_access_token: str | None = None
     tiktok_advertiser_id: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -210,7 +232,23 @@ class TikTokAdsTool(BaseTool):
             "page": 1,
             "page_size": 10,
         }
-        result = _retry_request(url, headers=headers, params=params)
+        result = cached_tool_call(
+            self.tool_cache_context,
+            tool_name=self.name,
+            tool_version="v1",
+            arguments={
+                "region": region,
+                "product_category": product_category,
+                "page": params["page"],
+                "page_size": params["page_size"],
+            },
+            provider_identity={
+                "provider": "tiktok_ads",
+                "advertiser_id": advertiser_id,
+                "api_version": "v1.3",
+            },
+            fetcher=lambda: _retry_request(url, headers=headers, params=params),
+        )
         result.setdefault("data_source", "live_provider")
         return result
 

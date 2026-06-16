@@ -49,6 +49,24 @@ class JobEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class ToolCacheEntryRecord(Base):
+    __tablename__ = "tool_cache_entries"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    tool_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSONB, nullable=True)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
 class SupportConversationRecord(Base):
     __tablename__ = "support_conversations"
     __table_args__ = (

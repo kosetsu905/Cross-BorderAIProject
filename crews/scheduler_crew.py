@@ -5,7 +5,6 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.scheduler_tools import (
@@ -17,6 +16,7 @@ from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
+from utils.tool_cache import build_cached_serper_tool
 from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -96,7 +96,7 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 
 def _build_campaign_tools(config_context: dict[str, Any]) -> list[Any]:
     if config_context.get("serper_api_key"):
-        return [SerperDevTool()]
+        return [build_cached_serper_tool(config_context, purpose="scheduler_campaign_alignment")]
     return []
 
 
@@ -255,6 +255,7 @@ def run_scheduler_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         ],
         tasks=tasks,
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
 

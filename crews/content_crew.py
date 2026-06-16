@@ -8,7 +8,6 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 from tools.custom.content_tools import (
     CulturalComplianceCheckerTool,
@@ -22,6 +21,7 @@ from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
+from utils.tool_cache import build_cached_scrape_tool, build_cached_serper_tool
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
 
@@ -309,7 +309,7 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 def _build_search_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = []
     if config_context.get("serper_api_key"):
-        tools.append(SerperDevTool())
+        tools.append(build_cached_serper_tool(config_context, purpose="content_strategy_search"))
     return tools
 
 
@@ -322,9 +322,12 @@ def _build_content_intelligence_tools() -> list[Any]:
 
 
 def _build_creation_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool(), *_build_content_intelligence_tools()]
+    tools: list[Any] = [
+        build_cached_scrape_tool(config_context, purpose="content_creation_scrape"),
+        *_build_content_intelligence_tools(),
+    ]
     if config_context.get("serper_api_key"):
-        tools.append(SerperDevTool())
+        tools.append(build_cached_serper_tool(config_context, purpose="content_creation_search"))
     return tools
 
 
@@ -487,7 +490,10 @@ def _build_reddit_geo_context(
             "provider_error": None,
         }
 
-    tool = RedditGeoSearchTool(serper_api_key=config_context.get("serper_api_key"))
+    tool = RedditGeoSearchTool(
+        serper_api_key=config_context.get("serper_api_key"),
+        tool_cache_context=config_context,
+    )
     context = tool._run(
         subject=str(inputs.get("subject") or ""),
         product_category=str(inputs.get("product_category") or ""),
@@ -739,6 +745,7 @@ def _enrich_language_output(
                 config_context.get("content_image_artifact_dir")
                 or "artifacts/content_creation"
             ),
+            tool_execution_context=config_context,
         )
         image_generation_lock = config_context.get("content_image_generation_lock")
         stage_started_at = time.monotonic()
@@ -814,6 +821,7 @@ def _enrich_language_output(
                 or config_context.get("openai_model_name")
                 or "gpt-4o-mini"
             ),
+            tool_execution_context=config_context,
         )
         stage_started_at = time.monotonic()
         _emit_content_stage(
@@ -1721,6 +1729,7 @@ def _run_research_strategy(
         agents=[research_strategy_lead],
         tasks=[research_strategy_task],
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
     return _serialize_crew_result(content_crew.kickoff(inputs=inputs))
@@ -1753,6 +1762,7 @@ def _run_language_generation(
         agents=[multilingual_editor],
         tasks=[creation_qa_task],
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
     target_market = _target_market_for_language(inputs, language_index)

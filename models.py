@@ -235,6 +235,9 @@ class ProviderCredentials(StrictInputModel):
     workflow_model_tiering_enabled: bool | None = None
     workflow_worker_llm_profile: str | None = None
     workflow_reviewer_llm_profile: str | None = None
+    tool_cache_enabled: bool | None = None
+    tool_cache_ttl_seconds: int | None = Field(None, ge=0, le=604800)
+    tool_execution_async_enabled: bool | None = None
     content_image_model: str | None = None
     content_image_scoring_model: str | None = None
     content_image_artifact_dir: str | None = None

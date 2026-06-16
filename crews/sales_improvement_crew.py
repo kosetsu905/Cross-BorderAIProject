@@ -3,7 +3,6 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.sales_tools import CRMFunnelTool, CROHeuristicsTool, PricingIntelTool
@@ -11,6 +10,7 @@ from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
+from utils.tool_cache import build_cached_scrape_tool, build_cached_serper_tool
 from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -105,9 +105,9 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 
 
 def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool()]
+    tools: list[Any] = [build_cached_scrape_tool(config_context, purpose="sales_improvement_research")]
     if config_context.get("serper_api_key"):
-        tools.insert(0, SerperDevTool())
+        tools.insert(0, build_cached_serper_tool(config_context, purpose="sales_improvement_research"))
     return tools
 
 
@@ -185,6 +185,7 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
                 amazon_sp_api_endpoint=config_context.get("amazon_sp_api_endpoint"),
                 amazon_sp_api_access_token=config_context.get("amazon_sp_api_access_token"),
                 amazon_marketplace_ids=config_context.get("amazon_marketplace_ids"),
+                tool_cache_context=config_context,
             )
         ],
     )
@@ -235,6 +236,7 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
         agents=[funnel_analyst, cro_specialist, pricing_strategist, playbook_coach],
         tasks=tasks,
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
 

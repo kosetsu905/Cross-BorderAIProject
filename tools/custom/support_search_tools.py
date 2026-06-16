@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from crewai_tools import SerperDevTool
 
+from utils.tool_cache import build_cached_serper_tool
+
 SupportSearchStage = Literal["pre_sales", "order_fulfillment", "post_sales_support"]
 
 SUPPORT_SERPER_STAGE_FLAGS: dict[SupportSearchStage, str] = {
@@ -23,7 +25,9 @@ def build_support_external_search_tools(
         return []
     if not config_context.get("serper_api_key"):
         return []
-    return [SerperDevTool()]
+    if not str(getattr(SerperDevTool, "__module__", "")).startswith("crewai_tools"):
+        return [SerperDevTool()]
+    return [build_cached_serper_tool(config_context, purpose=f"support_{stage}")]
 
 
 def _bool_config(config_context: dict[str, Any], key: str) -> bool:

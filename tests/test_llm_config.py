@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from pydantic import ValidationError
 
-from models import WorkflowType
+from models import ProviderCredentials, WorkflowType
 from runtime_config import RuntimeConfig, load_runtime_config, resolve_workflow_runtime_context
 from utils.llm_config import build_llm, llm_chat_completions_url
 from utils.model_tiering import ModelTierRouter, agent_llm_tier
@@ -118,6 +119,50 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(context["llm_provider"], "openai")
         self.assertEqual(context["llm_model_name"], "gpt-4o-mini")
         self.assertEqual(context["llm_api_key"], "openai-key")
+
+    def test_runtime_config_loads_tool_cache_and_execution_flags(self) -> None:
+        env = {
+            "CELERY_BROKER_URL": "redis://localhost:6379/7",
+            "TOOL_CACHE_ENABLED": "false",
+            "TOOL_CACHE_BACKEND": "redis_postgres",
+            "TOOL_CACHE_TTL_SECONDS": "123",
+            "TOOL_CACHE_DB_ENABLED": "true",
+            "TOOL_CACHE_MAX_VALUE_BYTES": "4096",
+            "TOOL_EXECUTION_ASYNC_ENABLED": "false",
+            "TOOL_EXECUTION_MAX_WORKERS": "3",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = load_runtime_config()
+
+        self.assertFalse(config.tool_cache_enabled)
+        self.assertEqual(config.tool_cache_backend, "redis_postgres")
+        self.assertEqual(config.tool_cache_redis_url, "redis://localhost:6379/7")
+        self.assertEqual(config.tool_cache_ttl_seconds, 123)
+        self.assertTrue(config.tool_cache_db_enabled)
+        self.assertEqual(config.tool_cache_max_value_bytes, 4096)
+        self.assertFalse(config.tool_execution_async_enabled)
+        self.assertEqual(config.tool_execution_max_workers, 3)
+
+    def test_provider_credentials_override_tool_cache_without_infra_settings(self) -> None:
+        credentials = ProviderCredentials.model_validate(
+            {
+                "tool_cache_enabled": False,
+                "tool_cache_ttl_seconds": 30,
+                "tool_execution_async_enabled": False,
+            }
+        )
+        context = resolve_workflow_runtime_context(
+            RuntimeConfig(tool_cache_enabled=True, tool_cache_ttl_seconds=60),
+            WorkflowType.ANALYTICS,
+            credentials.model_dump(exclude_none=True),
+        )
+
+        self.assertFalse(context["tool_cache_enabled"])
+        self.assertEqual(context["tool_cache_ttl_seconds"], 30)
+        self.assertFalse(context["tool_execution_async_enabled"])
+
+        with self.assertRaises(ValidationError):
+            ProviderCredentials.model_validate({"tool_cache_redis_url": "redis://malicious.local/0"})
         self.assertIsNone(context["llm_base_url"])
 
     def test_support_llm_profile_unknown_name_fails_fast(self) -> None:

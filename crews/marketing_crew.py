@@ -4,7 +4,6 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.marketing_tools import ComplianceCheckerTool, KeywordResearchTool, PlatformAdSpecsTool
@@ -17,6 +16,7 @@ from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
+from utils.tool_cache import build_cached_scrape_tool, build_cached_serper_tool
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
 
@@ -96,6 +96,7 @@ def _google_ads_tool(config_context: dict[str, Any]) -> GoogleAdsKeywordTool:
         google_ads_access_token=config_context.get("google_ads_access_token"),
         google_ads_customer_id=config_context.get("google_ads_customer_id"),
         google_ads_developer_token=config_context.get("google_ads_developer_token"),
+        tool_cache_context=config_context,
     )
 
 
@@ -104,6 +105,7 @@ def _meta_ads_tool(config_context: dict[str, Any]) -> MetaAdsTool:
         meta_access_token=config_context.get("meta_access_token"),
         meta_ad_account_id=config_context.get("meta_ad_account_id"),
         meta_page_id=config_context.get("meta_page_id"),
+        tool_cache_context=config_context,
     )
 
 
@@ -111,13 +113,17 @@ def _tiktok_ads_tool(config_context: dict[str, Any]) -> TikTokAdsTool:
     return TikTokAdsTool(
         tiktok_access_token=config_context.get("tiktok_access_token"),
         tiktok_advertiser_id=config_context.get("tiktok_advertiser_id"),
+        tool_cache_context=config_context,
     )
 
 
 def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool(), _google_ads_tool(config_context)]
+    tools: list[Any] = [
+        build_cached_scrape_tool(config_context, purpose="marketing_research"),
+        _google_ads_tool(config_context),
+    ]
     if config_context.get("serper_api_key"):
-        tools.insert(0, SerperDevTool())
+        tools.insert(0, build_cached_serper_tool(config_context, purpose="marketing_research"))
     return tools
 
 
@@ -374,6 +380,7 @@ def _run_strategy_channel_plan(
         agents=[strategy_channel_planner],
         tasks=[strategy_task],
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
     return _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
@@ -410,6 +417,7 @@ def _run_market_creative_package(
         agents=[creative_compliance_specialist],
         tasks=[creative_compliance_task],
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
     market_inputs = {

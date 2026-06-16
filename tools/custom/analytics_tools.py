@@ -16,6 +16,8 @@ except ImportError:
     from crewai_tools import BaseTool
 
 from tools.custom.commerce_api import CommerceApiConfig, fetch_commerce_metrics
+from utils.tool_cache import cached_tool_call
+from utils.tool_execution import AsyncToolExecutionMixin
 
 logger = logging.getLogger(__name__)
 SERPER_SEARCH_URL = "https://google.serper.dev/search"
@@ -1165,7 +1167,7 @@ def _critical_alert_actions(enabled: bool, alert_message: str | None) -> list[di
     ]
 
 
-class EcomPlatformMetricsTool(BaseTool):
+class EcomPlatformMetricsTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "E-commerce Platform Metrics Fetcher"
     description: str = (
         "Fetches sales, conversion, inventory, and ad performance data from "
@@ -1180,6 +1182,7 @@ class EcomPlatformMetricsTool(BaseTool):
     amazon_marketplace_ids: str | None = None
     successful_live_fetch_count: int = 0
     last_metrics_status: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -1209,10 +1212,28 @@ class EcomPlatformMetricsTool(BaseTool):
                 date_range,
                 currency,
                 "No Shopify or Amazon commerce provider credentials are configured.",
-            )
+        )
 
         try:
-            result = fetch_commerce_metrics(config, platform, region, date_range)
+            result = cached_tool_call(
+                self.tool_cache_context,
+                tool_name="Commerce Metrics Read",
+                tool_version="v1",
+                arguments={
+                    "platform": platform,
+                    "region": region,
+                    "date_range": date_range,
+                    "currency": currency,
+                },
+                provider_identity={
+                    "provider": "commerce_api",
+                    "shopify_store_domain": self.shopify_store_domain,
+                    "shopify_api_version": self.shopify_api_version,
+                    "amazon_sp_api_endpoint": self.amazon_sp_api_endpoint,
+                    "amazon_marketplace_ids": self.amazon_marketplace_ids,
+                },
+                fetcher=lambda: fetch_commerce_metrics(config, platform, region, date_range),
+            )
             object.__setattr__(self, "successful_live_fetch_count", self.successful_live_fetch_count + 1)
             object.__setattr__(self, "last_metrics_status", "live_provider")
             return result
@@ -1256,7 +1277,7 @@ class EcomPlatformMetricsTool(BaseTool):
         return payload
 
 
-class CompetitorBenchmarkTool(BaseTool):
+class CompetitorBenchmarkTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Competitor & Market Benchmark Tool"
     description: str = (
         "Analyzes competitor pricing, promotions, and market positioning for "
@@ -1268,6 +1289,7 @@ class CompetitorBenchmarkTool(BaseTool):
     deep_read_concurrency: int = 5
     deep_read_timeout_seconds: int = 10
     deep_read_max_chars: int = 4000
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -1279,16 +1301,36 @@ class CompetitorBenchmarkTool(BaseTool):
             return self._dev_fallback(product_category, target_markets)
 
         try:
-            return _fetch_serper_competitor_benchmarks(
-                self.serper_api_key,
-                product_category,
-                target_markets,
-                date_range,
-                self.deep_read_enabled,
-                self.deep_read_max_pages,
-                self.deep_read_concurrency,
-                self.deep_read_timeout_seconds,
-                self.deep_read_max_chars,
+            return cached_tool_call(
+                self.tool_cache_context,
+                tool_name=self.name,
+                tool_version="v1",
+                arguments={
+                    "product_category": product_category,
+                    "target_markets": target_markets,
+                    "date_range": date_range,
+                    "deep_read_enabled": self.deep_read_enabled,
+                    "deep_read_max_pages": self.deep_read_max_pages,
+                    "deep_read_concurrency": self.deep_read_concurrency,
+                    "deep_read_timeout_seconds": self.deep_read_timeout_seconds,
+                    "deep_read_max_chars": self.deep_read_max_chars,
+                },
+                provider_identity={
+                    "provider": "serper",
+                    "search_type": "competitor_benchmark",
+                    "deep_read_enabled": self.deep_read_enabled,
+                },
+                fetcher=lambda: _fetch_serper_competitor_benchmarks(
+                    self.serper_api_key or "",
+                    product_category,
+                    target_markets,
+                    date_range,
+                    self.deep_read_enabled,
+                    self.deep_read_max_pages,
+                    self.deep_read_concurrency,
+                    self.deep_read_timeout_seconds,
+                    self.deep_read_max_chars,
+                ),
             )
         except Exception as exc:
             logger.warning("Serper competitor benchmark lookup failed: %s", exc)

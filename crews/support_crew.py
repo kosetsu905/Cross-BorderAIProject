@@ -42,6 +42,7 @@ from utils.llm_config import (
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.shared_context import build_conversation_history_context
+from utils.tool_cache import cached_tool_call
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
 
@@ -343,7 +344,8 @@ def _build_support_tools(config_context: dict[str, Any]) -> list[Any]:
     return [
         SupportKnowledgeSearchTool(
             knowledge_dir=config_context.get("support_knowledge_dir")
-            or str(BASE_DIR / "docs" / "knowledge_base")
+            or str(BASE_DIR / "docs" / "knowledge_base"),
+            tool_cache_context=config_context,
         ),
         *build_support_external_search_tools("post_sales_support", config_context),
     ]
@@ -572,6 +574,26 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return serialize_crew_result(result)
 
 
+def _build_support_crew(agents: list[Any], tasks: list[Any], config_context: dict[str, Any]) -> Crew:
+    try:
+        return Crew(
+            agents=agents,
+            tasks=tasks,
+            verbose=False,
+            cache=True,
+            memory=_crew_memory(config_context),
+        )
+    except TypeError as exc:
+        if "cache" not in str(exc):
+            raise
+        return Crew(
+            agents=agents,
+            tasks=tasks,
+            verbose=False,
+            memory=_crew_memory(config_context),
+        )
+
+
 def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for Customer Service orchestration."""
     config_context = config_context or {}
@@ -689,12 +711,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         task_names.append("quality_assurance_review")
     attach_task_progress(config_context, "support", tasks, task_names)
 
-    support_crew = Crew(
-        agents=agents,
-        tasks=tasks,
-        verbose=False,
-        memory=_crew_memory(config_context),
-    )
+    support_crew = _build_support_crew(agents, tasks, config_context)
 
     result = _serialize_crew_result(support_crew.kickoff(inputs=crew_inputs))
     if skip_llm_qa:
@@ -804,6 +821,7 @@ def _build_pre_sales_tool(config_context: dict[str, Any]) -> PreSalesProductKnow
         pim_backend=backend,
         pim_base_url=config_context.get(f"pim_{backend}_base_url"),
         pim_api_key=config_context.get(f"pim_{backend}_api_key"),
+        tool_cache_context=config_context,
     )
 
 
@@ -822,7 +840,14 @@ def _attach_catalog_knowledge_context(
         ]
         if item.strip()
     )
-    results = search_knowledge_base(query, knowledge_dir=knowledge_dir, top_k=3)
+    results = cached_tool_call(
+        config_context,
+        tool_name="Support Knowledge Search",
+        tool_version="v1",
+        arguments={"query": query, "knowledge_dir": knowledge_dir, "top_k": 3},
+        provider_identity={"provider": "local_support_knowledge"},
+        fetcher=lambda: search_knowledge_base(query, knowledge_dir=knowledge_dir, top_k=3),
+    )
     if results:
         pre_sales_context["catalog_knowledge_results"] = results
         pre_sales_context["knowledge_data_source"] = "local_vector_knowledge_base"

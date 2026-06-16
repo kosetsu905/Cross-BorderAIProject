@@ -13,10 +13,13 @@ try:
 except ImportError:
     from crewai_tools import BaseTool
 
+from utils.tool_cache import cached_tool_call
+from utils.tool_execution import AsyncToolExecutionMixin
+
 logger = logging.getLogger(__name__)
 
 
-class PreSalesProductKnowledgeTool(BaseTool):
+class PreSalesProductKnowledgeTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Pre-Sales Product Knowledge Base"
     description: str = (
         "Fetches verified product specs, compatibility info, use cases, and variant comparisons "
@@ -25,6 +28,7 @@ class PreSalesProductKnowledgeTool(BaseTool):
     pim_backend: str = "akeneo"
     pim_base_url: str | None = None
     pim_api_key: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -35,14 +39,34 @@ class PreSalesProductKnowledgeTool(BaseTool):
     ) -> dict[str, Any]:
         logger.info("Pre-sales lookup: %s in %s", product_category, region)
         query = str(product_category or " ".join(inquiry_keywords or []) or "Smart Home Camera")
-        pim_result = _run_coroutine_sync(
-            PIMConnector(
-                backend=self.pim_backend,
-                base_url=self.pim_base_url,
-                api_key=self.pim_api_key,
-            ).search_product(query, region, language)
+        return cached_tool_call(
+            self.tool_cache_context,
+            tool_name=self.name,
+            tool_version="v1",
+            arguments={
+                "product_category": product_category,
+                "inquiry_keywords": inquiry_keywords,
+                "query": query,
+                "region": region,
+                "language": language,
+            },
+            provider_identity={
+                "provider": "pim",
+                "backend": self.pim_backend,
+                "base_url": self.pim_base_url,
+            },
+            fetcher=lambda: _pim_result_to_pre_sales_context(
+                _run_coroutine_sync(
+                    PIMConnector(
+                        backend=self.pim_backend,
+                        base_url=self.pim_base_url,
+                        api_key=self.pim_api_key,
+                    ).search_product(query, region, language)
+                ),
+                region,
+                language,
+            ),
         )
-        return _pim_result_to_pre_sales_context(pim_result, region, language)
 
 
 def _pim_result_to_pre_sales_context(result: PIMQueryResult, region: str, language: str) -> dict[str, Any]:

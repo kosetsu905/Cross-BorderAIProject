@@ -36,6 +36,14 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_model_tiering_enabled",
     "workflow_worker_llm_profile",
     "workflow_reviewer_llm_profile",
+    "tool_cache_enabled",
+    "tool_cache_backend",
+    "tool_cache_redis_url",
+    "tool_cache_ttl_seconds",
+    "tool_cache_db_enabled",
+    "tool_cache_max_value_bytes",
+    "tool_execution_async_enabled",
+    "tool_execution_max_workers",
     "serper_api_key",
     "crunchbase_api_key",
     "apollo_api_key",
@@ -169,6 +177,14 @@ class RuntimeConfig:
     workflow_model_tiering_enabled: bool = True
     workflow_worker_llm_profile: str | None = None
     workflow_reviewer_llm_profile: str | None = None
+    tool_cache_enabled: bool = True
+    tool_cache_backend: str = "redis_postgres"
+    tool_cache_redis_url: str | None = None
+    tool_cache_ttl_seconds: int = 86400
+    tool_cache_db_enabled: bool = True
+    tool_cache_max_value_bytes: int = 1048576
+    tool_execution_async_enabled: bool = True
+    tool_execution_max_workers: int = 8
     serper_api_key: str | None = None
     crunchbase_api_key: str | None = None
     apollo_api_key: str | None = None
@@ -440,6 +456,14 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_model_tiering_enabled=workflow_model_tiering_enabled,
         workflow_worker_llm_profile=workflow_worker_llm_profile,
         workflow_reviewer_llm_profile=workflow_reviewer_llm_profile,
+        tool_cache_enabled=_bool_env("TOOL_CACHE_ENABLED", True),
+        tool_cache_backend=os.getenv("TOOL_CACHE_BACKEND", "redis_postgres"),
+        tool_cache_redis_url=_env("TOOL_CACHE_REDIS_URL", "CELERY_BROKER_URL"),
+        tool_cache_ttl_seconds=_int_env("TOOL_CACHE_TTL_SECONDS", 86400),
+        tool_cache_db_enabled=_bool_env("TOOL_CACHE_DB_ENABLED", True),
+        tool_cache_max_value_bytes=_int_env("TOOL_CACHE_MAX_VALUE_BYTES", 1048576),
+        tool_execution_async_enabled=_bool_env("TOOL_EXECUTION_ASYNC_ENABLED", True),
+        tool_execution_max_workers=_int_env("TOOL_EXECUTION_MAX_WORKERS", 8),
         serper_api_key=os.getenv("SERPER_API_KEY"),
         crunchbase_api_key=os.getenv("CRUNCHBASE_API_KEY"),
         apollo_api_key=os.getenv("APOLLO_API_KEY"),

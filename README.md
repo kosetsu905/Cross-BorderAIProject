@@ -232,6 +232,14 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 WORKFLOW_ASYNC_EXECUTION_ENABLED=true
+TOOL_CACHE_ENABLED=true
+TOOL_CACHE_BACKEND=redis_postgres
+TOOL_CACHE_REDIS_URL=
+TOOL_CACHE_TTL_SECONDS=86400
+TOOL_CACHE_DB_ENABLED=true
+TOOL_CACHE_MAX_VALUE_BYTES=1048576
+TOOL_EXECUTION_ASYNC_ENABLED=true
+TOOL_EXECUTION_MAX_WORKERS=8
 WORKFLOW_MODEL_TIERING_ENABLED=true
 WORKFLOW_WORKER_LLM_PROFILE=
 WORKFLOW_REVIEWER_LLM_PROFILE=
@@ -259,6 +267,8 @@ Runtime configuration and secrets are centralized in `runtime_config.py`. FastAP
 If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 `WORKFLOW_ASYNC_EXECUTION_ENABLED=true` lets eligible CrewAI tasks run as explicit async sibling tasks inside a workflow. Set it to `false` to force the older synchronous task order during rollback or provider troubleshooting.
+Tool cache is separate from workflow result cache. `TOOL_CACHE_ENABLED=true` caches read-only external I/O such as Serper, scrape, commerce metrics, PIM lookup, local support knowledge search, and read-only ad-platform validation calls. Redis is the hot cache and PostgreSQL is the durable mirror/fallback when `TOOL_CACHE_BACKEND=redis_postgres`; if `TOOL_CACHE_REDIS_URL` is empty it falls back to `CELERY_BROKER_URL`. Request-level credentials may override cache enabled/TTL and async execution, but cannot override Redis URL or DB storage settings.
+`TOOL_EXECUTION_ASYNC_ENABLED=true` gives project tools a bounded thread executor for slow blocking I/O and file-processing work. `TOOL_EXECUTION_MAX_WORKERS` controls the shared worker pool size.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
 Content Creation also produces multimodal localization specs, video storyboard guidance, multi-engine SEO metadata, hreflang tags, JSON-LD, and cultural risk notes. Set request input `generate_visual_assets=true` to call the OpenAI Image API; generated files are stored under `CONTENT_IMAGE_ARTIFACT_DIR`, which defaults to ignored `artifacts/content_creation`. Without an OpenAI API key, the workflow still completes and marks image generation as `skipped_missing_credentials`.
 Content Creation can also produce a manual-review Reddit GEO publishing package. Set `generate_reddit_geo=true` or include `Reddit` in `platforms`; when `SERPER_API_KEY` is configured, the workflow searches `site:reddit.com` for community context and returns `reddit_geo_posts` plus `reddit_geo_sources`. It does not publish to Reddit or use Reddit OAuth.

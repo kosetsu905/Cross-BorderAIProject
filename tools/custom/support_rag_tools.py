@@ -11,6 +11,9 @@ try:
 except ImportError:
     from crewai_tools import BaseTool
 
+from utils.tool_cache import cached_tool_call
+from utils.tool_execution import AsyncToolExecutionMixin
+
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
 PRICE_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?")
@@ -336,16 +339,24 @@ def _single_product_spec(evidence_lines: list[str]) -> tuple[str | None, str | N
     return None, None
 
 
-class SupportKnowledgeSearchTool(BaseTool):
+class SupportKnowledgeSearchTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Support Knowledge Base Search"
     description: str = (
         "Searches the internal support knowledge base for return policy, shipping, "
         "refund, compensation, exchange, and escalation guidance."
     )
     knowledge_dir: str = str(DEFAULT_KNOWLEDGE_DIR)
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(self, query: str, top_k: int = 3) -> dict[str, Any]:
-        results = search_knowledge_base(query, self.knowledge_dir, top_k)
+        results = cached_tool_call(
+            self.tool_cache_context,
+            tool_name=self.name,
+            tool_version="v1",
+            arguments={"query": query, "knowledge_dir": self.knowledge_dir, "top_k": top_k},
+            provider_identity={"provider": "local_support_knowledge"},
+            fetcher=lambda: search_knowledge_base(query, self.knowledge_dir, top_k),
+        )
         return {
             "query": query,
             "data_source": "local_vector_knowledge_base",

@@ -3,12 +3,12 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Task
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
+from utils.tool_cache import build_cached_scrape_tool, build_cached_serper_tool
 from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -117,14 +117,14 @@ def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
         )
     ]
     if config_context.get("serper_api_key"):
-        tools.insert(0, SerperDevTool())
+        tools.insert(0, build_cached_serper_tool(config_context, purpose="bizdev_lead_research"))
     return tools
 
 
 def _build_strategy_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = [ScrapeWebsiteTool()]
+    tools: list[Any] = [build_cached_scrape_tool(config_context, purpose="bizdev_strategy")]
     if config_context.get("serper_api_key"):
-        tools.insert(0, SerperDevTool())
+        tools.insert(0, build_cached_serper_tool(config_context, purpose="bizdev_strategy"))
     return tools
 
 
@@ -220,6 +220,7 @@ def run_bizdev_crew(inputs: dict[str, Any], config_context: dict[str, Any] | Non
         agents=[prospector, strategist, outreach_agent, pipeline_agent],
         tasks=tasks,
         verbose=False,
+        cache=True,
         memory=_crew_memory(config_context),
     )
 

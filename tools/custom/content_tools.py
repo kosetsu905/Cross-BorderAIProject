@@ -18,6 +18,9 @@ try:
 except ImportError:
     from crewai_tools import BaseTool
 
+from utils.tool_cache import cached_tool_call
+from utils.tool_execution import AsyncToolExecutionMixin
+
 logger = logging.getLogger(__name__)
 
 OPENAI_IMAGE_GENERATION_URL = "https://api.openai.com/v1/images/generations"
@@ -274,7 +277,7 @@ class CulturalComplianceCheckerTool(BaseTool):
         }
 
 
-class RedditGeoSearchTool(BaseTool):
+class RedditGeoSearchTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Reddit GEO Search Tool"
     description: str = (
         "Finds Reddit discussion context by target market through Serper site:reddit.com "
@@ -282,6 +285,7 @@ class RedditGeoSearchTool(BaseTool):
     )
     args_schema: type[BaseModel] = RedditGeoSearchInput
     serper_api_key: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -317,30 +321,52 @@ class RedditGeoSearchTool(BaseTool):
             )
 
         try:
-            sources: list[dict[str, str]] = []
-            for query_def in query_pack:
-                payload = _post_serper_search(
-                    self.serper_api_key,
-                    query_def["query"],
-                    max_results_per_query,
+            def _live_search() -> dict[str, Any]:
+                sources: list[dict[str, str]] = []
+                for query_def in query_pack:
+                    payload = _post_serper_search(
+                        self.serper_api_key or "",
+                        query_def["query"],
+                        max_results_per_query,
+                    )
+                    sources.extend(_reddit_sources_from_serper_payload(payload, query_def))
+
+                sources = _dedupe_reddit_sources(sources)
+                for index, source in enumerate(sources, start=1):
+                    source["source_id"] = f"R{index}"
+
+                return _reddit_geo_output(
+                    status="live_search",
+                    data_source="serper_search",
+                    confidence_level="medium" if sources else "low",
+                    assumption_notice=(
+                        "Reddit GEO context is based on live Serper search snippets from Reddit. "
+                        "Review each subreddit rule page and source thread before posting."
+                    ),
+                    query_pack=query_pack,
+                    sources=sources,
+                    started_at=started_at,
                 )
-                sources.extend(_reddit_sources_from_serper_payload(payload, query_def))
 
-            sources = _dedupe_reddit_sources(sources)
-            for index, source in enumerate(sources, start=1):
-                source["source_id"] = f"R{index}"
-
-            return _reddit_geo_output(
-                status="live_search",
-                data_source="serper_search",
-                confidence_level="medium" if sources else "low",
-                assumption_notice=(
-                    "Reddit GEO context is based on live Serper search snippets from Reddit. "
-                    "Review each subreddit rule page and source thread before posting."
-                ),
-                query_pack=query_pack,
-                sources=sources,
-                started_at=started_at,
+            return cached_tool_call(
+                self.tool_cache_context,
+                tool_name=self.name,
+                tool_version="v1",
+                arguments={
+                    "subject": subject,
+                    "product_category": product_category,
+                    "target_markets": target_markets,
+                    "primary_keywords": primary_keywords,
+                    "target_languages": target_languages,
+                    "brand_name": brand_name,
+                    "max_results_per_query": max_results_per_query,
+                    "query_pack": query_pack,
+                },
+                provider_identity={
+                    "provider": "serper",
+                    "search_type": "reddit_geo",
+                },
+                fetcher=_live_search,
             )
         except Exception as exc:
             logger.warning("Reddit GEO Serper lookup failed: %s", exc)
@@ -359,7 +385,7 @@ class RedditGeoSearchTool(BaseTool):
             )
 
 
-class OpenAIImageGenerationTool(BaseTool):
+class OpenAIImageGenerationTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "OpenAI Image Generation Tool"
     description: str = (
         "Optionally generates image assets using the OpenAI Image API and stores "
@@ -369,6 +395,7 @@ class OpenAIImageGenerationTool(BaseTool):
     openai_api_key: str | None = None
     image_model: str = "gpt-image-2"
     artifact_dir: str = DEFAULT_CONTENT_ARTIFACT_DIR
+    tool_execution_context: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -503,7 +530,7 @@ class OpenAIImageGenerationTool(BaseTool):
             }
 
 
-class VisualAssetScoringTool(BaseTool):
+class VisualAssetScoringTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "Visual Asset Scoring Tool"
     description: str = (
         "Optionally scores generated assets with an OpenAI vision-capable model "
@@ -512,6 +539,7 @@ class VisualAssetScoringTool(BaseTool):
     args_schema: type[BaseModel] = VisualAssetScoringInput
     openai_api_key: str | None = None
     scoring_model: str = "gpt-4o-mini"
+    tool_execution_context: dict[str, Any] | None = None
 
     def _run(
         self,

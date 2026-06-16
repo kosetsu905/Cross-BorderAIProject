@@ -8,11 +8,13 @@ except ImportError:
     from crewai_tools import BaseTool
 
 from tools.custom.commerce_api import CommerceApiConfig, fetch_commerce_metrics
+from utils.tool_cache import cached_tool_call
+from utils.tool_execution import AsyncToolExecutionMixin
 
 logger = logging.getLogger(__name__)
 
 
-class CRMFunnelTool(BaseTool):
+class CRMFunnelTool(AsyncToolExecutionMixin, BaseTool):
     name: str = "CRM Funnel & Conversion Data Fetcher"
     description: str = (
         "Extracts funnel metrics, drop-off rates, and regional conversion data "
@@ -25,6 +27,7 @@ class CRMFunnelTool(BaseTool):
     amazon_sp_api_endpoint: str | None = None
     amazon_sp_api_access_token: str | None = None
     amazon_marketplace_ids: str | None = None
+    tool_cache_context: dict[str, Any] | None = None
 
     def _run(self, product_category: str, target_markets: str) -> dict[str, Any]:
         config = CommerceApiConfig(
@@ -48,7 +51,29 @@ class CRMFunnelTool(BaseTool):
         for region in [item.strip() for item in target_markets.split(",") if item.strip()]:
             try:
                 regional_metrics.append(
-                    fetch_commerce_metrics(config, "", region, "Last 60 Days")
+                    cached_tool_call(
+                        self.tool_cache_context,
+                        tool_name="Commerce Metrics Read",
+                        tool_version="v1",
+                        arguments={
+                            "platform": "",
+                            "region": region,
+                            "date_range": "Last 60 Days",
+                        },
+                        provider_identity={
+                            "provider": "commerce_api",
+                            "shopify_store_domain": self.shopify_store_domain,
+                            "shopify_api_version": self.shopify_api_version,
+                            "amazon_sp_api_endpoint": self.amazon_sp_api_endpoint,
+                            "amazon_marketplace_ids": self.amazon_marketplace_ids,
+                        },
+                        fetcher=lambda region=region: fetch_commerce_metrics(
+                            config,
+                            "",
+                            region,
+                            "Last 60 Days",
+                        ),
+                    )
                 )
             except Exception as exc:
                 provider_errors.append(f"{region}: {exc}")
