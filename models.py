@@ -15,6 +15,9 @@ class WorkflowType(str, Enum):
     SALES_IMPROVEMENT = "sales_improvement"
 
 
+WORKFLOW_ROUTE_TYPE = "workflow_route"
+
+
 class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -283,6 +286,10 @@ class ProviderCredentials(StrictInputModel):
     tiktok_access_token: str | None = None
     tiktok_advertiser_id: str | None = None
     workflow_async_execution_enabled: bool | None = None
+    workflow_router_enabled: bool | None = None
+    workflow_router_llm_fallback_enabled: bool | None = None
+    workflow_router_confidence_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    workflow_router_llm_profile: str | None = None
 
 
 WORKFLOW_INPUT_MODELS: dict[WorkflowType, type[StrictInputModel]] = {
@@ -383,6 +390,103 @@ class WorkflowGroupRequest(StrictInputModel):
                 )
             names.add(resolved_name)
         return self
+
+
+class WorkflowRouteNode(StrictInputModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    workflow_type: WorkflowType
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    depends_on: list[str] = Field(default_factory=list)
+    rationale: str = Field(..., min_length=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("depends_on", mode="before")
+    @classmethod
+    def _normalize_dependencies(cls, value: Any) -> Any:
+        if value in (None, ""):
+            return []
+        return value
+
+    @field_validator("depends_on")
+    @classmethod
+    def _strip_dependencies(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
+
+
+class WorkflowRoutePlan(StrictInputModel):
+    goal: str = Field(..., min_length=1)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    requires_review: bool
+    missing_inputs: list[str] = Field(default_factory=list)
+    rationale: str = Field(..., min_length=1)
+    nodes: list[WorkflowRouteNode] = Field(default_factory=list, max_length=7)
+    waves: list[list[str]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_node_graph(self) -> "WorkflowRoutePlan":
+        names: set[str] = set()
+        for node in self.nodes:
+            if node.name in names:
+                raise ValueError(f"Workflow route node names must be unique; duplicate name '{node.name}'.")
+            names.add(node.name)
+        for node in self.nodes:
+            unknown = [dependency for dependency in node.depends_on if dependency not in names]
+            if unknown:
+                raise ValueError(f"Workflow route node '{node.name}' has unknown dependencies: {unknown}.")
+            if node.name in node.depends_on:
+                raise ValueError(f"Workflow route node '{node.name}' cannot depend on itself.")
+        self.waves = self.waves or _route_waves(self.nodes)
+        return self
+
+
+class WorkflowRouteRequest(StrictInputModel):
+    goal: str = Field(..., min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
+    preferred_workflows: list[WorkflowType] | None = None
+    excluded_workflows: list[WorkflowType] | None = None
+    provider_credentials: ProviderCredentials | None = Field(
+        None,
+        description="Optional request-scoped provider credentials used for planning and child workflows.",
+    )
+    metadata: dict[str, Any] | None = Field(None, description="Optional tracing or request context metadata.")
+
+    @field_validator("preferred_workflows", "excluded_workflows", mode="before")
+    @classmethod
+    def _empty_workflow_lists_to_none(cls, value: Any) -> Any:
+        if value in (None, ""):
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def validate_workflow_filters(self) -> "WorkflowRouteRequest":
+        preferred = set(self.preferred_workflows or [])
+        excluded = set(self.excluded_workflows or [])
+        overlap = preferred & excluded
+        if overlap:
+            names = ", ".join(sorted(item.value for item in overlap))
+            raise ValueError(f"preferred_workflows and excluded_workflows overlap: {names}")
+        return self
+
+
+def _route_waves(nodes: list[WorkflowRouteNode]) -> list[list[str]]:
+    remaining = {node.name: set(node.depends_on) for node in nodes}
+    waves: list[list[str]] = []
+    completed: set[str] = set()
+    while remaining:
+        ready = sorted(name for name, dependencies in remaining.items() if dependencies <= completed)
+        if not ready:
+            raise ValueError("Workflow route dependencies contain a cycle.")
+        waves.append(ready)
+        completed.update(ready)
+        for name in ready:
+            remaining.pop(name, None)
+    return waves
 
 
 class JobResponse(BaseModel):

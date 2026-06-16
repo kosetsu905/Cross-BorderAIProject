@@ -1,17 +1,17 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
 from typing import Any
 
 from celery.result import AsyncResult
 
 from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
-from models import JobStatus, WorkflowGroupRequest, WorkflowType
+from models import JobStatus, WorkflowGroupRequest, WorkflowRoutePlan, WorkflowRouteRequest, WorkflowType, WORKFLOW_ROUTE_TYPE
 from runtime_config import RuntimeConfig, apply_runtime_environment, resolve_workflow_runtime_context
-from utils.result_cache import build_workflow_cache_key, cache_enabled, cache_ttl_seconds
+from services.workflow_router import WorkflowRouterAgent
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
+from utils.workflow_engine import CrewFunction, WorkflowExecutionEngine
 from utils.workflow_group import (
     WORKFLOW_GROUP_MONITOR_TASK,
     WORKFLOW_GROUP_TYPE,
@@ -25,10 +25,22 @@ from utils.workflow_group import (
     workflow_group_usage_fields,
 )
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
+from utils.workflow_route import (
+    WORKFLOW_ROUTE_MONITOR_TASK,
+    build_workflow_route_result,
+    ready_route_nodes,
+    route_child_metadata,
+    route_completed_names,
+    route_submitted_names,
+    route_wave_index,
+    workflow_route_error,
+    workflow_route_parent_inputs,
+    workflow_route_provider_credentials,
+    workflow_route_status,
+    workflow_route_usage_fields,
+)
 
 logger = logging.getLogger(__name__)
-
-CrewFunction = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
 
 USAGE_FIELD_NAMES = {
@@ -58,67 +70,14 @@ def _split_task_result(task_result: Any) -> tuple[dict[str, Any], dict[str, Any]
     return result_payload, {}
 
 
-def _cache_hit_usage_summary(source_job: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "usage_metrics": {
-            "cache_hit": True,
-            "source_job_id": source_job.get("job_id"),
-            "source_total_tokens": source_job.get("total_tokens"),
-            "source_cost_usd": source_job.get("cost_usd"),
-        },
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "cost_usd": 0.0,
-        "duration_seconds": 0.0,
-    }
-
-
-def _maybe_create_cached_job(
-    job_store: JobStore,
-    workflow_type: WorkflowType,
-    inputs: dict[str, Any],
-    config_context: dict[str, Any],
-    metadata: dict[str, Any] | None,
-    backend: str,
-) -> str | None:
-    cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
-    if not cache_enabled(config_context, metadata):
-        return None
-
-    cached_job = job_store.find_cached_job(cache_key, cache_ttl_seconds(config_context))
-    if cached_job is None:
-        return None
-
-    job_id = str(uuid.uuid4())
-    job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
-    usage_summary = _cache_hit_usage_summary(cached_job)
-    job_store.update_job(
-        job_id,
-        status=JobStatus.COMPLETED,
-        result=cached_job["result"],
-        cache_hit=True,
-        source_job_id=cached_job["job_id"],
-        **usage_summary,
-        error=None,
-    )
-    job_store.log_event(
-        job_id,
-        "cache_hit",
-        "Workflow result served from PostgreSQL cache.",
-        {
-            "workflow_type": workflow_type.value,
-            "backend": backend,
-            "source_job_id": cached_job["job_id"],
-        },
-    )
-    logger.info(
-        "Served workflow %s from cached job %s as job %s",
-        workflow_type.value,
-        cached_job["job_id"],
-        job_id,
-    )
-    return job_id
+def _ensure_submittable_route_plan(plan: WorkflowRoutePlan) -> None:
+    if not plan.nodes:
+        raise ValueError("Workflow route plan did not select any child workflows.")
+    if plan.missing_inputs:
+        raise ValueError(
+            "Workflow route plan is missing required child inputs: "
+            + ", ".join(plan.missing_inputs)
+        )
 
 
 class MasterOrchestrator:
@@ -129,9 +88,9 @@ class MasterOrchestrator:
         job_store: JobStore | None = None,
         runtime_config: RuntimeConfig | None = None,
     ) -> None:
-        self._crews: dict[WorkflowType, CrewFunction] = {}
         self._job_store = job_store or InMemoryJobStore()
         self._runtime_config = runtime_config or RuntimeConfig()
+        self._engine = WorkflowExecutionEngine(self._job_store, self._runtime_config)
         logger.info("Master orchestrator initialized with %s job store.", self.job_store_name)
 
     @property
@@ -140,10 +99,10 @@ class MasterOrchestrator:
 
     @property
     def registered_workflows(self) -> list[WorkflowType]:
-        return list(self._crews.keys())
+        return self._engine.registered_workflows()
 
     def register_crew(self, workflow_type: WorkflowType, crew_function: CrewFunction) -> None:
-        self._crews[workflow_type] = crew_function
+        self._engine.register_crew(workflow_type, crew_function)
         logger.info("Registered crew: %s", workflow_type.value)
 
     async def submit_job(
@@ -153,37 +112,23 @@ class MasterOrchestrator:
         provider_credentials: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        if workflow_type not in self._crews:
+        if not self._engine.has_workflow(workflow_type):
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        config_context = resolve_workflow_runtime_context(
-            self._runtime_config,
-            workflow_type,
-            provider_credentials,
-        )
-        cached_job_id = _maybe_create_cached_job(
-            self._job_store,
+        prepared = self._engine.prepare_job(
             workflow_type,
             inputs,
-            config_context,
+            provider_credentials,
             metadata,
             "local",
-        )
-        if cached_job_id:
-            return cached_job_id
-
-        job_id = str(uuid.uuid4())
-        cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
-        self._job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
-        self._job_store.log_event(
-            job_id,
-            "queued",
             "Local background execution scheduled.",
-            {"workflow_type": workflow_type.value, "backend": "local"},
         )
-        asyncio.create_task(self._run_job(job_id, workflow_type, inputs, config_context))
-        logger.info("Submitted job %s for workflow %s", job_id, workflow_type.value)
-        return job_id
+        if prepared.cache_hit:
+            return prepared.job_id
+
+        asyncio.create_task(self._run_job(prepared.job_id, workflow_type, inputs, prepared.config_context))
+        logger.info("Submitted job %s for workflow %s", prepared.job_id, workflow_type.value)
+        return prepared.job_id
 
     async def submit_workflow_group(self, request: WorkflowGroupRequest) -> str:
         parent_job_id = str(uuid.uuid4())
@@ -253,6 +198,64 @@ class MasterOrchestrator:
             )
         return parent_job_id
 
+    def plan_workflow_route(self, request: WorkflowRouteRequest) -> WorkflowRoutePlan:
+        config_context = resolve_workflow_runtime_context(
+            self._runtime_config,
+            WORKFLOW_ROUTE_TYPE,
+            workflow_route_provider_credentials(request),
+        )
+        return WorkflowRouterAgent(config_context).plan(request)
+
+    async def submit_workflow_route(self, request: WorkflowRouteRequest) -> str:
+        plan = self.plan_workflow_route(request)
+        _ensure_submittable_route_plan(plan)
+        parent_job_id = str(uuid.uuid4())
+        children: list[dict[str, Any]] = []
+        self._job_store.create_job(
+            parent_job_id,
+            WORKFLOW_ROUTE_TYPE,
+            workflow_route_parent_inputs(request, plan),
+        )
+        initial_result = build_workflow_route_result(plan, children, self._job_store.get_job)
+        self._job_store.update_job(parent_job_id, status=JobStatus.RUNNING, result=initial_result, error=None)
+        self._job_store.log_event(
+            parent_job_id,
+            "queued",
+            "Workflow route submitted.",
+            {
+                "workflow_type": WORKFLOW_ROUTE_TYPE,
+                "backend": "local",
+                "plan": initial_result.get("plan"),
+            },
+        )
+        try:
+            await self._submit_ready_route_children(parent_job_id, request, plan, children)
+            result = build_workflow_route_result(plan, children, self._job_store.get_job)
+            self._job_store.update_job(parent_job_id, status=workflow_route_status(result), result=result, error=None)
+            self._job_store.log_event(
+                parent_job_id,
+                "running",
+                "Workflow route initial child jobs submitted.",
+                {"backend": "local", "children": children},
+            )
+            asyncio.create_task(self._monitor_workflow_route(parent_job_id, request, plan, children))
+        except Exception as exc:
+            logger.exception("Workflow route %s failed during submission", parent_job_id)
+            result = build_workflow_route_result(plan, children, self._job_store.get_job)
+            self._job_store.update_job(
+                parent_job_id,
+                status=JobStatus.FAILED,
+                result=result,
+                error=str(exc),
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "failed",
+                "Workflow route submission failed.",
+                {"backend": "local", "error": str(exc), "children": children},
+            )
+        return parent_job_id
+
     async def _monitor_workflow_group(
         self,
         parent_job_id: str,
@@ -316,7 +319,7 @@ class MasterOrchestrator:
                 "Workflow execution started.",
                 {"workflow_type": workflow_type.value, "backend": "local"},
             )
-            crew_function = self._crews[workflow_type]
+            crew_function = self._engine.crew_function(workflow_type)
             config_context[PROGRESS_CONTEXT_KEY] = WorkflowProgressRecorder(
                 job_id=job_id,
                 workflow_type=workflow_type.value,
@@ -391,6 +394,110 @@ class MasterOrchestrator:
                 {"workflow_type": workflow_type.value, "backend": "local", "error": str(exc)},
             )
 
+    async def _submit_ready_route_children(
+        self,
+        parent_job_id: str,
+        request: WorkflowRouteRequest,
+        plan: WorkflowRoutePlan,
+        children: list[dict[str, Any]],
+    ) -> None:
+        submitted_names = route_submitted_names(children)
+        completed_names = route_completed_names(children, self._job_store.get_job)
+        for node in ready_route_nodes(plan, submitted_names, completed_names):
+            child_job_id = await self.submit_job(
+                node.workflow_type,
+                node.inputs,
+                provider_credentials=workflow_route_provider_credentials(request),
+                metadata=route_child_metadata(
+                    parent_job_id,
+                    node,
+                    request.metadata,
+                    route_wave_index(plan, node.name),
+                ),
+            )
+            children.append(
+                {
+                    "name": node.name,
+                    "workflow_type": node.workflow_type.value,
+                    "job_id": child_job_id,
+                    "depends_on": list(node.depends_on),
+                }
+            )
+            submitted_names.add(node.name)
+
+    async def _monitor_workflow_route(
+        self,
+        parent_job_id: str,
+        request: WorkflowRouteRequest,
+        plan: WorkflowRoutePlan,
+        children: list[dict[str, Any]],
+    ) -> None:
+        try:
+            while True:
+                result = build_workflow_route_result(plan, children, self._job_store.get_job)
+                route_status = workflow_route_status(result)
+                if route_status == JobStatus.FAILED:
+                    self._job_store.update_job(
+                        parent_job_id,
+                        status=JobStatus.FAILED,
+                        result=result,
+                        **workflow_route_usage_fields(result),
+                        error=workflow_route_error(result),
+                    )
+                    self._job_store.log_event(
+                        parent_job_id,
+                        "failed",
+                        "Workflow route execution failed.",
+                        {"backend": "local", "summary": result.get("summary"), "children": result.get("children")},
+                    )
+                    return
+
+                before_count = len(children)
+                await self._submit_ready_route_children(parent_job_id, request, plan, children)
+                if len(children) != before_count:
+                    result = build_workflow_route_result(plan, children, self._job_store.get_job)
+                    self._job_store.update_job(
+                        parent_job_id,
+                        status=JobStatus.RUNNING,
+                        result=result,
+                        error=None,
+                    )
+                    self._job_store.log_event(
+                        parent_job_id,
+                        "route_wave_submitted",
+                        "Workflow route submitted another ready worker wave.",
+                        {"backend": "local", "children": children},
+                    )
+
+                route_status = workflow_route_status(result)
+                if route_status == JobStatus.COMPLETED:
+                    self._job_store.update_job(
+                        parent_job_id,
+                        status=JobStatus.COMPLETED,
+                        result=result,
+                        **workflow_route_usage_fields(result),
+                        error=None,
+                    )
+                    self._job_store.log_event(
+                        parent_job_id,
+                        "completed",
+                        "Workflow route execution completed.",
+                        {"backend": "local", "summary": result.get("summary"), "children": result.get("children")},
+                    )
+                    return
+
+                self._job_store.update_job(parent_job_id, status=JobStatus.RUNNING, result=result, error=None)
+                await asyncio.sleep(1.0)
+        except Exception as exc:
+            logger.exception("Workflow route monitor failed for %s", parent_job_id)
+            self._job_store.update_job(parent_job_id, status=JobStatus.FAILED, error=str(exc))
+            self._job_store.log_event(
+                parent_job_id,
+                "failed",
+                "Workflow route monitor failed.",
+                {"backend": "local", "error": str(exc)},
+            )
+
     def get_job_status(self, job_id: str) -> dict[str, Any]:
         return self._job_store.get_job(job_id) or {
             "job_id": job_id,
@@ -419,6 +526,7 @@ class CeleryOrchestrator:
     def __init__(self, job_store: JobStore, runtime_config: RuntimeConfig | None = None) -> None:
         self._job_store = job_store
         self._runtime_config = runtime_config or RuntimeConfig()
+        self._engine = WorkflowExecutionEngine(self._job_store, self._runtime_config)
         logger.info("Celery orchestrator initialized with %s job store.", self.job_store_name)
 
     @property
@@ -440,39 +548,26 @@ class CeleryOrchestrator:
         if task_name is None:
             raise ValueError(f"Workflow '{workflow_type.value}' is not registered.")
 
-        config_context = resolve_workflow_runtime_context(
-            self._runtime_config,
-            workflow_type,
-            provider_credentials,
-        )
-        cached_job_id = _maybe_create_cached_job(
-            self._job_store,
+        prepared = self._engine.prepare_job(
             workflow_type,
             inputs,
-            config_context,
+            provider_credentials,
             metadata,
             "celery",
-        )
-        if cached_job_id:
-            return cached_job_id
-
-        job_id = str(uuid.uuid4())
-        cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
-        self._job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
-        self._job_store.log_event(
-            job_id,
-            "queued",
             "Celery task queued.",
-            {"workflow_type": workflow_type.value, "backend": "celery", "task_name": task_name},
+            {"task_name": task_name},
         )
+        if prepared.cache_hit:
+            return prepared.job_id
+
         task = celery_app.send_task(
             task_name,
             args=[inputs],
-            kwargs={"config_context": config_context},
-            task_id=job_id,
+            kwargs={"config_context": prepared.config_context},
+            task_id=prepared.job_id,
         )
         logger.info("Queued Celery job %s for workflow %s", task.id, workflow_type.value)
-        return job_id
+        return prepared.job_id
 
     async def submit_workflow_group(self, request: WorkflowGroupRequest) -> str:
         parent_job_id = str(uuid.uuid4())
@@ -549,6 +644,111 @@ class CeleryOrchestrator:
                 {"backend": "celery", "error": str(exc), "children": children},
             )
         return parent_job_id
+
+    def plan_workflow_route(self, request: WorkflowRouteRequest) -> WorkflowRoutePlan:
+        config_context = resolve_workflow_runtime_context(
+            self._runtime_config,
+            WORKFLOW_ROUTE_TYPE,
+            workflow_route_provider_credentials(request),
+        )
+        return WorkflowRouterAgent(config_context).plan(request)
+
+    async def submit_workflow_route(self, request: WorkflowRouteRequest) -> str:
+        plan = self.plan_workflow_route(request)
+        _ensure_submittable_route_plan(plan)
+        parent_job_id = str(uuid.uuid4())
+        children: list[dict[str, Any]] = []
+        self._job_store.create_job(
+            parent_job_id,
+            WORKFLOW_ROUTE_TYPE,
+            workflow_route_parent_inputs(request, plan),
+        )
+        initial_result = build_workflow_route_result(plan, children, self._job_store.get_job)
+        self._job_store.update_job(parent_job_id, status=JobStatus.RUNNING, result=initial_result, error=None)
+        self._job_store.log_event(
+            parent_job_id,
+            "queued",
+            "Workflow route submitted.",
+            {"workflow_type": WORKFLOW_ROUTE_TYPE, "backend": "celery", "plan": initial_result.get("plan")},
+        )
+
+        try:
+            children.extend(
+                await self._submit_ready_route_children(
+                    parent_job_id,
+                    request,
+                    plan,
+                    children,
+                )
+            )
+            result = build_workflow_route_result(plan, children, self._job_store.get_job)
+            self._job_store.update_job(parent_job_id, status=JobStatus.RUNNING, result=result, error=None)
+            monitor_task = celery_app.send_task(
+                WORKFLOW_ROUTE_MONITOR_TASK,
+                args=[
+                    parent_job_id,
+                    plan.model_dump(mode="json"),
+                    children,
+                ],
+                kwargs={
+                    "provider_credentials": workflow_route_provider_credentials(request),
+                    "metadata": request.metadata or {},
+                },
+                task_id=parent_job_id,
+            )
+            self._job_store.log_event(
+                parent_job_id,
+                "running",
+                "Workflow route initial child jobs submitted and monitor queued.",
+                {
+                    "backend": "celery",
+                    "monitor_task_id": monitor_task.id,
+                    "children": children,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Workflow route %s failed during Celery submission", parent_job_id)
+            result = build_workflow_route_result(plan, children, self._job_store.get_job)
+            self._job_store.update_job(parent_job_id, status=JobStatus.FAILED, result=result, error=str(exc))
+            self._job_store.log_event(
+                parent_job_id,
+                "failed",
+                "Workflow route submission failed.",
+                {"backend": "celery", "error": str(exc), "children": children},
+            )
+        return parent_job_id
+
+    async def _submit_ready_route_children(
+        self,
+        parent_job_id: str,
+        request: WorkflowRouteRequest,
+        plan: WorkflowRoutePlan,
+        children: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        submitted: list[dict[str, Any]] = []
+        submitted_names = route_submitted_names(children)
+        completed_names = route_completed_names(children, self._job_store.get_job)
+        for node in ready_route_nodes(plan, submitted_names, completed_names):
+            child_job_id = await self.submit_job(
+                node.workflow_type,
+                node.inputs,
+                provider_credentials=workflow_route_provider_credentials(request),
+                metadata=route_child_metadata(
+                    parent_job_id,
+                    node,
+                    request.metadata,
+                    route_wave_index(plan, node.name),
+                ),
+            )
+            child = {
+                "name": node.name,
+                "workflow_type": node.workflow_type.value,
+                "job_id": child_job_id,
+                "depends_on": list(node.depends_on),
+            }
+            submitted.append(child)
+            submitted_names.add(node.name)
+        return submitted
 
     def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
         return self._job_store.get_job_events(job_id)

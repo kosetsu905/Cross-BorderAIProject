@@ -15,6 +15,8 @@ from models import (
     JobStatus,
     ProviderCredentials,
     WorkflowGroupRequest,
+    WorkflowRoutePlan,
+    WorkflowRouteRequest,
     WorkflowRequest,
     WorkflowType,
 )
@@ -339,6 +341,27 @@ def create_router(orchestrator: object) -> APIRouter:
             if submit_group is None:
                 raise ValueError("The configured orchestrator does not support workflow groups.")
             job_id = await submit_group(req)
+            return JobResponse(**orchestrator.get_job_status(job_id))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/api/v1/workflow-route/plan", response_model=WorkflowRoutePlan)
+    async def plan_workflow_route(req: WorkflowRouteRequest, _: AuthDependency) -> WorkflowRoutePlan:
+        try:
+            plan_route = getattr(orchestrator, "plan_workflow_route", None)
+            if plan_route is None:
+                raise ValueError("The configured orchestrator does not support workflow routing.")
+            return plan_route(req)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/api/v1/workflow-route", response_model=JobResponse)
+    async def trigger_workflow_route(req: WorkflowRouteRequest, _: AuthDependency) -> JobResponse:
+        try:
+            submit_route = getattr(orchestrator, "submit_workflow_route", None)
+            if submit_route is None:
+                raise ValueError("The configured orchestrator does not support workflow routing.")
+            job_id = await submit_route(req)
             return JobResponse(**orchestrator.get_job_status(job_id))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

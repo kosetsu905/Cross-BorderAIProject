@@ -163,6 +163,48 @@ class LLMConfigTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             ProviderCredentials.model_validate({"tool_cache_redis_url": "redis://malicious.local/0"})
+
+    def test_runtime_config_loads_workflow_router_flags(self) -> None:
+        env = {
+            "WORKFLOW_ROUTER_ENABLED": "false",
+            "WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED": "false",
+            "WORKFLOW_ROUTER_CONFIDENCE_THRESHOLD": "0.67",
+            "WORKFLOW_ROUTER_MAX_WORKFLOWS": "3",
+            "WORKFLOW_ROUTER_LLM_PROFILE": "router_profile",
+            "LLM_PROFILES_JSON": (
+                '{"router_profile":{"llm_provider":"openai",'
+                '"llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"}}'
+            ),
+            "OPENAI_API_KEY": "openai-key",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = load_runtime_config()
+
+        self.assertFalse(config.workflow_router_enabled)
+        self.assertFalse(config.workflow_router_llm_fallback_enabled)
+        self.assertEqual(config.workflow_router_confidence_threshold, 0.67)
+        self.assertEqual(config.workflow_router_max_workflows, 3)
+        self.assertEqual(config.workflow_router_llm_profile, "router_profile")
+
+    def test_provider_credentials_override_workflow_router_safely(self) -> None:
+        credentials = ProviderCredentials.model_validate(
+            {
+                "workflow_router_enabled": False,
+                "workflow_router_llm_fallback_enabled": False,
+                "workflow_router_confidence_threshold": 0.9,
+                "workflow_router_llm_profile": "router_profile",
+            }
+        )
+        context = resolve_workflow_runtime_context(
+            RuntimeConfig(),
+            "workflow_route",
+            credentials.model_dump(exclude_none=True),
+        )
+
+        self.assertFalse(context["workflow_router_enabled"])
+        self.assertFalse(context["workflow_router_llm_fallback_enabled"])
+        self.assertEqual(context["workflow_router_confidence_threshold"], 0.9)
+        self.assertEqual(context["workflow_router_llm_profile"], "router_profile")
         self.assertIsNone(context["llm_base_url"])
 
     def test_support_llm_profile_unknown_name_fails_fast(self) -> None:

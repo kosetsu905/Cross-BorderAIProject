@@ -36,6 +36,11 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_model_tiering_enabled",
     "workflow_worker_llm_profile",
     "workflow_reviewer_llm_profile",
+    "workflow_router_enabled",
+    "workflow_router_llm_fallback_enabled",
+    "workflow_router_confidence_threshold",
+    "workflow_router_max_workflows",
+    "workflow_router_llm_profile",
     "tool_cache_enabled",
     "tool_cache_backend",
     "tool_cache_redis_url",
@@ -177,6 +182,11 @@ class RuntimeConfig:
     workflow_model_tiering_enabled: bool = True
     workflow_worker_llm_profile: str | None = None
     workflow_reviewer_llm_profile: str | None = None
+    workflow_router_enabled: bool = True
+    workflow_router_llm_fallback_enabled: bool = True
+    workflow_router_confidence_threshold: float = 0.75
+    workflow_router_max_workflows: int = 7
+    workflow_router_llm_profile: str | None = None
     tool_cache_enabled: bool = True
     tool_cache_backend: str = "redis_postgres"
     tool_cache_redis_url: str | None = None
@@ -415,6 +425,12 @@ def load_runtime_config() -> RuntimeConfig:
         if workflow_reviewer_llm_profile
         else None
     )
+    workflow_router_llm_profile = os.getenv("WORKFLOW_ROUTER_LLM_PROFILE") or None
+    workflow_router_llm_profile = (
+        _normalize_profile_name(workflow_router_llm_profile)
+        if workflow_router_llm_profile
+        else None
+    )
     profile_context = {
         "llm_profiles": {
             name: profile.model_dump(exclude_none=True)
@@ -427,6 +443,8 @@ def load_runtime_config() -> RuntimeConfig:
         for tier_profile in (workflow_worker_llm_profile, workflow_reviewer_llm_profile):
             if tier_profile:
                 apply_llm_profile_context(profile_context, tier_profile)
+    if workflow_router_llm_profile:
+        apply_llm_profile_context(profile_context, workflow_router_llm_profile)
     return RuntimeConfig(
         llm_provider=llm_provider,
         llm_api_key=llm_api_key,
@@ -456,6 +474,14 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_model_tiering_enabled=workflow_model_tiering_enabled,
         workflow_worker_llm_profile=workflow_worker_llm_profile,
         workflow_reviewer_llm_profile=workflow_reviewer_llm_profile,
+        workflow_router_enabled=_bool_env("WORKFLOW_ROUTER_ENABLED", True),
+        workflow_router_llm_fallback_enabled=_bool_env("WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED", True),
+        workflow_router_confidence_threshold=_float_env_with_default(
+            "WORKFLOW_ROUTER_CONFIDENCE_THRESHOLD",
+            0.75,
+        ),
+        workflow_router_max_workflows=_int_env("WORKFLOW_ROUTER_MAX_WORKFLOWS", 7),
+        workflow_router_llm_profile=workflow_router_llm_profile,
         tool_cache_enabled=_bool_env("TOOL_CACHE_ENABLED", True),
         tool_cache_backend=os.getenv("TOOL_CACHE_BACKEND", "redis_postgres"),
         tool_cache_redis_url=_env("TOOL_CACHE_REDIS_URL", "CELERY_BROKER_URL"),

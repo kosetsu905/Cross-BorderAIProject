@@ -232,6 +232,11 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 WORKFLOW_ASYNC_EXECUTION_ENABLED=true
+WORKFLOW_ROUTER_ENABLED=true
+WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED=true
+WORKFLOW_ROUTER_CONFIDENCE_THRESHOLD=0.75
+WORKFLOW_ROUTER_MAX_WORKFLOWS=7
+WORKFLOW_ROUTER_LLM_PROFILE=
 TOOL_CACHE_ENABLED=true
 TOOL_CACHE_BACKEND=redis_postgres
 TOOL_CACHE_REDIS_URL=
@@ -267,6 +272,7 @@ Runtime configuration and secrets are centralized in `runtime_config.py`. FastAP
 If `API_BEARER_TOKEN` is set, workflow submit and polling endpoints require `Authorization: Bearer <token>`. `/health` stays public for local and container health checks. If `API_BEARER_TOKEN` is empty or missing, auth is disabled for local development.
 Workflow result cache is enabled by default. `WORKFLOW_RESULT_CACHE_TTL_SECONDS` controls how long a completed result can be reused.
 `WORKFLOW_ASYNC_EXECUTION_ENABLED=true` lets eligible CrewAI tasks run as explicit async sibling tasks inside a workflow. Set it to `false` to force the older synchronous task order during rollback or provider troubleshooting.
+Workflow routing adds goal-driven endpoints above the existing workflow APIs. `POST /api/v1/workflow-route/plan` returns a validated plan without submitting jobs; `POST /api/v1/workflow-route` submits the plan as a parent `workflow_route` job and runs child workflows in dependency waves. `WORKFLOW_ROUTER_LLM_PROFILE` can point at a low-cost profile for ambiguous routing, but deterministic rules run first.
 Tool cache is separate from workflow result cache. `TOOL_CACHE_ENABLED=true` caches read-only external I/O such as Serper, scrape, commerce metrics, PIM lookup, local support knowledge search, and read-only ad-platform validation calls. Redis is the hot cache and PostgreSQL is the durable mirror/fallback when `TOOL_CACHE_BACKEND=redis_postgres`; if `TOOL_CACHE_REDIS_URL` is empty it falls back to `CELERY_BROKER_URL`. Request-level credentials may override cache enabled/TTL and async execution, but cannot override Redis URL or DB storage settings.
 `TOOL_EXECUTION_ASYNC_ENABLED=true` gives project tools a bounded thread executor for slow blocking I/O and file-processing work. `TOOL_EXECUTION_MAX_WORKERS` controls the shared worker pool size.
 Content Creation runs one shared research/strategy task and then generates requested languages in parallel. `CONTENT_LANGUAGE_CONCURRENCY` controls the maximum number of language-generation workers.
