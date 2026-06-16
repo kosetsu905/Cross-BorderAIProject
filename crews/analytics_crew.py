@@ -18,7 +18,7 @@ from tools.custom.analytics_tools import (
 )
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
-from utils.llm_config import build_llm
+from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.workflow_progress import attach_task_progress
 
@@ -617,7 +617,7 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='analytics')
     tasks_config = _load_yaml_config("tasks.yaml")
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
 
     platform_metrics_tool = EcomPlatformMetricsTool(
         ecom_api_token=config_context.get("ecom_api_token"),
@@ -632,27 +632,27 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
 
     collector = Agent(
         config=agents_config["data_collector"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["data_collector"]),
         tools=_build_collector_tools(platform_metrics_tool),
     )
     analyst = Agent(
         config=agents_config["data_analyst"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["data_analyst"]),
         tools=_build_analysis_tools(config_context),
     )
     researcher = Agent(
         config=agents_config["market_researcher"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["market_researcher"]),
         tools=_build_research_tools(config_context),
     )
     reporter = Agent(
         config=agents_config["report_generator"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["report_generator"]),
         tools=_build_analysis_tools(config_context),
     )
     automation_planner = Agent(
         config=agents_config["automation_planner"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["automation_planner"]),
         tools=[ClosedLoopAutomationPlanTool()],
     )
 

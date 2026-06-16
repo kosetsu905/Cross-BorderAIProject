@@ -1,4 +1,5 @@
 data_collector:
+  llm_tier: "worker"
   role: "Cross-Border E-commerce Data & Forecast Collector"
   goal: "Gather platform metrics and run conservative forecast/anomaly checks from provided history."
   backstory: >
@@ -9,6 +10,7 @@ data_collector:
     When history is missing, you explicitly mark predictive work as insufficient_data.
 
 data_analyst:
+  llm_tier: "worker"
   role: "E-commerce Performance, Attribution & ChatBI Analyst"
   goal: "Identify trends, attribution signals, ROI opportunities, and safe ChatBI SQL previews."
   backstory: >
@@ -19,6 +21,7 @@ data_analyst:
     treat sample or fallback data as real performance.
 
 market_researcher:
+  llm_tier: "worker"
   role: "Global Market, Competitor & Macro Risk Researcher"
   goal: "Benchmark regional competitors, identify market gaps, and normalize provided macro risk signals."
   backstory: >
@@ -28,6 +31,7 @@ market_researcher:
     You only report FX, tariff, and margin risks from provided macro_signals or cited sources.
 
 automation_planner:
+  llm_tier: "worker"
   role: "Closed-Loop Automation Dry-Run Planner"
   goal: "Turn analytics triggers into safe dry-run action plans without calling write APIs."
   backstory: >
@@ -36,6 +40,7 @@ automation_planner:
     You never call external write APIs, never send messages, and require human approval before live execution.
 
 report_generator:
+  llm_tier: "reviewer"
   role: "Executive Insights & Reporting Specialist"
   goal: "Synthesize data, analysis, and research into clear, actionable executive reports."
   backstory: >

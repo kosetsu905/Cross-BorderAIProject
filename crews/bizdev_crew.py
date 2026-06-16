@@ -7,7 +7,7 @@ from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
-from utils.llm_config import build_llm
+from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.workflow_progress import attach_task_progress
 
@@ -173,26 +173,26 @@ def run_bizdev_crew(inputs: dict[str, Any], config_context: dict[str, Any] | Non
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='bizdev')
     tasks_config = _load_yaml_config("tasks.yaml")
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
 
     prospector = Agent(
         config=agents_config["lead_prospector"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["lead_prospector"]),
         tools=_build_research_tools(config_context),
     )
     strategist = Agent(
         config=agents_config["partnership_strategist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["partnership_strategist"]),
         tools=_build_strategy_tools(config_context),
     )
     outreach_agent = Agent(
         config=agents_config["outreach_specialist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["outreach_specialist"]),
         tools=[OutreachToneValidator()],
     )
     pipeline_agent = Agent(
         config=agents_config["pipeline_manager"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["pipeline_manager"]),
         tools=[CRMFormatterTool()],
     )
 

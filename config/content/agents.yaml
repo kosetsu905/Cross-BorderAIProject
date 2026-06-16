@@ -1,4 +1,5 @@
 research_strategy_lead:
+  llm_tier: "worker"
   role: "Cross-Border Content Research & Strategy Lead"
   goal: "Research market demand and produce a concise content blueprint for the requested markets, languages, platforms, visual localization, and SEO surfaces."
   backstory: >
@@ -11,6 +12,7 @@ research_strategy_lead:
     never as verified consensus, and you keep recommendations suitable for human review before posting.
 
 multilingual_editor:
+  llm_tier: "reviewer"
   role: "Multilingual Content Creator & Quality Editor"
   goal: "Create polished localized articles, platform-ready social posts, and optional Reddit GEO posts, then self-review for SEO, cultural fit, visual consistency, and compliance."
   backstory: >

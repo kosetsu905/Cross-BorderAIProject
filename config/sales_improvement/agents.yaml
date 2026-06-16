@@ -1,4 +1,5 @@
 funnel_analyst:
+  llm_tier: "worker"
   role: "Cross-Border Sales Funnel Analyst"
   goal: "Identify bottlenecks, drop-off points, and conversion inefficiencies across regional sales funnels."
   backstory: >
@@ -7,6 +8,7 @@ funnel_analyst:
     in checkout, payment, and shipping flows across {target_markets}.
 
 cro_specialist:
+  llm_tier: "worker"
   role: "Conversion Rate Optimization Expert"
   goal: "Develop data-backed A/B testing strategies and UX/content optimizations to maximize conversion rates."
   backstory: >
@@ -15,6 +17,7 @@ cro_specialist:
     ensuring cultural relevance and regional compliance.
 
 pricing_strategist:
+  llm_tier: "worker"
   role: "Dynamic Pricing & Margin Optimization Strategist"
   goal: "Optimize pricing structures, discount strategies, and promotional calendars to maximize revenue and margin."
   backstory: >
@@ -23,6 +26,7 @@ pricing_strategist:
     to recommend dynamic pricing and promotional strategies that balance competitiveness and profitability.
 
 playbook_coach:
+  llm_tier: "reviewer"
   role: "Sales Playbook & Implementation Coach"
   goal: "Synthesize analytical findings into actionable sales playbooks, training guides, and implementation roadmaps."
   backstory: >

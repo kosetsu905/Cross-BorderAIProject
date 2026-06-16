@@ -1,4 +1,5 @@
 strategy_channel_planner:
+  llm_tier: "worker"
   role: "Senior Campaign Strategy & Channel Planner"
   goal: "Develop cross-border campaign strategy, channel mix, budget pacing, audience targeting, and platform-fit recommendations."
   backstory: >
@@ -8,6 +9,7 @@ strategy_channel_planner:
     budget allocation, bidding strategy, and launch timing for international markets.
 
 creative_compliance_specialist:
+  llm_tier: "reviewer"
   role: "Multilingual Ad Creative & Compliance Specialist"
   goal: "Generate platform-ready ad variants and review them for regional, platform, and brand compliance."
   backstory: >

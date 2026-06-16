@@ -33,6 +33,9 @@ RUNTIME_CONFIG_KEYS = {
     "crewai_memory_embedder_model",
     "workflow_context_max_chars",
     "task_context_max_chars",
+    "workflow_model_tiering_enabled",
+    "workflow_worker_llm_profile",
+    "workflow_reviewer_llm_profile",
     "serper_api_key",
     "crunchbase_api_key",
     "apollo_api_key",
@@ -163,6 +166,9 @@ class RuntimeConfig:
     crewai_memory_embedder_model: str = "text-embedding-3-small"
     workflow_context_max_chars: int = 12000
     task_context_max_chars: int = 4000
+    workflow_model_tiering_enabled: bool = True
+    workflow_worker_llm_profile: str | None = None
+    workflow_reviewer_llm_profile: str | None = None
     serper_api_key: str | None = None
     crunchbase_api_key: str | None = None
     apollo_api_key: str | None = None
@@ -380,16 +386,31 @@ def load_runtime_config() -> RuntimeConfig:
     llm_profiles = parse_llm_profiles(os.getenv("LLM_PROFILES_JSON"))
     support_llm_profile = os.getenv("SUPPORT_LLM_PROFILE")
     support_llm_profile = _normalize_profile_name(support_llm_profile) if support_llm_profile else None
+    workflow_model_tiering_enabled = _bool_env("WORKFLOW_MODEL_TIERING_ENABLED", True)
+    workflow_worker_llm_profile = os.getenv("WORKFLOW_WORKER_LLM_PROFILE") or None
+    workflow_worker_llm_profile = (
+        _normalize_profile_name(workflow_worker_llm_profile)
+        if workflow_worker_llm_profile
+        else None
+    )
+    workflow_reviewer_llm_profile = os.getenv("WORKFLOW_REVIEWER_LLM_PROFILE") or None
+    workflow_reviewer_llm_profile = (
+        _normalize_profile_name(workflow_reviewer_llm_profile)
+        if workflow_reviewer_llm_profile
+        else None
+    )
+    profile_context = {
+        "llm_profiles": {
+            name: profile.model_dump(exclude_none=True)
+            for name, profile in llm_profiles.items()
+        }
+    }
     if support_llm_profile:
-        apply_llm_profile_context(
-            {
-                "llm_profiles": {
-                    name: profile.model_dump(exclude_none=True)
-                    for name, profile in llm_profiles.items()
-                }
-            },
-            support_llm_profile,
-        )
+        apply_llm_profile_context(profile_context, support_llm_profile)
+    if workflow_model_tiering_enabled:
+        for tier_profile in (workflow_worker_llm_profile, workflow_reviewer_llm_profile):
+            if tier_profile:
+                apply_llm_profile_context(profile_context, tier_profile)
     return RuntimeConfig(
         llm_provider=llm_provider,
         llm_api_key=llm_api_key,
@@ -416,6 +437,9 @@ def load_runtime_config() -> RuntimeConfig:
         crewai_memory_embedder_model=os.getenv("CREWAI_MEMORY_EMBEDDER_MODEL", "text-embedding-3-small"),
         workflow_context_max_chars=_int_env("WORKFLOW_CONTEXT_MAX_CHARS", 12000),
         task_context_max_chars=_int_env("TASK_CONTEXT_MAX_CHARS", 4000),
+        workflow_model_tiering_enabled=workflow_model_tiering_enabled,
+        workflow_worker_llm_profile=workflow_worker_llm_profile,
+        workflow_reviewer_llm_profile=workflow_reviewer_llm_profile,
         serper_api_key=os.getenv("SERPER_API_KEY"),
         crunchbase_api_key=os.getenv("CRUNCHBASE_API_KEY"),
         apollo_api_key=os.getenv("APOLLO_API_KEY"),

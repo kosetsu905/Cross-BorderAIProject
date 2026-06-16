@@ -20,7 +20,7 @@ from tools.custom.content_tools import (
 )
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
-from utils.llm_config import build_llm
+from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
@@ -1707,10 +1707,10 @@ def _run_research_strategy(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
     research_strategy_lead = Agent(
         config=agents_config["research_strategy_lead"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["research_strategy_lead"]),
         tools=_build_search_tools(config_context),
     )
     research_strategy_task = Task(
@@ -1735,10 +1735,10 @@ def _run_language_generation(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
-    llm = build_llm(_content_generation_llm_context(config_context))
+    llm_router = ModelTierRouter(_content_generation_llm_context(config_context))
     multilingual_editor = Agent(
         config=agents_config["multilingual_editor"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["multilingual_editor"]),
         tools=_build_creation_tools(config_context),
         max_retry_limit=CONTENT_GENERATION_AGENT_MAX_RETRY_LIMIT,
         max_iter=CONTENT_GENERATION_AGENT_MAX_ITER,

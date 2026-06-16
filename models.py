@@ -232,6 +232,9 @@ class ProviderCredentials(StrictInputModel):
     crewai_memory_workflows: str | None = None
     workflow_context_max_chars: int | None = Field(None, ge=1000, le=50000)
     task_context_max_chars: int | None = Field(None, ge=500, le=20000)
+    workflow_model_tiering_enabled: bool | None = None
+    workflow_worker_llm_profile: str | None = None
+    workflow_reviewer_llm_profile: str | None = None
     content_image_model: str | None = None
     content_image_scoring_model: str | None = None
     content_image_artifact_dir: str | None = None

@@ -34,12 +34,12 @@ from tools.custom.support_search_tools import build_support_external_search_tool
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import (
-    build_llm,
     llm_api_key,
     llm_chat_completions_url,
     llm_model_name,
     llm_reasoning_compat_params,
 )
+from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.shared_context import build_conversation_history_context
 from utils.usage_tracking import INTERNAL_USAGE_KEY
@@ -631,29 +631,29 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='support')
     tasks_config = _load_yaml_config("tasks.yaml")
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
 
     pre_sales_agent = Agent(
         config=agents_config["pre_sales_specialist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["pre_sales_specialist"]),
         tools=[pre_sales_tool, *build_support_external_search_tools("pre_sales", config_context)],
         allow_delegation=False,
     )
     order_agent = Agent(
         config=agents_config["order_fulfillment_specialist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["order_fulfillment_specialist"]),
         tools=[OrderTrackingTool(), *build_support_external_search_tools("order_fulfillment", config_context)],
         allow_delegation=False,
     )
     support_agent = Agent(
         config=agents_config["senior_support_agent"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["senior_support_agent"]),
         tools=[RMAAutomationTool(), *_build_support_tools(config_context)],
         allow_delegation=True,
     )
     qa_agent = Agent(
         config=agents_config["support_qa_specialist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["support_qa_specialist"]),
         allow_delegation=False,
     )
 

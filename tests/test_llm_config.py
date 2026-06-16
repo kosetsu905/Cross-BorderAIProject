@@ -4,9 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from models import WorkflowType
-from runtime_config import load_runtime_config, resolve_workflow_runtime_context
+from runtime_config import RuntimeConfig, load_runtime_config, resolve_workflow_runtime_context
 from utils.llm_config import build_llm, llm_chat_completions_url
+from utils.model_tiering import ModelTierRouter, agent_llm_tier
 from utils.result_cache import build_workflow_cache_key
 
 
@@ -19,6 +22,15 @@ CREW_FILES = [
     "scheduler_crew.py",
     "support_crew.py",
 ]
+EXPECTED_REVIEWER_AGENTS = {
+    "config/analytics/agents.yaml": {"report_generator"},
+    "config/business_development/agents.yaml": {"pipeline_manager"},
+    "config/content/agents.yaml": {"multilingual_editor"},
+    "config/marketing/agents.yaml": {"creative_compliance_specialist"},
+    "config/sales_improvement/agents.yaml": {"playbook_coach"},
+    "config/scheduler/agents.yaml": {"notification_coordinator"},
+    "config/support/agents.yaml": {"support_qa_specialist"},
+}
 
 
 class LLMConfigTests(unittest.TestCase):
@@ -175,6 +187,131 @@ class LLMConfigTests(unittest.TestCase):
 
         self.assertFalse(config.workflow_async_execution_enabled)
 
+    def test_runtime_config_reads_model_tiering_flags(self) -> None:
+        profiles_json = (
+            '{"worker_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini",'
+            '"llm_api_key_env":"OPENAI_API_KEY"},"reviewer_gpt4o":{'
+            '"llm_provider":"openai","llm_model_name":"gpt-4o",'
+            '"llm_api_key_env":"OPENAI_API_KEY"}}'
+        )
+        env = {
+            "OPENAI_API_KEY": "openai-key",
+            "LLM_PROFILES_JSON": profiles_json,
+            "WORKFLOW_MODEL_TIERING_ENABLED": "true",
+            "WORKFLOW_WORKER_LLM_PROFILE": "worker_gpt4o_mini",
+            "WORKFLOW_REVIEWER_LLM_PROFILE": "reviewer_gpt4o",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = load_runtime_config()
+
+        self.assertTrue(config.workflow_model_tiering_enabled)
+        self.assertEqual(config.workflow_worker_llm_profile, "worker_gpt4o_mini")
+        self.assertEqual(config.workflow_reviewer_llm_profile, "reviewer_gpt4o")
+
+    def test_request_credentials_override_model_tiering_settings(self) -> None:
+        config = RuntimeConfig(
+            workflow_model_tiering_enabled=True,
+            workflow_worker_llm_profile="worker_default",
+            workflow_reviewer_llm_profile="reviewer_default",
+        )
+
+        context = resolve_workflow_runtime_context(
+            config,
+            WorkflowType.ANALYTICS,
+            {
+                "workflow_model_tiering_enabled": False,
+                "workflow_worker_llm_profile": "worker_request",
+                "workflow_reviewer_llm_profile": "reviewer_request",
+            },
+        )
+
+        self.assertFalse(context["workflow_model_tiering_enabled"])
+        self.assertEqual(context["workflow_worker_llm_profile"], "worker_request")
+        self.assertEqual(context["workflow_reviewer_llm_profile"], "reviewer_request")
+
+    def test_model_tier_router_uses_worker_and_reviewer_profiles(self) -> None:
+        context = {
+            "llm_provider": "openai",
+            "llm_model_name": "gpt-base",
+            "openai_api_key": "base-key",
+            "workflow_model_tiering_enabled": True,
+            "workflow_worker_llm_profile": "worker_gpt4o_mini",
+            "workflow_reviewer_llm_profile": "reviewer_gpt4o",
+            "llm_profiles": {
+                "worker_gpt4o_mini": {
+                    "llm_provider": "openai",
+                    "llm_model_name": "gpt-4o-mini",
+                    "llm_api_key_env": "OPENAI_API_KEY",
+                },
+                "reviewer_gpt4o": {
+                    "llm_provider": "openai",
+                    "llm_model_name": "gpt-4o",
+                    "llm_api_key_env": "OPENAI_API_KEY",
+                },
+            },
+        }
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-key"}, clear=True):
+            router = ModelTierRouter(context)
+            worker_llm = router.llm_for_agent({"llm_tier": "worker"})
+            reviewer_llm = router.llm_for_agent({"llm_tier": "reviewer"})
+
+        self.assertEqual(worker_llm.model, "gpt-4o-mini")
+        self.assertEqual(reviewer_llm.model, "gpt-4o")
+        self.assertEqual(worker_llm.api_key, "openai-key")
+        self.assertEqual(reviewer_llm.api_key, "openai-key")
+
+    def test_model_tier_router_falls_back_to_base_when_disabled_or_unset(self) -> None:
+        disabled_router = ModelTierRouter(
+            {
+                "llm_model_name": "gpt-base",
+                "workflow_model_tiering_enabled": False,
+                "workflow_worker_llm_profile": "missing_worker",
+                "workflow_reviewer_llm_profile": "missing_reviewer",
+            }
+        )
+        self.assertIs(
+            disabled_router.llm_for_agent({"llm_tier": "worker"}),
+            disabled_router.llm_for_agent({"llm_tier": "reviewer"}),
+        )
+        self.assertEqual(disabled_router.llm_for_agent({"llm_tier": "worker"}).model, "gpt-base")
+
+        reviewer_only_router = ModelTierRouter(
+            {
+                "llm_provider": "openai",
+                "llm_model_name": "gpt-base",
+                "openai_api_key": "base-key",
+                "workflow_model_tiering_enabled": True,
+                "workflow_reviewer_llm_profile": "reviewer_gpt4o",
+                "llm_profiles": {
+                    "reviewer_gpt4o": {
+                        "llm_provider": "openai",
+                        "llm_model_name": "gpt-4o",
+                        "llm_api_key_env": "OPENAI_API_KEY",
+                    }
+                },
+            }
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-key"}, clear=True):
+            worker_llm = reviewer_only_router.llm_for_agent({"llm_tier": "worker"})
+            reviewer_llm = reviewer_only_router.llm_for_agent({"llm_tier": "reviewer"})
+
+        self.assertEqual(worker_llm.model, "gpt-base")
+        self.assertEqual(reviewer_llm.model, "gpt-4o")
+
+    def test_model_tier_router_fails_for_unknown_profile_or_tier(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown LLM profile"):
+            ModelTierRouter(
+                {
+                    "workflow_model_tiering_enabled": True,
+                    "workflow_worker_llm_profile": "missing_profile",
+                    "llm_profiles": {},
+                }
+            ).llm_for_agent({"llm_tier": "worker"})
+
+        with self.assertRaisesRegex(ValueError, "Unsupported llm_tier"):
+            agent_llm_tier({"llm_tier": "manager"})
+
     def test_runtime_config_rejects_unknown_support_qa_mode(self) -> None:
         with patch.dict(os.environ, {"SUPPORT_QA_MODE": "skip_everything"}, clear=True):
             with self.assertRaisesRegex(ValueError, "SUPPORT_QA_MODE"):
@@ -213,6 +350,10 @@ class LLMConfigTests(unittest.TestCase):
             **base_context,
             "llm_model_name": "qwen/qwen3-14b",
         }
+        changed_tier_profile_context = {
+            **base_context,
+            "workflow_worker_llm_profile": "worker_gpt4o_mini",
+        }
 
         self.assertEqual(
             build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context),
@@ -222,6 +363,38 @@ class LLMConfigTests(unittest.TestCase):
             build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context),
             build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_model_context),
         )
+        self.assertNotEqual(
+            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context),
+            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_tier_profile_context),
+        )
+
+    def test_agents_yaml_declares_expected_model_tiers(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        failures: dict[str, object] = {}
+        for relative_path, expected_reviewers in EXPECTED_REVIEWER_AGENTS.items():
+            agents_config = yaml.safe_load((root / relative_path).read_text(encoding="utf-8"))
+            tiers = {
+                agent_name: str(agent_config.get("llm_tier") or "")
+                for agent_name, agent_config in agents_config.items()
+            }
+            invalid = {
+                agent_name: tier
+                for agent_name, tier in tiers.items()
+                if tier not in {"worker", "reviewer"}
+            }
+            actual_reviewers = {
+                agent_name
+                for agent_name, tier in tiers.items()
+                if tier == "reviewer"
+            }
+            if invalid or actual_reviewers != expected_reviewers:
+                failures[relative_path] = {
+                    "invalid": invalid,
+                    "actual_reviewers": sorted(actual_reviewers),
+                    "expected_reviewers": sorted(expected_reviewers),
+                }
+
+        self.assertEqual(failures, {})
 
     def test_all_crew_agents_receive_configured_llm(self) -> None:
         root = Path(__file__).resolve().parents[1]

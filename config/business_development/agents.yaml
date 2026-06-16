@@ -1,4 +1,5 @@
 lead_prospector:
+  llm_tier: "worker"
   role: "Cross-Border B2B Lead Prospector"
   goal: "Identify and profile high-value potential partners, distributors, or affiliates in target international markets."
   backstory: >
@@ -8,6 +9,7 @@ lead_prospector:
     recent milestones, and strategic fit indicators.
 
 partnership_strategist:
+  llm_tier: "worker"
   role: "Global Partnership Strategist"
   goal: "Develop tailored value propositions and partnership frameworks that align with regional business cultures and market needs."
   backstory: >
@@ -16,6 +18,7 @@ partnership_strategist:
     partnership models. You focus on revenue-sharing, distribution rights, and localized co-marketing opportunities.
 
 outreach_specialist:
+  llm_tier: "worker"
   role: "Multilingual Outreach & Engagement Specialist"
   goal: "Create culturally adapted, high-converting multi-touch outreach sequences for global decision-makers."
   backstory: >
@@ -24,6 +27,7 @@ outreach_specialist:
     You ensure tone matches the target market's professional expectations.
 
 pipeline_manager:
+  llm_tier: "reviewer"
   role: "CRM & Pipeline Sync Specialist"
   goal: "Structure partnership leads and outreach data into production-ready CRM payloads and follow-up cadences."
   backstory: >

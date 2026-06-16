@@ -121,6 +121,9 @@ CREWAI_MEMORY_STORAGE_PATH=artifacts/crewai_memory
 CREWAI_MEMORY_EMBEDDER_MODEL=text-embedding-3-small
 WORKFLOW_CONTEXT_MAX_CHARS=12000
 TASK_CONTEXT_MAX_CHARS=4000
+WORKFLOW_MODEL_TIERING_ENABLED=true
+WORKFLOW_WORKER_LLM_PROFILE=
+WORKFLOW_REVIEWER_LLM_PROFILE=
 OPENAI_INPUT_COST_PER_1M_TOKENS=0
 OPENAI_OUTPUT_COST_PER_1M_TOKENS=0
 ```
@@ -137,6 +140,9 @@ CREWAI_MEMORY_ENABLED=false
 CREWAI_MEMORY_WORKFLOWS=marketing,content,analytics,bizdev,scheduler,sales_improvement
 CREWAI_MEMORY_STORAGE_PATH=artifacts/crewai_memory
 CREWAI_MEMORY_EMBEDDER_MODEL=text-embedding-3-small
+WORKFLOW_MODEL_TIERING_ENABLED=true
+WORKFLOW_WORKER_LLM_PROFILE=
+WORKFLOW_REVIEWER_LLM_PROFILE=
 ```
 
 Customer service can switch models with server-side named LLM profiles, so operators can choose OpenAI or OpenRouter models without editing the active global model variables:
@@ -150,6 +156,15 @@ SUPPORT_QA_MODE=full_llm
 ```
 
 `SUPPORT_LLM_PROFILE` applies to Gmail, WhatsApp, `/api/v1/service/inquiry`, and normal `support` workflow jobs. A single request can override it by passing only the profile name:
+
+Workflow model tiering is enabled by default but stays behavior-compatible until tier profiles are configured. Add `llm_tier: worker` or `llm_tier: reviewer` in workflow `agents.yaml`, then set optional profile names to route cheaper worker agents and stronger reviewer/QA agents separately:
+
+```env
+LLM_PROFILES_JSON={"worker_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"},"reviewer_gpt4o":{"llm_provider":"openai","llm_model_name":"gpt-4o","llm_api_key_env":"OPENAI_API_KEY"},"worker_openrouter_qwen":{"llm_provider":"openrouter","llm_model_name":"qwen/qwen3-14b","llm_api_key_env":"OPENROUTER_API_KEY"}}
+WORKFLOW_MODEL_TIERING_ENABLED=true
+WORKFLOW_WORKER_LLM_PROFILE=worker_gpt4o_mini
+WORKFLOW_REVIEWER_LLM_PROFILE=reviewer_gpt4o
+```
 
 ```json
 {
@@ -217,6 +232,9 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 WORKFLOW_ASYNC_EXECUTION_ENABLED=true
+WORKFLOW_MODEL_TIERING_ENABLED=true
+WORKFLOW_WORKER_LLM_PROFILE=
+WORKFLOW_REVIEWER_LLM_PROFILE=
 CREWAI_MEMORY_ENABLED=false
 CREWAI_MEMORY_WORKFLOWS=marketing,content,analytics,bizdev,scheduler,sales_improvement
 CREWAI_MEMORY_STORAGE_PATH=artifacts/crewai_memory

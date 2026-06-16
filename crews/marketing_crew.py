@@ -15,7 +15,7 @@ from tools.integrations.cross_platform_ads_tools import (
 )
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
-from utils.llm_config import build_llm
+from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, PROGRESS_SPAN, PROGRESS_START
@@ -354,10 +354,10 @@ def _run_strategy_channel_plan(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
     strategy_channel_planner = Agent(
         config=agents_config["strategy_channel_planner"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["strategy_channel_planner"]),
         tools=[
             *_build_research_tools(config_context),
             KeywordResearchTool(),
@@ -388,10 +388,10 @@ def _run_market_creative_package(
     tasks_config: dict[str, Any],
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
     creative_compliance_specialist = Agent(
         config=agents_config["creative_compliance_specialist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["creative_compliance_specialist"]),
         tools=[
             KeywordResearchTool(),
             _google_ads_tool(config_context),

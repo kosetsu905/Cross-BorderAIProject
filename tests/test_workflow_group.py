@@ -310,10 +310,28 @@ class CrewAsyncConstructionTests(unittest.TestCase):
 
         self.assertEqual(FakeCrew.captured_kwargs["memory"], "MEMORY")
 
+    def test_analytics_routes_worker_and_reviewer_llms_by_agent_tier(self) -> None:
+        captured_tasks = _run_analytics_with_fakes({})
+
+        self.assertEqual(captured_tasks[0].agent.llm, "worker:Cross-Border E-commerce Data & Forecast Collector")
+        self.assertEqual(captured_tasks[1].agent.llm, "worker:E-commerce Performance, Attribution & ChatBI Analyst")
+        self.assertEqual(captured_tasks[2].agent.llm, "worker:Global Market, Competitor & Macro Risk Researcher")
+        self.assertEqual(captured_tasks[3].agent.llm, "worker:Closed-Loop Automation Dry-Run Planner")
+        self.assertEqual(captured_tasks[4].agent.llm, "reviewer:Executive Insights & Reporting Specialist")
+
+    def test_sales_routes_worker_and_reviewer_llms_by_agent_tier(self) -> None:
+        captured_tasks = _run_sales_with_fakes({})
+
+        self.assertEqual(captured_tasks[0].agent.llm, "worker:Cross-Border Sales Funnel Analyst")
+        self.assertEqual(captured_tasks[1].agent.llm, "worker:Conversion Rate Optimization Expert")
+        self.assertEqual(captured_tasks[2].agent.llm, "worker:Dynamic Pricing & Margin Optimization Strategist")
+        self.assertEqual(captured_tasks[3].agent.llm, "reviewer:Sales Playbook & Implementation Coach")
+
 
 class FakeAgent:
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
         self.role = str(config.get("role") or "Fake Agent")
+        self.llm = kwargs.get("llm")
 
 
 class FakeTask:
@@ -348,11 +366,19 @@ class FakeCrew:
         return object()
 
 
+class FakeModelTierRouter:
+    def __init__(self, config_context: dict[str, Any]) -> None:
+        self.config_context = config_context
+
+    def llm_for_agent(self, agent_config: dict[str, Any]) -> str:
+        return f"{agent_config.get('llm_tier')}:{agent_config.get('role')}"
+
+
 def _run_analytics_with_fakes(config_context: dict[str, Any]) -> list[FakeTask]:
     with patch.object(analytics_crew, "Agent", FakeAgent):
         with patch.object(analytics_crew, "Task", FakeTask):
             with patch.object(analytics_crew, "Crew", FakeCrew):
-                with patch.object(analytics_crew, "build_llm", return_value=object()):
+                with patch.object(analytics_crew, "ModelTierRouter", FakeModelTierRouter):
                     with patch.object(analytics_crew, "attach_task_progress", return_value=None):
                         with patch.object(analytics_crew, "_serialize_crew_result", return_value={}):
                             with patch.object(analytics_crew, "_apply_provider_status", return_value={}):
@@ -371,7 +397,7 @@ def _run_sales_with_fakes(config_context: dict[str, Any]) -> list[FakeTask]:
     with patch.object(sales_improvement_crew, "Agent", FakeAgent):
         with patch.object(sales_improvement_crew, "Task", FakeTask):
             with patch.object(sales_improvement_crew, "Crew", FakeCrew):
-                with patch.object(sales_improvement_crew, "build_llm", return_value=object()):
+                with patch.object(sales_improvement_crew, "ModelTierRouter", FakeModelTierRouter):
                     with patch.object(sales_improvement_crew, "attach_task_progress", return_value=None):
                         with patch.object(sales_improvement_crew, "_serialize_crew_result", return_value={}):
                             with patch.object(sales_improvement_crew, "_apply_provider_status", return_value={}):

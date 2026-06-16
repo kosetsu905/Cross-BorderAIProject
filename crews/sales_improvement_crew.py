@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tools.custom.sales_tools import CRMFunnelTool, CROHeuristicsTool, PricingIntelTool
 from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
-from utils.llm_config import build_llm
+from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.workflow_progress import attach_task_progress
 
@@ -170,12 +170,12 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='sales_improvement')
     tasks_config = _load_yaml_config("tasks.yaml")
-    llm = build_llm(config_context)
+    llm_router = ModelTierRouter(config_context)
     async_enabled = _workflow_async_enabled(config_context)
 
     funnel_analyst = Agent(
         config=agents_config["funnel_analyst"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["funnel_analyst"]),
         tools=[
             CRMFunnelTool(
                 crm_api_token=config_context.get("crm_api_token"),
@@ -190,17 +190,17 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
     )
     cro_specialist = Agent(
         config=agents_config["cro_specialist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["cro_specialist"]),
         tools=[CROHeuristicsTool(), *_build_research_tools(config_context)],
     )
     pricing_strategist = Agent(
         config=agents_config["pricing_strategist"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["pricing_strategist"]),
         tools=[PricingIntelTool()],
     )
     playbook_coach = Agent(
         config=agents_config["playbook_coach"],
-        llm=llm,
+        llm=llm_router.llm_for_agent(agents_config["playbook_coach"]),
     )
 
     funnel_task = Task(
