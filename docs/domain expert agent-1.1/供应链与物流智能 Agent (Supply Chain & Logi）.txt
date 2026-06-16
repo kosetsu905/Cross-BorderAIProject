@@ -1,0 +1,14 @@
+供应链与物流智能 Agent (Supply Chain & Logistics Agent)。
+该 Agent 专注于解决跨境电商的核心痛点：物流成本优化、关税合规计算、库存智能预测。它不仅能计算最优物流方案，还能实时监控政策变化并触发补货建议。
+📦 核心功能亮点
+智能物流路由：基于时效/成本权衡，自动推荐空运、海运、铁路或海外仓方案。
+落地成本 (Landed Cost) 引擎：自动计算 商品价 + 运费 + 保险 + 关税 + 增值税，避免利润被税费吃掉。
+动态关税监控：内置主要市场（美/欧/日/东南亚）税率库，支持HS编码查询。
+库存预测与补货：基于销售速率和物流提前期 (Lead Time)，自动计算安全库存和补货点。
+📂 文件位置
+/workspace/ecommerce_ai_agents/agents/experts/supply_chain_logistics_agent.py
+🔗 集成策略
+Sales Performance: 提供准确的落地成本以计算真实毛利。
+Business Development: 评估新市场的物流可行性和成本结构。
+Event Scheduler: 根据物流提前期倒推备货时间，确保大促（如黑五、双11）不缺货。
+代码已生成并通过语法检查，包含模拟的物流商数据、关税规则库和库存算法逻辑，可直接集成到 CrawAI 工作流中。

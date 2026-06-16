@@ -1,0 +1,24 @@
+本地化与文化合规 Agent (Localization & Compliance Agent)。
+该 Agent 是跨境电商场景中的关键“守门员”，位于内容生成和营销投放之前，负责确保所有输出符合目标市场的文化习俗、法律法规及平台政策。
+📂 新增文件
+/workspace/ecommerce_ai_agents/agents/localization_compliance_agent.py
+🚀 核心功能
+文化适应性检查 (Cultural Adaptation)
+识别并修正文化禁忌（颜色、数字、手势、节日）。
+语气与风格本地化（如：美国偏好直接热情，日本偏好谦逊礼貌）。
+度量衡与货币自动转换。
+合规性审查 (Regulatory Compliance)
+广告法审查：检测违禁词（如“第一”、“最”、“治愈”等）。
+数据隐私：确保文案不违规收集用户数据（GDPR/CCPA/PIPL）。
+行业特定法规：针对美妆、食品、电子产品的特殊标注要求。
+平台政策对齐 (Platform Policy)
+针对 TikTok, Amazon, Google Ads, Facebook 的不同审核规则进行预检。
+多语言语境校验
+不仅仅是翻译，而是检查“意译”是否准确，避免机器翻译笑话。
+🔗 集成方式
+在 main.py 或工作流编排中，将其作为 Pre-processing (预处理) 或 Post-processing (后处理) 节点插入：
+Content Workflow: Draft Content -> Localization Agent -> Publish
+Marketing Workflow: Ad Copy -> Localization Agent -> A/B Test -> Launch
+✅ 验证状态
+代码已生成并通过语法检查。包含完整的 analyze_cultural_fit, check_regulatory_compliance, validate_platform_policy 方法，并内置了主要市场（美、欧、日、东南亚）的基础规则库。
+您可以立即在项目中导入并使用该 Agent 来增强现有工作流的安全性。

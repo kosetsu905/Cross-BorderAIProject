@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from crewai.tools import BaseTool
@@ -355,6 +357,812 @@ def _public_market_fact_candidates(
                 }
             )
     return candidates
+
+
+def _safe_json_payload(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().replace(",", "").replace("$", "").replace("%", "")
+    if not normalized:
+        return None
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def _text_payload_notice(value: Any, label: str) -> list[str]:
+    if isinstance(value, str) and value.strip() and _safe_json_payload(value) is None:
+        return [f"{label} was provided as unstructured text; provide JSON metrics for computed analytics."]
+    return []
+
+
+class AdvancedAttributionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel_metrics: dict[str, Any] | list[dict[str, Any]] | str | None = Field(
+        None,
+        description="Channel-level metrics as JSON or structured data.",
+    )
+    historical_metrics: dict[str, Any] | str | None = Field(
+        None,
+        description="Optional experiment, treatment/control, ROI, or historical performance metrics.",
+    )
+
+
+class AdvancedAttributionTool(BaseTool):
+    name: str = "Advanced Attribution & Causal Inference Tool"
+    description: str = (
+        "Computes channel contribution shares and optional causal lift from provided "
+        "channel_metrics or historical_metrics. It returns insufficient_data instead "
+        "of sample values when inputs are missing."
+    )
+    args_schema: type[BaseModel] = AdvancedAttributionInput
+
+    def _run(
+        self,
+        channel_metrics: dict[str, Any] | list[dict[str, Any]] | str | None = None,
+        historical_metrics: dict[str, Any] | str | None = None,
+    ) -> dict[str, Any]:
+        rows = _channel_metric_rows(channel_metrics)
+        notes = _text_payload_notice(channel_metrics, "channel_metrics")
+        if not rows:
+            return {
+                "status": "insufficient_data",
+                "confidence_level": "none",
+                "method": "requires_channel_metrics",
+                "channel_contributions": [],
+                "did_incremental_lift_pct": None,
+                "true_roi": None,
+                "budget_recommendations": [],
+                "data_quality_notes": [
+                    "No parseable channel_metrics were provided; attribution was not estimated.",
+                    *notes,
+                ],
+            }
+
+        total_value = sum(row["value"] for row in rows)
+        channel_count = len(rows)
+        contributions = [
+            {
+                "channel": row["channel"],
+                "contribution_pct": round((row["value"] / total_value) * 100, 2),
+                "basis": row["basis"],
+            }
+            for row in rows
+            if total_value > 0
+        ]
+        average_share = 100 / channel_count if channel_count else 0
+        recommendations = [
+            {
+                "channel": item["channel"],
+                "recommendation": (
+                    "consider_incremental_budget_test"
+                    if item["contribution_pct"] >= average_share
+                    else "hold_or_reduce_pending_incrementality_test"
+                ),
+                "rationale": (
+                    f"Observed contribution share is {item['contribution_pct']}% "
+                    f"versus an even-share baseline of {round(average_share, 2)}%."
+                ),
+            }
+            for item in contributions
+        ]
+        lift_pct, true_roi, causal_notes = _causal_metrics_from_history(historical_metrics)
+        return {
+            "status": "computed",
+            "confidence_level": "medium" if lift_pct is not None or true_roi is not None else "low",
+            "method": "deterministic_share_of_observed_channel_metric",
+            "channel_contributions": contributions,
+            "did_incremental_lift_pct": lift_pct,
+            "true_roi": true_roi,
+            "budget_recommendations": recommendations,
+            "data_quality_notes": [
+                "Attribution uses provided channel metrics only; validate with incrementality testing before budget moves.",
+                *causal_notes,
+                *notes,
+            ],
+        }
+
+
+def _channel_metric_rows(channel_metrics: Any) -> list[dict[str, Any]]:
+    payload = _safe_json_payload(channel_metrics)
+    if isinstance(payload, dict):
+        if isinstance(payload.get("channels"), list):
+            candidates = payload["channels"]
+        elif isinstance(payload.get("channel_metrics"), list):
+            candidates = payload["channel_metrics"]
+        else:
+            candidates = [
+                {"channel": key, **value}
+                if isinstance(value, dict)
+                else {"channel": key, "value": value}
+                for key, value in payload.items()
+            ]
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    metric_keys = (
+        "attributed_revenue",
+        "revenue",
+        "sales",
+        "conversions",
+        "orders",
+        "value",
+        "spend",
+    )
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        channel = str(
+            item.get("channel")
+            or item.get("platform")
+            or item.get("source")
+            or item.get("name")
+            or ""
+        ).strip()
+        if not channel:
+            continue
+        for metric_key in metric_keys:
+            metric_value = _coerce_float(item.get(metric_key))
+            if metric_value is not None and metric_value > 0:
+                rows.append(
+                    {
+                        "channel": channel,
+                        "value": metric_value,
+                        "basis": metric_key,
+                    }
+                )
+                break
+    return rows
+
+
+def _causal_metrics_from_history(
+    historical_metrics: dict[str, Any] | str | None,
+) -> tuple[float | None, float | None, list[str]]:
+    payload = _safe_json_payload(historical_metrics)
+    notes = _text_payload_notice(historical_metrics, "historical_metrics")
+    if not isinstance(payload, dict):
+        return None, None, [
+            "No parseable historical_metrics were provided for DiD lift or true ROI.",
+            *notes,
+        ]
+
+    treatment = _coerce_float(payload.get("treatment_conversion_rate") or payload.get("treatment_rate"))
+    control = _coerce_float(payload.get("control_conversion_rate") or payload.get("control_rate"))
+    lift_pct = None
+    if treatment is not None and control not in (None, 0):
+        lift_pct = round(((treatment - float(control)) / float(control)) * 100, 2)
+
+    incremental_revenue = _coerce_float(payload.get("incremental_revenue"))
+    incremental_cost = _coerce_float(payload.get("incremental_cost") or payload.get("incremental_spend"))
+    true_roi = None
+    if incremental_revenue is not None and incremental_cost not in (None, 0):
+        true_roi = round(incremental_revenue / float(incremental_cost), 2)
+
+    missing_notes: list[str] = []
+    if lift_pct is None:
+        missing_notes.append("DiD lift requires treatment and non-zero control conversion rates.")
+    if true_roi is None:
+        missing_notes.append("True ROI requires incremental_revenue and non-zero incremental_cost.")
+    return lift_pct, true_roi, [*missing_notes, *notes]
+
+
+class GlobalMacroRiskInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_markets: str = Field(..., min_length=1)
+    base_currency: str = Field("USD", min_length=1)
+    macro_signals: dict[str, Any] | str | None = Field(
+        None,
+        description="Optional FX, tariff, policy, or margin signals as JSON.",
+    )
+
+
+class GlobalMacroRiskTool(BaseTool):
+    name: str = "Global Macro & Risk Fusion Tool"
+    description: str = (
+        "Normalizes provided macro risk signals such as FX rates, tariff alerts, "
+        "margin impact, and mitigation notes. It does not fabricate rates or policy changes."
+    )
+    args_schema: type[BaseModel] = GlobalMacroRiskInput
+
+    def _run(
+        self,
+        target_markets: str,
+        base_currency: str = "USD",
+        macro_signals: dict[str, Any] | str | None = None,
+    ) -> dict[str, Any]:
+        payload = _safe_json_payload(macro_signals)
+        notes = _text_payload_notice(macro_signals, "macro_signals")
+        if not isinstance(payload, dict):
+            return {
+                "status": "insufficient_data",
+                "confidence_level": "none",
+                "base_currency": (base_currency or "USD").upper(),
+                "target_markets": target_markets,
+                "fx_rates": [],
+                "tariff_alerts": [],
+                "margin_impact_pct": None,
+                "risk_level": "unknown",
+                "strategic_recommendations": [],
+                "data_quality_notes": [
+                    "No parseable macro_signals were provided; FX, tariff, and margin risk were not estimated.",
+                    *notes,
+                ],
+            }
+
+        risk_quantification = payload.get("risk_quantification")
+        risk_payload = risk_quantification if isinstance(risk_quantification, dict) else {}
+        margin_impact = _coerce_float(
+            payload.get("margin_impact_pct")
+            or payload.get("margin_decline_pct")
+            or risk_payload.get("margin_impact_pct")
+            or risk_payload.get("margin_decline_pct")
+        )
+        risk_level = str(
+            payload.get("risk_level")
+            or risk_payload.get("risk_level")
+            or "unknown"
+        )
+        return {
+            "status": "computed",
+            "confidence_level": "medium",
+            "base_currency": (base_currency or "USD").upper(),
+            "target_markets": target_markets,
+            "fx_rates": _fx_rate_items(payload.get("fx_rates")),
+            "tariff_alerts": _tariff_alert_items(payload.get("tariff_alerts")),
+            "margin_impact_pct": margin_impact,
+            "risk_level": risk_level,
+            "strategic_recommendations": _string_list(
+                payload.get("strategic_recommendations") or payload.get("strategic_advice")
+            ),
+            "data_quality_notes": [
+                "Macro risk uses provided macro_signals only; connect live FX and policy feeds for production alerts.",
+                *notes,
+            ],
+        }
+
+
+def _fx_rate_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [
+            {"pair": str(pair), "rate": _coerce_float(rate), "source": "provided_macro_signals"}
+            for pair, rate in value.items()
+        ]
+    if isinstance(value, list):
+        items: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            items.append(
+                {
+                    "pair": str(item.get("pair") or item.get("currency_pair") or ""),
+                    "rate": _coerce_float(item.get("rate")),
+                    "source": str(item.get("source") or "provided_macro_signals"),
+                }
+            )
+        return [item for item in items if item["pair"]]
+    return []
+
+
+def _tariff_alert_items(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    alerts: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        alerts.append(
+            {
+                "region": str(item.get("region") or item.get("market") or "unknown"),
+                "policy_change": str(item.get("policy_change") or item.get("policy") or "not_specified"),
+                "effective": str(item.get("effective") or item.get("effective_date") or "source_unspecified"),
+                "source": str(item.get("source") or "provided_macro_signals"),
+            }
+        )
+    return alerts
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+class PredictiveAnomalyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_category: str = Field(..., min_length=1)
+    historical_metrics: dict[str, Any] | list[dict[str, Any]] | str | None = Field(
+        None,
+        description="Daily or period metrics as JSON or structured data.",
+    )
+
+
+class PredictiveAnomalyTool(BaseTool):
+    name: str = "Predictive Forecast & Anomaly Detection Tool"
+    description: str = (
+        "Produces a simple 14-period forecast and anomaly notes only from provided "
+        "historical_metrics. It returns insufficient_data when history is absent."
+    )
+    args_schema: type[BaseModel] = PredictiveAnomalyInput
+
+    def _run(
+        self,
+        product_category: str,
+        historical_metrics: dict[str, Any] | list[dict[str, Any]] | str | None = None,
+    ) -> dict[str, Any]:
+        payload = _safe_json_payload(historical_metrics)
+        notes = _text_payload_notice(historical_metrics, "historical_metrics")
+        series = _metric_series(payload)
+        if len(series) < 3:
+            return {
+                "status": "insufficient_data",
+                "confidence_level": "none",
+                "product_category": product_category,
+                "forecast_14d": [],
+                "anomalies": _provided_anomalies(payload),
+                "model_confidence": "none",
+                "data_quality_notes": [
+                    "At least three historical metric points are required for a conservative forecast.",
+                    *notes,
+                ],
+            }
+
+        values = [item["value"] for item in series]
+        window = values[-min(7, len(values)) :]
+        forecast_value = round(sum(window) / len(window), 2)
+        forecast = [
+            {
+                "period": f"horizon_day_{index}",
+                "predicted_value": forecast_value,
+                "basis": "moving_average_of_provided_history",
+            }
+            for index in range(1, 15)
+        ]
+        anomalies = _provided_anomalies(payload) or _detected_anomalies(series)
+        return {
+            "status": "computed",
+            "confidence_level": "low",
+            "product_category": product_category,
+            "forecast_14d": forecast,
+            "anomalies": anomalies,
+            "model_confidence": "low; deterministic moving average over provided data",
+            "data_quality_notes": [
+                "Forecast is a lightweight deterministic estimate, not a fitted production model.",
+                *notes,
+            ],
+        }
+
+
+def _metric_series(payload: Any) -> list[dict[str, Any]]:
+    candidates: Any
+    if isinstance(payload, dict):
+        for key in ("daily_sales", "sales_history", "time_series", "metrics", "history"):
+            if isinstance(payload.get(key), list):
+                candidates = payload[key]
+                break
+        else:
+            candidates = []
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        candidates = []
+
+    series: list[dict[str, Any]] = []
+    for index, item in enumerate(candidates, start=1):
+        if not isinstance(item, dict):
+            continue
+        value = None
+        for key in ("units", "predicted_units", "sales", "revenue", "orders", "value"):
+            value = _coerce_float(item.get(key))
+            if value is not None:
+                break
+        if value is None:
+            continue
+        series.append(
+            {
+                "period": str(item.get("date") or item.get("period") or f"point_{index}"),
+                "value": value,
+            }
+        )
+    return series
+
+
+def _provided_anomalies(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("anomalies"), list):
+        return []
+    anomalies: list[dict[str, Any]] = []
+    for item in payload["anomalies"]:
+        if not isinstance(item, dict):
+            continue
+        anomalies.append(
+            {
+                "period": str(item.get("date") or item.get("period") or "source_unspecified"),
+                "metric": str(item.get("metric") or "unknown"),
+                "severity": str(item.get("severity") or "unclassified"),
+                "description": str(item.get("root_cause") or item.get("description") or "provided anomaly"),
+            }
+        )
+    return anomalies
+
+
+def _detected_anomalies(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [item["value"] for item in series]
+    mean_value = sum(values) / len(values)
+    variance = sum((value - mean_value) ** 2 for value in values) / len(values)
+    std_dev = variance**0.5
+    if std_dev == 0:
+        return []
+    anomalies: list[dict[str, Any]] = []
+    for item in series:
+        z_score = (item["value"] - mean_value) / std_dev
+        if abs(z_score) >= 2:
+            anomalies.append(
+                {
+                    "period": item["period"],
+                    "metric": "provided_history_value",
+                    "severity": "high" if abs(z_score) >= 3 else "medium",
+                    "description": f"Value is {round(z_score, 2)} standard deviations from provided-history mean.",
+                }
+            )
+    return anomalies
+
+
+class ChatBIPreviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_query: str | None = Field(None, description="Natural-language analytics question.")
+    db_schema_context: str | None = Field(
+        None,
+        description="Optional schema hint for the SQL preview. No database connection is used.",
+    )
+
+
+class ChatBISQLPreviewTool(BaseTool):
+    name: str = "ChatBI SQL Preview Tool"
+    description: str = (
+        "Classifies a natural-language analytics query and returns a fixed safe SQL "
+        "preview. It never connects to or queries a database."
+    )
+    args_schema: type[BaseModel] = ChatBIPreviewInput
+
+    def _run(
+        self,
+        user_query: str | None = None,
+        db_schema_context: str | None = None,
+    ) -> dict[str, Any]:
+        query = (user_query or "").strip()
+        if not query:
+            return {
+                "status": "skipped",
+                "intent": "not_provided",
+                "generated_sql": "",
+                "business_insight": "No ChatBI query was provided.",
+                "safety_notes": ["ChatBI preview skipped because user_query is empty."],
+            }
+
+        normalized = query.lower()
+        if "conversion" in normalized:
+            intent = "conversion_performance_query"
+        elif "sales" in normalized or "revenue" in normalized:
+            intent = "sales_performance_query"
+        else:
+            intent = "general_analytics_query"
+
+        generated_sql = (
+            "SELECT region, SUM(total_sales) AS total_sales, "
+            "AVG(conversion_rate) AS avg_conversion_rate "
+            "FROM analytics_metrics "
+            "WHERE metric_date >= CURRENT_DATE - INTERVAL '30 days' "
+            "GROUP BY region "
+            "ORDER BY total_sales DESC;"
+        )
+        schema_note = (
+            " Schema hint was provided for reviewer context."
+            if db_schema_context and db_schema_context.strip()
+            else ""
+        )
+        return {
+            "status": "preview_only",
+            "intent": intent,
+            "generated_sql": generated_sql,
+            "business_insight": (
+                "This is a SQL preview for analyst review only; connect an approved "
+                "warehouse and validate table names before execution."
+            ),
+            "safety_notes": [
+                "No database connection was opened.",
+                "The SQL template does not interpolate raw user text.",
+                f"Original query retained for audit: {query[:200]}.{schema_note}",
+            ],
+        }
+
+
+class ClosedLoopAutomationPlanInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    low_stock_forecast: bool = False
+    conversion_anomaly: bool = False
+    macro_risk: bool = False
+    critical_alert: bool = False
+    sku: str | None = None
+    forecasted_demand: int | None = Field(None, ge=0)
+    campaign_id: str | None = None
+    price_adjustment: str | None = None
+    alert_message: str | None = None
+
+
+class ClosedLoopAutomationPlanTool(BaseTool):
+    name: str = "Closed-Loop Automation Dry-Run Planner"
+    description: str = (
+        "Creates dry-run automation plans for inventory, campaign, pricing, and "
+        "alert actions. It never calls external write APIs."
+    )
+    args_schema: type[BaseModel] = ClosedLoopAutomationPlanInput
+
+    def _run(
+        self,
+        low_stock_forecast: bool = False,
+        conversion_anomaly: bool = False,
+        macro_risk: bool = False,
+        critical_alert: bool = False,
+        sku: str | None = None,
+        forecasted_demand: int | None = None,
+        campaign_id: str | None = None,
+        price_adjustment: str | None = None,
+        alert_message: str | None = None,
+    ) -> dict[str, Any]:
+        actions: list[dict[str, Any]] = []
+        actions.extend(_low_stock_actions(low_stock_forecast, sku, forecasted_demand))
+        actions.extend(_conversion_anomaly_actions(conversion_anomaly, campaign_id))
+        actions.extend(_macro_risk_actions(macro_risk, sku, price_adjustment))
+        actions.extend(_critical_alert_actions(critical_alert, alert_message))
+
+        planned_count = sum(1 for action in actions if action["status"] == "planned")
+        insufficient_count = sum(1 for action in actions if action["status"] == "insufficient_data")
+        status = (
+            "planned"
+            if planned_count
+            else "insufficient_data"
+            if insufficient_count
+            else "skipped"
+        )
+        return {
+            "status": status,
+            "execution_mode": "dry_run",
+            "actions": actions,
+            "data_quality_notes": [
+                "Dry-run only: no Amazon, TikTok, AliExpress, Shopify, ERP, or Slack write API was called.",
+                "Require human approval and platform-specific credential validation before enabling live actions.",
+            ],
+        }
+
+
+def _automation_action(
+    *,
+    action_type: str,
+    platform: str,
+    target: str,
+    status: str,
+    reason: str,
+    required_credentials: list[str],
+) -> dict[str, Any]:
+    return {
+        "action_type": action_type,
+        "platform": platform,
+        "target": target,
+        "status": status,
+        "execution_mode": "dry_run",
+        "reason": reason,
+        "required_credentials": required_credentials,
+    }
+
+
+def _low_stock_actions(
+    enabled: bool,
+    sku: str | None,
+    forecasted_demand: int | None,
+) -> list[dict[str, Any]]:
+    if not enabled:
+        return [
+            _automation_action(
+                action_type="LOW_STOCK_WORKFLOW",
+                platform="ERP/Shopify/TikTok Shop",
+                target="not_applicable",
+                status="skipped",
+                reason="low_stock_forecast trigger is false.",
+                required_credentials=[],
+            )
+        ]
+    if not sku or not forecasted_demand:
+        return [
+            _automation_action(
+                action_type="LOW_STOCK_WORKFLOW",
+                platform="ERP/Shopify/TikTok Shop",
+                target=sku or "missing_sku",
+                status="insufficient_data",
+                reason="sku and positive forecasted_demand are required.",
+                required_credentials=[],
+            )
+        ]
+    return [
+        _automation_action(
+            action_type="ERP_PURCHASE_ORDER_CREATE",
+            platform="ERP",
+            target=sku,
+            status="planned",
+            reason=f"Forecasted demand is {forecasted_demand}; prepare purchase order review.",
+            required_credentials=["erp_api_endpoint", "erp_api_token"],
+        ),
+        _automation_action(
+            action_type="SHOPIFY_INVENTORY_SYNC",
+            platform="Shopify",
+            target=sku,
+            status="planned",
+            reason="Dry-run inventory sync candidate based on provided low-stock trigger.",
+            required_credentials=["shopify_store_domain", "shopify_admin_access_token"],
+        ),
+        _automation_action(
+            action_type="TIKTOK_STOCK_SYNC",
+            platform="TikTok Shop",
+            target=sku,
+            status="planned",
+            reason="Dry-run TikTok Shop stock sync candidate based on provided low-stock trigger.",
+            required_credentials=["tiktok_access_token"],
+        ),
+    ]
+
+
+def _conversion_anomaly_actions(enabled: bool, campaign_id: str | None) -> list[dict[str, Any]]:
+    if not enabled:
+        return [
+            _automation_action(
+                action_type="CONVERSION_ANOMALY_WORKFLOW",
+                platform="Amazon/Shopify",
+                target="not_applicable",
+                status="skipped",
+                reason="conversion_anomaly trigger is false.",
+                required_credentials=[],
+            )
+        ]
+    if not campaign_id:
+        return [
+            _automation_action(
+                action_type="CONVERSION_ANOMALY_WORKFLOW",
+                platform="Amazon/Shopify",
+                target="missing_campaign_id",
+                status="insufficient_data",
+                reason="campaign_id is required before planning campaign or product actions.",
+                required_credentials=[],
+            )
+        ]
+    return [
+        _automation_action(
+            action_type="AMAZON_AD_PAUSE_REVIEW",
+            platform="Amazon Ads",
+            target=campaign_id,
+            status="planned",
+            reason="Dry-run ad pause review for provided conversion anomaly trigger.",
+            required_credentials=["amazon_sp_api_endpoint", "amazon_sp_api_access_token"],
+        ),
+        _automation_action(
+            action_type="SHOPIFY_PRODUCT_STATUS_REVIEW",
+            platform="Shopify",
+            target=campaign_id,
+            status="planned",
+            reason="Dry-run product visibility review for provided conversion anomaly trigger.",
+            required_credentials=["shopify_store_domain", "shopify_admin_access_token"],
+        ),
+    ]
+
+
+def _macro_risk_actions(
+    enabled: bool,
+    sku: str | None,
+    price_adjustment: str | None,
+) -> list[dict[str, Any]]:
+    if not enabled:
+        return [
+            _automation_action(
+                action_type="MACRO_RISK_PRICING_WORKFLOW",
+                platform="Amazon/AliExpress",
+                target="not_applicable",
+                status="skipped",
+                reason="macro_risk trigger is false.",
+                required_credentials=[],
+            )
+        ]
+    if not sku or not price_adjustment:
+        return [
+            _automation_action(
+                action_type="MACRO_RISK_PRICING_WORKFLOW",
+                platform="Amazon/AliExpress",
+                target=sku or "missing_sku",
+                status="insufficient_data",
+                reason="sku and price_adjustment are required before pricing actions can be planned.",
+                required_credentials=[],
+            )
+        ]
+    return [
+        _automation_action(
+            action_type="AMAZON_DYNAMIC_PRICING_REVIEW",
+            platform="Amazon",
+            target=sku,
+            status="planned",
+            reason=f"Dry-run pricing review for requested adjustment {price_adjustment}.",
+            required_credentials=["amazon_sp_api_endpoint", "amazon_sp_api_access_token"],
+        ),
+        _automation_action(
+            action_type="ALIEXPRESS_PRICE_UPDATE_REVIEW",
+            platform="AliExpress",
+            target=sku,
+            status="planned",
+            reason=f"Dry-run price update review for requested adjustment {price_adjustment}.",
+            required_credentials=["aliexpress_access_token"],
+        ),
+    ]
+
+
+def _critical_alert_actions(enabled: bool, alert_message: str | None) -> list[dict[str, Any]]:
+    if not enabled:
+        return [
+            _automation_action(
+                action_type="CRITICAL_ALERT_WORKFLOW",
+                platform="Slack",
+                target="not_applicable",
+                status="skipped",
+                reason="critical_alert trigger is false.",
+                required_credentials=[],
+            )
+        ]
+    if not alert_message:
+        return [
+            _automation_action(
+                action_type="CRITICAL_ALERT_WORKFLOW",
+                platform="Slack",
+                target="#growth-ops",
+                status="insufficient_data",
+                reason="alert_message is required before alert escalation can be planned.",
+                required_credentials=[],
+            )
+        ]
+    return [
+        _automation_action(
+            action_type="SLACK_ESCALATION_REVIEW",
+            platform="Slack",
+            target="#growth-ops",
+            status="planned",
+            reason=f"Dry-run escalation message prepared: {alert_message[:160]}",
+            required_credentials=["slack_webhook_url"],
+        )
+    ]
 
 
 class EcomPlatformMetricsTool(BaseTool):

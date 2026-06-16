@@ -150,7 +150,52 @@ class AnalyticsInputs(StrictInputModel):
     product_category: str = Field(..., min_length=1)
     target_markets: str = Field(..., min_length=1)
     date_range: str = Field(..., min_length=1)
-    currency: str = Field(..., min_length=1)
+    currency: str | None = Field(
+        None,
+        min_length=1,
+        description="ISO 4217 reporting currency. Defaults from base_currency or USD.",
+    )
+    base_currency: str | None = Field(
+        None,
+        min_length=1,
+        description="Analytics 1.1 alias for currency; normalized into currency.",
+    )
+    chatbi_query: str | None = None
+    historical_metrics: dict[str, Any] | list[dict[str, Any]] | str | None = None
+    channel_metrics: dict[str, Any] | list[dict[str, Any]] | str | None = None
+    sku: str | None = None
+    campaign_id: str | None = None
+    forecasted_demand: int | None = Field(None, ge=0)
+    price_adjustment: str | None = None
+    alert_message: str | None = None
+    low_stock_forecast: bool = False
+    conversion_anomaly: bool = False
+    macro_risk: bool = False
+    critical_alert: bool = False
+
+    @field_validator(
+        "currency",
+        "base_currency",
+        "chatbi_query",
+        "sku",
+        "campaign_id",
+        "price_adjustment",
+        "alert_message",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @model_validator(mode="after")
+    def normalize_currency_alias(self) -> "AnalyticsInputs":
+        reporting_currency = (self.currency or self.base_currency or "USD").strip().upper()
+        self.currency = reporting_currency
+        self.base_currency = (self.base_currency or reporting_currency).strip().upper()
+        return self
 
 
 class BizDevInputs(StrictInputModel):

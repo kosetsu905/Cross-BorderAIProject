@@ -6,7 +6,16 @@ from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from tools.custom.analytics_tools import CompetitorBenchmarkTool, EcomPlatformMetricsTool
+from models import AnalyticsInputs
+from tools.custom.analytics_tools import (
+    AdvancedAttributionTool,
+    ChatBISQLPreviewTool,
+    ClosedLoopAutomationPlanTool,
+    CompetitorBenchmarkTool,
+    EcomPlatformMetricsTool,
+    GlobalMacroRiskTool,
+    PredictiveAnomalyTool,
+)
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -132,6 +141,135 @@ class EvidenceSynthesis(BaseModel):
     )
 
 
+class AttributionChannelContribution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str = Field(..., description="Marketing, marketplace, or organic channel")
+    contribution_pct: float = Field(..., description="Observed contribution share as a percentage")
+    basis: str = Field(..., description="Metric used for the contribution calculation")
+
+
+class AttributionBudgetRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str = Field(..., description="Channel receiving the recommendation")
+    recommendation: str = Field(..., description="Budget recommendation or testing posture")
+    rationale: str = Field(..., description="Reason grounded in provided metrics")
+
+
+class AdvancedAttributionOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., description="computed, insufficient_data, or skipped")
+    confidence_level: str = Field(..., description="Confidence level for attribution")
+    method: str = Field(..., description="Attribution method used or missing-data reason")
+    channel_contributions: list[AttributionChannelContribution] = Field(
+        ..., description="Observed channel contribution shares"
+    )
+    did_incremental_lift_pct: float | None = Field(
+        None, description="Incremental lift percentage when treatment/control data is provided"
+    )
+    true_roi: float | None = Field(
+        None, description="Incremental ROI when revenue and cost are provided"
+    )
+    budget_recommendations: list[AttributionBudgetRecommendation] = Field(
+        ..., description="Conservative budget recommendations"
+    )
+    data_quality_notes: list[str] = Field(..., description="Attribution caveats")
+
+
+class MacroFxRate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pair: str = Field(..., description="Currency pair")
+    rate: float | None = Field(None, description="Provided FX rate")
+    source: str = Field(..., description="Source of the FX rate")
+
+
+class MacroTariffAlert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    region: str = Field(..., description="Market or region")
+    policy_change: str = Field(..., description="Policy or tariff change")
+    effective: str = Field(..., description="Effective date or source-unspecified marker")
+    source: str = Field(..., description="Source of the alert")
+
+
+class MacroRiskOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., description="computed, insufficient_data, or skipped")
+    confidence_level: str = Field(..., description="Confidence level for macro risk")
+    base_currency: str = Field(..., description="ISO 4217 base currency")
+    target_markets: str = Field(..., description="Requested target markets")
+    fx_rates: list[MacroFxRate] = Field(..., description="Provided FX rates")
+    tariff_alerts: list[MacroTariffAlert] = Field(..., description="Provided tariff or policy alerts")
+    margin_impact_pct: float | None = Field(None, description="Provided or derived margin impact percentage")
+    risk_level: str = Field(..., description="Macro risk level")
+    strategic_recommendations: list[str] = Field(..., description="Macro-risk mitigations")
+    data_quality_notes: list[str] = Field(..., description="Macro data caveats")
+
+
+class PredictiveForecastPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    period: str = Field(..., description="Forecast horizon period")
+    predicted_value: float | None = Field(None, description="Forecast value from provided history")
+    basis: str = Field(..., description="Forecast basis")
+
+
+class PredictiveAnomaly(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    period: str = Field(..., description="Anomaly period")
+    metric: str = Field(..., description="Anomalous metric")
+    severity: str = Field(..., description="Severity label")
+    description: str = Field(..., description="Reason or description")
+
+
+class PredictiveInsightsOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., description="computed, insufficient_data, or skipped")
+    confidence_level: str = Field(..., description="Confidence level for predictive insights")
+    product_category: str = Field(..., description="Analyzed product category")
+    forecast_14d: list[PredictiveForecastPoint] = Field(..., description="14-period forecast")
+    anomalies: list[PredictiveAnomaly] = Field(..., description="Detected or provided anomalies")
+    model_confidence: str = Field(..., description="Model confidence explanation")
+    data_quality_notes: list[str] = Field(..., description="Predictive analytics caveats")
+
+
+class ChatBIResponseOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., description="preview_only, skipped, or error")
+    intent: str = Field(..., description="Classified query intent")
+    generated_sql: str = Field(..., description="Safe SQL preview, never executed")
+    business_insight: str = Field(..., description="Business interpretation of the preview")
+    safety_notes: list[str] = Field(..., description="Safety and execution caveats")
+
+
+class AutomationPlanAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: str = Field(..., description="Planned automation action type")
+    platform: str = Field(..., description="Target platform")
+    target: str = Field(..., description="SKU, campaign, channel, or other target")
+    status: str = Field(..., description="planned, skipped, or insufficient_data")
+    execution_mode: str = Field(..., description="Always dry_run for analytics 1.1")
+    reason: str = Field(..., description="Reason the action was planned or skipped")
+    required_credentials: list[str] = Field(..., description="Credentials required for future live execution")
+
+
+class AutomationPlanOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., description="planned, skipped, or insufficient_data")
+    execution_mode: str = Field(..., description="Always dry_run")
+    actions: list[AutomationPlanAction] = Field(..., description="Dry-run automation actions")
+    data_quality_notes: list[str] = Field(..., description="Automation safety caveats")
+
+
 class AnalyticsReportOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -190,6 +328,21 @@ class AnalyticsReportOutput(BaseModel):
     evidence_synthesis: EvidenceSynthesis = Field(
         ..., description="Cross-source synthesis of what is well supported and what remains weak"
     )
+    advanced_attribution: AdvancedAttributionOutput = Field(
+        ..., description="Analytics 1.1 attribution and causal inference summary"
+    )
+    macro_risk: MacroRiskOutput = Field(
+        ..., description="Analytics 1.1 global macro and risk fusion summary"
+    )
+    predictive_insights: PredictiveInsightsOutput = Field(
+        ..., description="Analytics 1.1 forecast and anomaly summary"
+    )
+    chatbi_response: ChatBIResponseOutput = Field(
+        ..., description="Analytics 1.1 ChatBI SQL preview response"
+    )
+    automation_plan: AutomationPlanOutput = Field(
+        ..., description="Analytics 1.1 closed-loop automation dry-run plan"
+    )
     actionable_recommendations: list[str] = Field(
         ..., description="Prioritized next steps for optimization"
     )
@@ -211,14 +364,27 @@ def _load_yaml_config(file_name: str) -> dict[str, Any]:
 
 
 def _build_analysis_tools(config_context: dict[str, Any]) -> list[Any]:
-    tools: list[Any] = []
+    tools: list[Any] = [
+        AdvancedAttributionTool(),
+        ChatBISQLPreviewTool(),
+    ]
     if config_context.get("serper_api_key"):
         tools.append(SerperDevTool())
     return tools
 
 
+def _build_collector_tools(
+    platform_metrics_tool: EcomPlatformMetricsTool,
+) -> list[Any]:
+    return [
+        platform_metrics_tool,
+        PredictiveAnomalyTool(),
+    ]
+
+
 def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
     tools: list[Any] = [
+        GlobalMacroRiskTool(),
         CompetitorBenchmarkTool(
             serper_api_key=config_context.get("serper_api_key"),
             deep_read_enabled=bool(config_context.get("serper_deep_read_enabled")),
@@ -396,6 +562,7 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
 def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Callable wrapper for FastAPI orchestration."""
     config_context = config_context or {}
+    normalized_inputs = AnalyticsInputs.model_validate(inputs).model_dump()
 
     agents_config = _load_yaml_config("agents.yaml")
     agents_config = augment_agents_config(agents_config, workflow='analytics')
@@ -415,7 +582,7 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
     collector = Agent(
         config=agents_config["data_collector"],
         llm=llm,
-        tools=[platform_metrics_tool],
+        tools=_build_collector_tools(platform_metrics_tool),
     )
     analyst = Agent(
         config=agents_config["data_analyst"],
@@ -432,6 +599,11 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         llm=llm,
         tools=_build_analysis_tools(config_context),
     )
+    automation_planner = Agent(
+        config=agents_config["automation_planner"],
+        llm=llm,
+        tools=[ClosedLoopAutomationPlanTool()],
+    )
 
     collect_task = Task(config=tasks_config["data_collection"], agent=collector)
     analyze_task = Task(
@@ -444,27 +616,32 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         agent=researcher,
         context=[collect_task],
     )
+    automation_task = Task(
+        config=tasks_config["automation_planning"],
+        agent=automation_planner,
+        context=[collect_task, analyze_task, research_task],
+    )
     report_task = Task(
         config=tasks_config["insight_report"],
         agent=reporter,
-        context=[analyze_task, research_task],
+        context=[collect_task, analyze_task, research_task, automation_task],
         output_pydantic=AnalyticsReportOutput,
     )
-    tasks = [collect_task, analyze_task, research_task, report_task]
+    tasks = [collect_task, analyze_task, research_task, automation_task, report_task]
     attach_task_progress(config_context, "analytics", tasks, list(tasks_config.keys()))
 
     analytics_crew = Crew(
-        agents=[collector, analyst, researcher, reporter],
+        agents=[collector, analyst, researcher, automation_planner, reporter],
         tasks=tasks,
         verbose=False,
         memory=_memory_enabled(config_context),
     )
 
-    result = _serialize_crew_result(analytics_crew.kickoff(inputs=inputs))
+    result = _serialize_crew_result(analytics_crew.kickoff(inputs=normalized_inputs))
     return _apply_provider_status(
         result,
         config_context,
-        inputs,
+        normalized_inputs,
         platform_metrics_tool.successful_live_fetch_count > 0,
     )
 
