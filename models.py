@@ -228,6 +228,10 @@ class ProviderCredentials(StrictInputModel):
     llm_model_name: str | None = None
     llm_base_url: str | None = None
     llm_disable_reasoning: bool | None = None
+    crewai_memory_enabled: bool | None = None
+    crewai_memory_workflows: str | None = None
+    workflow_context_max_chars: int | None = Field(None, ge=1000, le=50000)
+    task_context_max_chars: int | None = Field(None, ge=500, le=20000)
     content_image_model: str | None = None
     content_image_scoring_model: str | None = None
     content_image_artifact_dir: str | None = None

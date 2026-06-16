@@ -5,7 +5,7 @@ funnel_analysis:
     Use available CRM and platform data to map the complete customer journey.
     If tools return data_source=development_fallback_sample or confidence_level=low, explicitly label the analysis as illustrative sample output,
     not a verified diagnosis of the user's real business.
-  expected_output: "A detailed funnel analysis report highlighting conversion rates, bottlenecks, regional performance discrepancies, data source, confidence level, and any assumptions."
+  expected_output: "A SalesFunnelContext-compatible compact JSON object with summary, bottlenecks, regional_gaps, assumptions, and data_quality_notes."
 
 cro_recommendations:
   description: >
@@ -13,7 +13,7 @@ cro_recommendations:
     Focus on product pages, checkout flows, trust signals, and localized UX improvements.
     Prioritize high-impact, low-effort tests with clear success metrics.
     Do not present fallback/sample funnel data as verified customer behavior.
-  expected_output: "A structured CRO recommendation matrix with test hypotheses, expected impact, implementation steps, and measurement KPIs."
+  expected_output: "A SalesCROContext-compatible compact JSON object with summary, cro_test_matrix, and data_quality_notes."
 
 pricing_optimization:
   description: >
@@ -21,7 +21,7 @@ pricing_optimization:
     Factor in competitor pricing, regional purchasing power, currency fluctuations, and tax/VAT impacts.
     Recommend dynamic pricing adjustments and margin-optimized promotional strategies.
     If pricing tools return development fallback data, mark pricing guidance as illustrative and low confidence.
-  expected_output: "A pricing optimization report with region-specific pricing recommendations, discount thresholds, and margin impact projections."
+  expected_output: "A SalesPricingContext-compatible compact JSON object with summary, pricing_recommendations, and data_quality_notes."
 
 playbook_generation:
   description: >

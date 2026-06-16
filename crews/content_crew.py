@@ -18,6 +18,7 @@ from tools.custom.content_tools import (
     RedditGeoSearchTool,
     VisualAssetScoringTool,
 )
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -327,8 +328,8 @@ def _build_creation_tools(config_context: dict[str, Any]) -> list[Any]:
     return tools
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="content")
 
 
 def _positive_int_config(
@@ -1720,7 +1721,7 @@ def _run_research_strategy(
         agents=[research_strategy_lead],
         tasks=[research_strategy_task],
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
     return _serialize_crew_result(content_crew.kickoff(inputs=inputs))
 
@@ -1752,7 +1753,7 @@ def _run_language_generation(
         agents=[multilingual_editor],
         tasks=[creation_qa_task],
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
     target_market = _target_market_for_language(inputs, language_index)
     language_inputs = {

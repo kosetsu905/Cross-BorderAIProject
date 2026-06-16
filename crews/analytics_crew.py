@@ -16,6 +16,7 @@ from tools.custom.analytics_tools import (
     GlobalMacroRiskTool,
     PredictiveAnomalyTool,
 )
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -23,6 +24,7 @@ from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "analytics"
+
 
 class RegionalKPI(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -270,6 +272,47 @@ class AutomationPlanOutput(BaseModel):
     data_quality_notes: list[str] = Field(..., description="Automation safety caveats")
 
 
+class AnalyticsCollectionContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., description="Compact collection summary")
+    platform_metrics_available: bool = Field(..., description="Whether live platform metrics are available")
+    predictive_insights: PredictiveInsightsOutput | None = Field(
+        None,
+        description="Predictive tool output candidate when historical metrics are available",
+    )
+    assumptions: list[str] = Field(default_factory=list, description="Collection assumptions")
+    data_quality_notes: list[str] = Field(default_factory=list, description="Collection data quality notes")
+
+
+class AnalyticsPerformanceContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., description="Compact performance-analysis summary")
+    key_findings: list[str] = Field(default_factory=list, description="Performance findings")
+    advanced_attribution: AdvancedAttributionOutput | None = Field(
+        None,
+        description="Attribution tool output candidate",
+    )
+    chatbi_response: ChatBIResponseOutput | None = Field(
+        None,
+        description="ChatBI preview candidate",
+    )
+    data_quality_notes: list[str] = Field(default_factory=list, description="Performance caveats")
+
+
+class AnalyticsResearchContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., description="Compact market-research summary")
+    market_verdicts: list[MarketVerdict] = Field(default_factory=list, description="Market verdict candidates")
+    public_market_facts: list[PublicMarketFact] = Field(default_factory=list, description="Public-source facts")
+    source_evidence: list[SourceEvidence] = Field(default_factory=list, description="Source-backed evidence")
+    source_bibliography: list[SourceBibliographyItem] = Field(default_factory=list, description="Source bibliography")
+    macro_risk: MacroRiskOutput | None = Field(None, description="Macro-risk tool output candidate")
+    data_quality_notes: list[str] = Field(default_factory=list, description="Research caveats")
+
+
 class AnalyticsReportOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -400,8 +443,8 @@ def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
     return tools
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="analytics")
 
 
 def _workflow_async_enabled(config_context: dict[str, Any]) -> bool:
@@ -613,23 +656,30 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         tools=[ClosedLoopAutomationPlanTool()],
     )
 
-    collect_task = Task(config=tasks_config["data_collection"], agent=collector)
+    collect_task = Task(
+        config=tasks_config["data_collection"],
+        agent=collector,
+        output_pydantic=AnalyticsCollectionContext,
+    )
     analyze_task = Task(
         config=tasks_config["performance_analysis"],
         agent=analyst,
         context=[collect_task],
         async_execution=async_enabled,
+        output_pydantic=AnalyticsPerformanceContext,
     )
     research_task = Task(
         config=tasks_config["market_research"],
         agent=researcher,
         context=[collect_task],
         async_execution=async_enabled,
+        output_pydantic=AnalyticsResearchContext,
     )
     automation_task = Task(
         config=tasks_config["automation_planning"],
         agent=automation_planner,
-        context=[collect_task, analyze_task, research_task],
+        context=[collect_task],
+        output_pydantic=AutomationPlanOutput,
     )
     report_task = Task(
         config=tasks_config["insight_report"],
@@ -644,7 +694,7 @@ def run_analytics_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         agents=[collector, analyst, researcher, automation_planner, reporter],
         tasks=tasks,
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
 
     result = _serialize_crew_result(analytics_crew.kickoff(inputs=normalized_inputs))

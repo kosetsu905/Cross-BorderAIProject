@@ -13,6 +13,7 @@ from tools.custom.scheduler_tools import (
     NotificationRouterTool,
     TimezoneHolidayTool,
 )
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -99,8 +100,8 @@ def _build_campaign_tools(config_context: dict[str, Any]) -> list[Any]:
     return []
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="scheduler")
 
 
 def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
@@ -254,7 +255,7 @@ def run_scheduler_crew(inputs: dict[str, Any], config_context: dict[str, Any] | 
         ],
         tasks=tasks,
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
 
     result = _apply_provider_status(

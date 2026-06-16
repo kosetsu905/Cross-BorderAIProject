@@ -7,6 +7,7 @@ from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from tools.custom.sales_tools import CRMFunnelTool, CROHeuristicsTool, PricingIntelTool
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -14,6 +15,7 @@ from utils.workflow_progress import attach_task_progress
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = BASE_DIR / "config" / "sales_improvement"
+
 
 class CROTestItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -32,6 +34,35 @@ class PricingRecommendation(BaseModel):
     recommendation: str = Field(..., description="Pricing or discount recommendation")
     margin_impact: str = Field(..., description="Expected margin impact")
     rationale: str = Field(..., description="Reason for the recommendation")
+
+
+class SalesFunnelContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., description="Compact funnel analysis summary")
+    bottlenecks: list[str] = Field(default_factory=list, description="Observed funnel bottlenecks")
+    regional_gaps: list[str] = Field(default_factory=list, description="Regional performance gaps")
+    assumptions: list[str] = Field(default_factory=list, description="Funnel data assumptions")
+    data_quality_notes: list[str] = Field(default_factory=list, description="Funnel data caveats")
+
+
+class SalesCROContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., description="Compact CRO recommendation summary")
+    cro_test_matrix: list[CROTestItem] = Field(default_factory=list, description="Prioritized CRO tests")
+    data_quality_notes: list[str] = Field(default_factory=list, description="CRO caveats")
+
+
+class SalesPricingContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., description="Compact pricing strategy summary")
+    pricing_recommendations: list[PricingRecommendation] = Field(
+        default_factory=list,
+        description="Region-specific pricing recommendations",
+    )
+    data_quality_notes: list[str] = Field(default_factory=list, description="Pricing caveats")
 
 
 class SalesImprovementOutput(BaseModel):
@@ -80,8 +111,8 @@ def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
     return tools
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="sales_improvement")
 
 
 def _workflow_async_enabled(config_context: dict[str, Any]) -> bool:
@@ -172,18 +203,24 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
         llm=llm,
     )
 
-    funnel_task = Task(config=tasks_config["funnel_analysis"], agent=funnel_analyst)
+    funnel_task = Task(
+        config=tasks_config["funnel_analysis"],
+        agent=funnel_analyst,
+        output_pydantic=SalesFunnelContext,
+    )
     cro_task = Task(
         config=tasks_config["cro_recommendations"],
         agent=cro_specialist,
         context=[funnel_task],
         async_execution=async_enabled,
+        output_pydantic=SalesCROContext,
     )
     pricing_task = Task(
         config=tasks_config["pricing_optimization"],
         agent=pricing_strategist,
         context=[funnel_task],
         async_execution=async_enabled,
+        output_pydantic=SalesPricingContext,
     )
     playbook_task = Task(
         config=tasks_config["playbook_generation"],
@@ -198,7 +235,7 @@ def run_sales_improvement_crew(inputs: dict[str, Any], config_context: dict[str,
         agents=[funnel_analyst, cro_specialist, pricing_strategist, playbook_coach],
         tasks=tasks,
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
 
     result = _serialize_crew_result(sales_improvement_crew.kickoff(inputs=inputs))

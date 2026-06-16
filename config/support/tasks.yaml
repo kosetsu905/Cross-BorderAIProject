@@ -1,7 +1,8 @@
 pre_sales_consultation:
   description: >
     {customer} is asking about {product_category} before purchase: "{inquiry_text}".
-    Conversation history, if provided: {conversation_history}
+    Conversation history summary: {conversation_history_summary}
+    Recent conversation messages, if provided: {recent_conversation_history}
     Product lookup context: {pre_sales_context}
     Provide a clear, helpful response that answers feature, compatibility, variant, and use-case questions using verified product specs.
     If pre_sales_context.catalog_product_offer is present, quote only its catalog unit_price and carton facts as the current known catalog data.
@@ -22,7 +23,8 @@ pre_sales_consultation:
 order_status_handling:
   description: >
     {customer} is inquiring about order {order_id_if_provided}: "{inquiry_text}".
-    Conversation history, if provided: {conversation_history}
+    Conversation history summary: {conversation_history_summary}
+    Recent conversation messages, if provided: {recent_conversation_history}
     Order/tracking context: {order_context}
     If order_context.order_knowledge_results is present, treat those local knowledge-base PDF snippets as internal order/tracking evidence.
     Use their facts to answer the email, but do not expose raw file paths or unsupported assumptions to the customer.
@@ -44,7 +46,8 @@ inquiry_resolution:
     {customer} reached out via {channel} with post-purchase inquiry: {inquiry_text}.
     This is a post-delivery support request such as returns, refunds, defects, usage help, or complaints.
     Channel metadata: sender_profile={sender_profile}, attachments={attachments}.
-    Conversation history, if provided: {conversation_history}
+    Conversation history summary: {conversation_history_summary}
+    Recent conversation messages, if provided: {recent_conversation_history}
     Automation context: sentiment_analysis={sentiment_analysis}, rma_validation={rma_validation},
     logistics_output={logistics_output}, escalation_flag={escalation_flag}, compliance_tags={compliance_tags}.
     Use docs/knowledge_base return policy as the highest-priority source for policies, shipping timelines, returns, compensation, escalation rules, and product specs.

@@ -31,6 +31,7 @@ from tools.custom.support_rag_tools import (
     search_knowledge_base,
 )
 from tools.custom.support_search_tools import build_support_external_search_tools
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import (
     build_llm,
@@ -40,6 +41,7 @@ from utils.llm_config import (
     llm_reasoning_compat_params,
 )
 from utils.project_intelligence import augment_agents_config
+from utils.shared_context import build_conversation_history_context
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
 
@@ -374,6 +376,14 @@ def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     normalized["sender_profile"] = normalized.get("sender_profile") or {}
     normalized["attachments"] = normalized.get("attachments") or []
     normalized["conversation_history"] = normalized.get("conversation_history") or []
+    history_context = build_conversation_history_context(
+        normalized["conversation_history"],
+        recent_count=3,
+        message_max_chars=600,
+    )
+    normalized["conversation_history_summary"] = history_context.summary
+    normalized["recent_conversation_history"] = history_context.recent_messages
+    normalized["conversation_history"] = history_context.recent_messages
     normalized["customer_tier"] = normalized.get("customer_tier") or _customer_tier_from_history(normalized.get("order_history"))
     normalized["region"] = normalized.get("region") or _region_from_inputs(normalized)
     normalized["product_category"] = normalized.get("product_category") or normalized.get("product_category_hint") or "Smart Home Camera"
@@ -554,8 +564,8 @@ def _email_delivery_status(
     )
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="support")
 
 
 def _serialize_crew_result(result: Any) -> dict[str, Any]:
@@ -614,6 +624,8 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         "sender_profile": normalized_inputs.get("sender_profile"),
         "attachments": normalized_inputs.get("attachments"),
         "conversation_history": normalized_inputs.get("conversation_history"),
+        "conversation_history_summary": normalized_inputs.get("conversation_history_summary"),
+        "recent_conversation_history": normalized_inputs.get("recent_conversation_history"),
     }
 
     agents_config = _load_yaml_config("agents.yaml")
@@ -681,7 +693,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         agents=agents,
         tasks=tasks,
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
 
     result = _serialize_crew_result(support_crew.kickoff(inputs=crew_inputs))

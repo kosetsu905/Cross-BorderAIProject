@@ -28,6 +28,11 @@ RUNTIME_CONFIG_KEYS = {
     "openai_api_key",
     "openai_model_name",
     "crewai_memory_enabled",
+    "crewai_memory_workflows",
+    "crewai_memory_storage_path",
+    "crewai_memory_embedder_model",
+    "workflow_context_max_chars",
+    "task_context_max_chars",
     "serper_api_key",
     "crunchbase_api_key",
     "apollo_api_key",
@@ -153,6 +158,11 @@ class RuntimeConfig:
     openai_api_key: str | None = None
     openai_model_name: str = "gpt-4o-mini"
     crewai_memory_enabled: bool = False
+    crewai_memory_workflows: str = "marketing,content,analytics,bizdev,scheduler,sales_improvement"
+    crewai_memory_storage_path: str = "artifacts/crewai_memory"
+    crewai_memory_embedder_model: str = "text-embedding-3-small"
+    workflow_context_max_chars: int = 12000
+    task_context_max_chars: int = 4000
     serper_api_key: str | None = None
     crunchbase_api_key: str | None = None
     apollo_api_key: str | None = None
@@ -398,6 +408,14 @@ def load_runtime_config() -> RuntimeConfig:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model_name=os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini"),
         crewai_memory_enabled=_bool_env("CREWAI_MEMORY_ENABLED", False),
+        crewai_memory_workflows=os.getenv(
+            "CREWAI_MEMORY_WORKFLOWS",
+            "marketing,content,analytics,bizdev,scheduler,sales_improvement",
+        ),
+        crewai_memory_storage_path=os.getenv("CREWAI_MEMORY_STORAGE_PATH", "artifacts/crewai_memory"),
+        crewai_memory_embedder_model=os.getenv("CREWAI_MEMORY_EMBEDDER_MODEL", "text-embedding-3-small"),
+        workflow_context_max_chars=_int_env("WORKFLOW_CONTEXT_MAX_CHARS", 12000),
+        task_context_max_chars=_int_env("TASK_CONTEXT_MAX_CHARS", 4000),
         serper_api_key=os.getenv("SERPER_API_KEY"),
         crunchbase_api_key=os.getenv("CRUNCHBASE_API_KEY"),
         apollo_api_key=os.getenv("APOLLO_API_KEY"),

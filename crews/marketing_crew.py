@@ -13,6 +13,7 @@ from tools.integrations.cross_platform_ads_tools import (
     MetaAdsTool,
     TikTokAdsTool,
 )
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -120,8 +121,8 @@ def _build_research_tools(config_context: dict[str, Any]) -> list[Any]:
     return tools
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="marketing")
 
 
 def _has_all_config(config_context: dict[str, Any], names: tuple[str, ...]) -> bool:
@@ -373,7 +374,7 @@ def _run_strategy_channel_plan(
         agents=[strategy_channel_planner],
         tasks=[strategy_task],
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
     return _serialize_crew_result(marketing_crew.kickoff(inputs=inputs))
 
@@ -409,7 +410,7 @@ def _run_market_creative_package(
         agents=[creative_compliance_specialist],
         tasks=[creative_compliance_task],
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
     market_inputs = {
         **inputs,

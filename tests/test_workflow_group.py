@@ -298,6 +298,18 @@ class CrewAsyncConstructionTests(unittest.TestCase):
         self.assertTrue(captured_tasks[2].async_execution)
         self.assertFalse(captured_tasks[3].async_execution)
 
+    def test_analytics_passes_memory_from_builder_to_crew(self) -> None:
+        with patch.object(analytics_crew, "build_crew_memory", return_value="MEMORY"):
+            _run_analytics_with_fakes({})
+
+        self.assertEqual(FakeCrew.captured_kwargs["memory"], "MEMORY")
+
+    def test_sales_passes_memory_from_builder_to_crew(self) -> None:
+        with patch.object(sales_improvement_crew, "build_crew_memory", return_value="MEMORY"):
+            _run_sales_with_fakes({})
+
+        self.assertEqual(FakeCrew.captured_kwargs["memory"], "MEMORY")
+
 
 class FakeAgent:
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
@@ -323,11 +335,14 @@ class FakeTask:
 
 class FakeCrew:
     captured_tasks: list[FakeTask] = []
+    captured_kwargs: dict[str, Any] = {}
 
     def __init__(self, agents: list[FakeAgent], tasks: list[FakeTask], **kwargs: Any) -> None:
         self.agents = agents
         self.tasks = tasks
+        self.kwargs = kwargs
         FakeCrew.captured_tasks = tasks
+        FakeCrew.captured_kwargs = kwargs
 
     def kickoff(self, inputs: dict[str, Any]) -> object:
         return object()

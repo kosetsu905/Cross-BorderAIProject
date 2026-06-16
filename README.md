@@ -116,6 +116,11 @@ Minimum required for running CrewAI workflows:
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL_NAME=gpt-4o-mini
 CREWAI_MEMORY_ENABLED=false
+CREWAI_MEMORY_WORKFLOWS=marketing,content,analytics,bizdev,scheduler,sales_improvement
+CREWAI_MEMORY_STORAGE_PATH=artifacts/crewai_memory
+CREWAI_MEMORY_EMBEDDER_MODEL=text-embedding-3-small
+WORKFLOW_CONTEXT_MAX_CHARS=12000
+TASK_CONTEXT_MAX_CHARS=4000
 OPENAI_INPUT_COST_PER_1M_TOKENS=0
 OPENAI_OUTPUT_COST_PER_1M_TOKENS=0
 ```
@@ -129,6 +134,9 @@ LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_MODEL_NAME=openai/gpt-4o-mini
 LLM_DISABLE_REASONING=false
 CREWAI_MEMORY_ENABLED=false
+CREWAI_MEMORY_WORKFLOWS=marketing,content,analytics,bizdev,scheduler,sales_improvement
+CREWAI_MEMORY_STORAGE_PATH=artifacts/crewai_memory
+CREWAI_MEMORY_EMBEDDER_MODEL=text-embedding-3-small
 ```
 
 Customer service can switch models with server-side named LLM profiles, so operators can choose OpenAI or OpenRouter models without editing the active global model variables:
@@ -188,7 +196,8 @@ Use `.env.example` as a safe template. Keep real `.env` values local and rotate 
 
 Reasoning/thinking models on OpenRouter, such as Qwen3 and DeepSeek R1 variants, are automatically run with reasoning output disabled so CrewAI can parse normal structured responses. Set `LLM_DISABLE_REASONING=true` to force this compatibility mode for another model.
 
-`CREWAI_MEMORY_ENABLED` defaults to `false`. Turn it on only after your OpenAI account/key can use the embeddings endpoint required by CrewAI memory.
+`CREWAI_MEMORY_ENABLED` defaults to `false`. When enabled, native CrewAI memory is only used for workflows listed in `CREWAI_MEMORY_WORKFLOWS`; Support is excluded by default because customer conversation data can contain PII. Memory uses explicit LanceDB storage under `CREWAI_MEMORY_STORAGE_PATH` and OpenAI embeddings from `CREWAI_MEMORY_EMBEDDER_MODEL`, so an embedding-capable `OPENAI_API_KEY` or OpenAI `LLM_API_KEY` is required.
+`WORKFLOW_CONTEXT_MAX_CHARS` and `TASK_CONTEXT_MAX_CHARS` bound deterministic handoff payloads so downstream tasks receive compact, redacted summaries instead of full raw histories.
 `OPENAI_INPUT_COST_PER_1M_TOKENS` and `OPENAI_OUTPUT_COST_PER_1M_TOKENS` are optional cost-estimation rates. Leave them at `0` to track tokens and duration without estimating dollars.
 
 Optional shared services:
@@ -208,6 +217,12 @@ CELERY_RETRY_MAX_DELAY_SECONDS=300
 WORKFLOW_RESULT_CACHE_ENABLED=true
 WORKFLOW_RESULT_CACHE_TTL_SECONDS=3600
 WORKFLOW_ASYNC_EXECUTION_ENABLED=true
+CREWAI_MEMORY_ENABLED=false
+CREWAI_MEMORY_WORKFLOWS=marketing,content,analytics,bizdev,scheduler,sales_improvement
+CREWAI_MEMORY_STORAGE_PATH=artifacts/crewai_memory
+CREWAI_MEMORY_EMBEDDER_MODEL=text-embedding-3-small
+WORKFLOW_CONTEXT_MAX_CHARS=12000
+TASK_CONTEXT_MAX_CHARS=4000
 CONTENT_LANGUAGE_CONCURRENCY=4
 CONTENT_IMAGE_MODEL=gpt-image-2
 CONTENT_IMAGE_SCORING_MODEL=gpt-4o-mini

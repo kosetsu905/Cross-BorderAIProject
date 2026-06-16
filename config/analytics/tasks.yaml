@@ -12,7 +12,7 @@ data_collection:
     If the platform metrics tool returns data_source=metrics_unavailable, status=unavailable, or an empty metrics object,
     do not create substitute KPI values. Treat sales volume, conversion rate, ROAS, CPC, inventory status, and top SKU
     as unavailable from platform data.
-  expected_output: "A consolidated dataset of available live platform metrics plus a predictive_insights candidate from provided historical_metrics, or explicit insufficient-data notes with empty metrics, data source, confidence level, and assumptions."
+  expected_output: "An AnalyticsCollectionContext-compatible compact JSON object with summary, platform_metrics_available, predictive_insights, assumptions, and data_quality_notes."
 
 performance_analysis:
   description: >
@@ -27,7 +27,7 @@ performance_analysis:
     Do not present fallback/sample metrics as real business performance. If platform metrics are unavailable or empty,
     do not rank markets by sales, conversion, or ROAS and do not infer ROI trends. State that regional KPI analysis is
     unavailable until live commerce or analytics data is connected.
-  expected_output: "A performance analysis summary based only on available live platform metrics, with advanced_attribution and chatbi_response candidates; if none are available, state that KPI analysis and attribution are unavailable and list source-confidence caveats."
+  expected_output: "An AnalyticsPerformanceContext-compatible compact JSON object with summary, key_findings, advanced_attribution, chatbi_response, and data_quality_notes."
 
 market_research:
   description: >
@@ -57,7 +57,7 @@ market_research:
     Organize findings by region, separating competitor signals, pricing signals, demand signals, and channel signals.
     If a category has no source-backed finding for a region, state that the evidence is unavailable instead of guessing.
     If benchmark data is fallback data, mark it as illustrative and low confidence.
-  expected_output: "A competitive landscape report grounded in benchmark tool output, with macro_risk, region-by-region public_market_facts, market_verdicts, product_availability, market_currency_code, competitor, pricing, demand, and channel signals, source evidence candidates with source_ids, currency_context, and market_alignment, strategic positioning recommendations, data source, confidence level, and assumptions."
+  expected_output: "An AnalyticsResearchContext-compatible compact JSON object with summary, market_verdicts, public_market_facts, source_evidence, source_bibliography, macro_risk, and data_quality_notes."
 
 automation_planning:
   description: >
@@ -69,7 +69,7 @@ automation_planning:
     The automation_plan must be dry-run only. Do not call Amazon, TikTok, AliExpress, Shopify,
     ERP, Slack, or any external write API. Every planned action must set execution_mode=dry_run.
     Valid action statuses are planned, skipped, and insufficient_data.
-  expected_output: "An automation_plan candidate with execution_mode=dry_run, status, actions, required_credentials, reasons, and data_quality_notes; no external write action is executed."
+  expected_output: "An AutomationPlanOutput-compatible compact JSON object with execution_mode=dry_run, status, actions, and data_quality_notes; no external write action is executed."
 
 insight_report:
   description: >

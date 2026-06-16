@@ -7,11 +7,17 @@ import yaml
 
 
 OUTPUT_PYDANTIC_MODELS = [
+    ("crews.analytics_crew", "AnalyticsCollectionContext"),
+    ("crews.analytics_crew", "AnalyticsPerformanceContext"),
+    ("crews.analytics_crew", "AnalyticsResearchContext"),
     ("crews.analytics_crew", "AnalyticsReportOutput"),
     ("crews.bizdev_crew", "BizDevOutput"),
     ("crews.content_crew", "ContentOutput"),
     ("crews.content_crew", "PerLanguageContentOutput"),
     ("crews.marketing_crew", "PerMarketCampaignOutput"),
+    ("crews.sales_improvement_crew", "SalesFunnelContext"),
+    ("crews.sales_improvement_crew", "SalesCROContext"),
+    ("crews.sales_improvement_crew", "SalesPricingContext"),
     ("crews.sales_improvement_crew", "SalesImprovementOutput"),
     ("crews.scheduler_crew", "SchedulerOutput"),
     ("crews.support_crew", "CustomerServiceOutput"),

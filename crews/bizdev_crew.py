@@ -5,6 +5,7 @@ import yaml
 from crewai import Agent, Crew, Task
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from pydantic import BaseModel, ConfigDict, Field
+from utils.crew_memory import build_crew_memory
 from utils.crew_result import serialize_crew_result
 from utils.llm_config import build_llm
 from utils.project_intelligence import augment_agents_config
@@ -127,8 +128,8 @@ def _build_strategy_tools(config_context: dict[str, Any]) -> list[Any]:
     return tools
 
 
-def _memory_enabled(config_context: dict[str, Any]) -> bool:
-    return bool(config_context.get("crewai_memory_enabled"))
+def _crew_memory(config_context: dict[str, Any]) -> Any:
+    return build_crew_memory(config_context, workflow="bizdev")
 
 
 def _provider_status(config_context: dict[str, Any]) -> dict[str, Any]:
@@ -219,7 +220,7 @@ def run_bizdev_crew(inputs: dict[str, Any], config_context: dict[str, Any] | Non
         agents=[prospector, strategist, outreach_agent, pipeline_agent],
         tasks=tasks,
         verbose=False,
-        memory=_memory_enabled(config_context),
+        memory=_crew_memory(config_context),
     )
 
     result = _serialize_crew_result(bizdev_crew.kickoff(inputs=inputs))
