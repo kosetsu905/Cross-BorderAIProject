@@ -1,0 +1,211 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      PHOENIX_HOST: 0.0.0.0
+      PHOENIX_PORT: 6006
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-cross-border-ai-dev}
+    volumes:
+      - phoenix_data:/mnt/data
+    networks:
+      - cross-border-net
+
+  mlflow-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${MLFLOW_POSTGRES_DB:-mlflow}
+      POSTGRES_USER: ${MLFLOW_POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:-mlflow_local_password}
+    volumes:
+      - mlflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MLFLOW_POSTGRES_USER:-mlflow} -d ${MLFLOW_POSTGRES_DB:-mlflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - cross-border-net
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    depends_on:
+      mlflow-postgres:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${MLFLOW_POSTGRES_USER:-mlflow}:${MLFLOW_POSTGRES_PASSWORD:-mlflow_local_password}@mlflow-postgres:5432/${MLFLOW_POSTGRES_DB:-mlflow}
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts localhost,127.0.0.1,mlflow,fastapi,celery_worker
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    networks:
+      - cross-border-net
+
+  langfuse-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${LANGFUSE_POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-postgres_local_password}
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_POSTGRES_USER:-postgres} -d ${LANGFUSE_POSTGRES_DB:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - cross-border-net
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: ${LANGFUSE_CLICKHOUSE_DB:-default}
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse_local_password}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "clickhouse-client --user ${LANGFUSE_CLICKHOUSE_USER:-clickhouse} --password ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse_local_password} --query 'SELECT 1'",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - cross-border-net
+
+  langfuse-redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --requirepass ${LANGFUSE_REDIS_PASSWORD:-langfuse_redis_local_password}
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - langfuse_redis_data:/data
+    networks:
+      - cross-border-net
+
+  langfuse-minio:
+    image: minio/minio:latest
+    command: server /data --address ":9000" --console-address ":9001"
+    ports:
+      - "9090:9000"
+      - "9091:9001"
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_S3_ACCESS_KEY_ID:-minio}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_S3_SECRET_ACCESS_KEY:-minio_local_password}
+    volumes:
+      - langfuse_minio_data:/data
+    networks:
+      - cross-border-net
+
+  langfuse-minio-create-bucket:
+    image: minio/mc:latest
+    depends_on:
+      - langfuse-minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://langfuse-minio:9000 ${LANGFUSE_S3_ACCESS_KEY_ID:-minio} ${LANGFUSE_S3_SECRET_ACCESS_KEY:-minio_local_password}; do sleep 2; done;
+      /usr/bin/mc mb --ignore-existing local/${LANGFUSE_S3_BUCKET:-langfuse};
+      /usr/bin/mc anonymous set none local/${LANGFUSE_S3_BUCKET:-langfuse};
+      "
+    networks:
+      - cross-border-net
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio-create-bucket:
+        condition: service_completed_successfully
+      langfuse-redis:
+        condition: service_started
+    environment: &langfuse-env
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:-postgres}:${LANGFUSE_POSTGRES_PASSWORD:-postgres_local_password}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB:-postgres}
+      SALT: ${LANGFUSE_SALT:-local-dev-change-me-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-local-dev-change-me-nextauth-secret}
+      TELEMETRY_ENABLED: ${LANGFUSE_TELEMETRY_ENABLED:-false}
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse_local_password}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_CONNECTION_STRING: redis://default:${LANGFUSE_REDIS_PASSWORD:-langfuse_redis_local_password}@langfuse-redis:6379/0
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY:-minio_local_password}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY:-minio_local_password}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-cross-border-ai}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Cross Border AI}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-cross-border-ai-dev}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-Cross Border AI Dev}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-replace_with_langfuse_public_key}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-replace_with_langfuse_secret_key}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-Local Admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-local-admin-password}
+    networks:
+      - cross-border-net
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-worker:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *langfuse-env
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-replace_with_langfuse_public_key}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-replace_with_langfuse_secret_key}
+    networks:
+      - cross-border-net
+
+volumes:
+  phoenix_data:
+  mlflow_postgres_data:
+  mlflow_artifacts:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_redis_data:
+  langfuse_minio_data:
+
+networks:
+  cross-border-net:
+    external: true

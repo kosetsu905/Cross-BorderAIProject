@@ -4,6 +4,7 @@ from threading import Lock
 from typing import Any, Callable
 
 from models import JobStatus
+from utils.observability import add_span_event, end_span, start_agent_span
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class WorkflowProgressRecorder:
         self.backend = backend
         self._lock = Lock()
         self._task_started_at: dict[tuple[int, str], float] = {}
+        self._task_spans: dict[tuple[int, str], Any] = {}
 
     def emit_plan(self, task_names: list[str]) -> None:
         self._update_progress(
@@ -35,6 +37,13 @@ class WorkflowProgressRecorder:
     def task_started(self, index: int, total: int, task_name: str, agent_role: str | None) -> None:
         started_at = time.monotonic()
         self._task_started_at[(index, task_name)] = started_at
+        self._task_spans[(index, task_name)] = start_agent_span(
+            job_id=self.job_id,
+            workflow_type=self.workflow_type,
+            task_name=task_name,
+            agent_role=agent_role,
+            backend=self.backend,
+        )
         progress = PROGRESS_START + (PROGRESS_SPAN * index / max(total, 1))
         self._update_progress(
             event_type="task_started",
@@ -50,7 +59,18 @@ class WorkflowProgressRecorder:
 
     def task_completed(self, index: int, total: int, task_name: str, agent_role: str | None) -> None:
         started_at = self._task_started_at.pop((index, task_name), None)
+        task_span = self._task_spans.pop((index, task_name), None)
         duration_seconds = None if started_at is None else round(time.monotonic() - started_at, 3)
+        end_span(
+            task_span,
+            attributes={
+                "task_index": index + 1,
+                "total_tasks": total,
+                "duration_ms": round(duration_seconds * 1000, 3)
+                if duration_seconds is not None
+                else None,
+            },
+        )
         progress = PROGRESS_START + (PROGRESS_SPAN * (index + 1) / max(total, 1))
         self._update_progress(
             event_type="task_completed",
@@ -99,6 +119,7 @@ class WorkflowProgressRecorder:
                 error=None,
             )
             self.job_store.log_event(self.job_id, event_type, message, event_payload)
+            add_span_event(event_type, event_payload)
 
 
 def attach_task_progress(

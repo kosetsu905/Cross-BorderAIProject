@@ -40,6 +40,12 @@ def task_prerun_handler(task_id: str, task: object, *args: object, **kwargs: obj
 @task_postrun.connect
 def task_postrun_handler(task_id: str, task: object, *args: object, **kwargs: object) -> None:
     logger.info("Task %s [%s] completed", getattr(task, "name", "<unknown>"), task_id)
+    try:
+        from utils.observability import flush_observability
+
+        flush_observability()
+    except Exception:
+        logger.debug("Failed to flush observability clients after task %s", task_id, exc_info=True)
 
 
 @task_failure.connect

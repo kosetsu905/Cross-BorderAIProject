@@ -245,6 +245,18 @@ TOOL_CACHE_DB_ENABLED=true
 TOOL_CACHE_MAX_VALUE_BYTES=1048576
 TOOL_EXECUTION_ASYNC_ENABLED=true
 TOOL_EXECUTION_MAX_WORKERS=8
+OBSERVABILITY_ENABLED=true
+OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false
+OBSERVABILITY_ENVIRONMENT=local
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://phoenix:6006/v1/traces
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+PHOENIX_PROJECT_NAME=cross-border-ai-dev
+LANGFUSE_BASE_URL=http://langfuse-web:3000
+LANGFUSE_PUBLIC_KEY=replace_with_langfuse_public_key
+LANGFUSE_SECRET_KEY=replace_with_langfuse_secret_key
+MLFLOW_TRACKING_URI=http://mlflow:5000
+MLFLOW_EXPERIMENT_NAME=cross-border-ai
 WORKFLOW_MODEL_TIERING_ENABLED=true
 WORKFLOW_WORKER_LLM_PROFILE=
 WORKFLOW_REVIEWER_LLM_PROFILE=
@@ -526,7 +538,37 @@ docker compose exec postgres psql -U crossborder -d crossborder_ai -c "SELECT jo
 
 ## Observability
 
-Stage 2A stores workflow execution events in PostgreSQL for debugging and future admin UI work. The app records submitted, queued, running, retrying, completed, and failed events in `workflow_job_events`.
+The local observability harness combines PostgreSQL job events with Phoenix/OpenTelemetry traces, Langfuse LLM observations, and MLflow experiment records.
+
+Start the main app plus monitoring stack:
+
+```powershell
+docker compose up -d --build
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+Local dashboards:
+
+```text
+Phoenix:  http://localhost:6006
+Langfuse: http://localhost:3000
+MLflow:   http://localhost:5000
+Flower:   http://localhost:5555
+```
+
+The app and worker containers emit OpenTelemetry spans to Phoenix at `http://phoenix:6006/v1/traces`. Workflow spans are named `workflow.<workflow_type>`, parent workflow groups/routes use `workflow_group` and `workflow_route`, task spans use `agent.<task_name>`, and cached external I/O uses `tool.<tool_name>` spans with `cache_hit`, `cache_backend`, token, cost, and latency attributes where available.
+
+Langfuse self-hosting uses the v3-style local stack in `docker-compose.monitoring.yml`: web, worker, Postgres, ClickHouse, Redis, and MinIO. Copy values from `.env.monitoring.example` into your real `.env`, replace local bootstrap secrets, then keep `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` aligned with the initialized local project keys.
+
+MLflow stores prompt/model comparison runs in its own Postgres service and writes artifacts to a Docker volume. Offline eval logging can be run after jobs complete:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run_observability_evals.py --limit 25
+```
+
+By default, raw workflow inputs/outputs are not captured in spans. Keep `OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false` for customer support data; the observability layer redacts secret-like keys, emails, phones, and raw customer handles before attaching metadata.
+
+Stage 2A also stores workflow execution events in PostgreSQL for debugging and future admin UI work. The app records submitted, queued, running, retrying, completed, and failed events in `workflow_job_events`.
 
 These events are operational traces, not hidden model reasoning. They are intended to answer questions such as when a job started, which backend handled it, whether it retried, how long it ran, and where it failed.
 

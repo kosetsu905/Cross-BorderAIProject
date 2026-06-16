@@ -115,6 +115,16 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_result_cache_enabled",
     "workflow_result_cache_ttl_seconds",
     "workflow_async_execution_enabled",
+    "observability_enabled",
+    "observability_capture_input_output",
+    "observability_environment",
+    "otel_enabled",
+    "otel_exporter_otlp_traces_endpoint",
+    "otel_exporter_otlp_protocol",
+    "phoenix_project_name",
+    "langfuse_base_url",
+    "mlflow_tracking_uri",
+    "mlflow_experiment_name",
     "content_language_concurrency",
     "marketing_market_concurrency",
     "serper_deep_read_enabled",
@@ -261,6 +271,16 @@ class RuntimeConfig:
     workflow_result_cache_enabled: bool = True
     workflow_result_cache_ttl_seconds: int = 3600
     workflow_async_execution_enabled: bool = True
+    observability_enabled: bool = False
+    observability_capture_input_output: bool = False
+    observability_environment: str = "local"
+    otel_enabled: bool = True
+    otel_exporter_otlp_traces_endpoint: str | None = None
+    otel_exporter_otlp_protocol: str = "http/protobuf"
+    phoenix_project_name: str = "cross-border-ai-dev"
+    langfuse_base_url: str | None = None
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment_name: str = "cross-border-ai"
     content_language_concurrency: int = 4
     marketing_market_concurrency: int = 4
     serper_deep_read_enabled: bool = False
@@ -556,6 +576,16 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_result_cache_enabled=_bool_env("WORKFLOW_RESULT_CACHE_ENABLED", True),
         workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
         workflow_async_execution_enabled=_bool_env("WORKFLOW_ASYNC_EXECUTION_ENABLED", True),
+        observability_enabled=_bool_env("OBSERVABILITY_ENABLED", False),
+        observability_capture_input_output=_bool_env("OBSERVABILITY_CAPTURE_INPUT_OUTPUT", False),
+        observability_environment=os.getenv("OBSERVABILITY_ENVIRONMENT", "local"),
+        otel_enabled=_bool_env("OTEL_ENABLED", True),
+        otel_exporter_otlp_traces_endpoint=_env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"),
+        otel_exporter_otlp_protocol=os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+        phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "cross-border-ai-dev"),
+        langfuse_base_url=_env("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
+        mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI"),
+        mlflow_experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "cross-border-ai"),
         content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
         marketing_market_concurrency=_int_env("MARKETING_MARKET_CONCURRENCY", 4),
         serper_deep_read_enabled=_bool_env("SERPER_DEEP_READ_ENABLED", False),

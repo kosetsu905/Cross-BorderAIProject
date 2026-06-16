@@ -143,6 +143,33 @@ class LLMConfigTests(unittest.TestCase):
         self.assertFalse(config.tool_execution_async_enabled)
         self.assertEqual(config.tool_execution_max_workers, 3)
 
+    def test_runtime_config_loads_observability_flags(self) -> None:
+        env = {
+            "OBSERVABILITY_ENABLED": "true",
+            "OBSERVABILITY_CAPTURE_INPUT_OUTPUT": "false",
+            "OBSERVABILITY_ENVIRONMENT": "local",
+            "OTEL_ENABLED": "true",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://phoenix:6006/v1/traces",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+            "PHOENIX_PROJECT_NAME": "cross-border-ai-dev",
+            "LANGFUSE_BASE_URL": "http://langfuse-web:3000",
+            "MLFLOW_TRACKING_URI": "http://mlflow:5000",
+            "MLFLOW_EXPERIMENT_NAME": "cross-border-ai",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = load_runtime_config()
+
+        self.assertTrue(config.observability_enabled)
+        self.assertFalse(config.observability_capture_input_output)
+        self.assertEqual(config.observability_environment, "local")
+        self.assertTrue(config.otel_enabled)
+        self.assertEqual(config.otel_exporter_otlp_traces_endpoint, "http://phoenix:6006/v1/traces")
+        self.assertEqual(config.otel_exporter_otlp_protocol, "http/protobuf")
+        self.assertEqual(config.phoenix_project_name, "cross-border-ai-dev")
+        self.assertEqual(config.langfuse_base_url, "http://langfuse-web:3000")
+        self.assertEqual(config.mlflow_tracking_uri, "http://mlflow:5000")
+        self.assertEqual(config.mlflow_experiment_name, "cross-border-ai")
+
     def test_provider_credentials_override_tool_cache_without_infra_settings(self) -> None:
         credentials = ProviderCredentials.model_validate(
             {

@@ -19,6 +19,7 @@ from job_store import PostgresJobStore
 from models import WorkflowType
 from orchestrator import CeleryOrchestrator, MasterOrchestrator
 from runtime_config import load_runtime_config
+from utils.observability import init_observability
 
 load_dotenv()
 
@@ -26,9 +27,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
+runtime_config = load_runtime_config()
+init_observability("cross-border-fastapi", app=app, config_context=runtime_config.as_context())
 init_db()
 job_store = PostgresJobStore(SessionLocal)
-runtime_config = load_runtime_config()
 
 if os.getenv("WORKFLOW_BACKEND", "local").lower() == "celery":
     orchestrator = CeleryOrchestrator(job_store=job_store, runtime_config=runtime_config)

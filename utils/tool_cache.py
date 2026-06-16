@@ -14,6 +14,7 @@ import redis
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
+from utils.observability import set_span_attributes, tool_span
 from utils.tool_execution import run_tool_async_or_threaded
 
 logger = logging.getLogger(__name__)
@@ -255,18 +256,43 @@ class ToolCache:
             arguments=arguments,
             provider_identity=provider_identity or {},
         )
-        hit = self.get(cache_key)
-        if hit is not None:
-            return hit.value
-        value = fetcher()
-        self.set(
-            cache_key,
+        with tool_span(
             tool_name,
-            tool_version,
-            value,
-            metadata={"tool_name": tool_name, "tool_version": tool_version},
-        )
-        return value
+            config_context=self.config_context,
+            attributes={
+                "tool_version": tool_version,
+                "cache_key": cache_key,
+                "tool_cache_enabled": self.enabled,
+            },
+        ):
+            hit = self.get(cache_key)
+            if hit is not None:
+                set_span_attributes(
+                    {
+                        "cache_hit": True,
+                        "cache_backend": hit.backend,
+                        "cache_key": hit.cache_key,
+                    },
+                    config_context=self.config_context,
+                )
+                return hit.value
+            value = fetcher()
+            self.set(
+                cache_key,
+                tool_name,
+                tool_version,
+                value,
+                metadata={"tool_name": tool_name, "tool_version": tool_version},
+            )
+            set_span_attributes(
+                {
+                    "cache_hit": False,
+                    "cache_backend": "miss",
+                    "cache_key": cache_key,
+                },
+                config_context=self.config_context,
+            )
+            return value
 
     def _build_redis_client(self) -> Any | None:
         backend = str(self.config_context.get("tool_cache_backend") or "redis_postgres").lower()

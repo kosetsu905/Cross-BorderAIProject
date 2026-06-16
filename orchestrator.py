@@ -10,6 +10,13 @@ from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowGroupRequest, WorkflowRoutePlan, WorkflowRouteRequest, WorkflowType, WORKFLOW_ROUTE_TYPE
 from runtime_config import RuntimeConfig, apply_runtime_environment, resolve_workflow_runtime_context
 from services.workflow_router import WorkflowRouterAgent
+from utils.observability import (
+    group_span,
+    init_observability,
+    record_usage_metrics,
+    route_span,
+    workflow_span,
+)
 from utils.usage_tracking import build_usage_summary, monotonic_time, pop_usage_metrics
 from utils.workflow_engine import CrewFunction, WorkflowExecutionEngine
 from utils.workflow_group import (
@@ -90,6 +97,7 @@ class MasterOrchestrator:
     ) -> None:
         self._job_store = job_store or InMemoryJobStore()
         self._runtime_config = runtime_config or RuntimeConfig()
+        init_observability("cross-border-local-orchestrator", config_context=self._runtime_config.as_context())
         self._engine = WorkflowExecutionEngine(self._job_store, self._runtime_config)
         logger.info("Master orchestrator initialized with %s job store.", self.job_store_name)
 
@@ -146,41 +154,47 @@ class MasterOrchestrator:
         )
 
         try:
-            for item in request.workflows:
-                child_name = workflow_group_item_name(item)
-                child_job_id = await self.submit_job(
-                    item.workflow_type,
-                    item.inputs,
-                    provider_credentials=workflow_group_provider_credentials(item),
-                    metadata=workflow_group_child_metadata(
-                        parent_job_id,
-                        child_name,
-                        item,
-                        request.metadata,
-                    ),
-                )
-                children.append(
-                    {
-                        "name": child_name,
-                        "workflow_type": item.workflow_type.value,
-                        "job_id": child_job_id,
-                    }
-                )
+            with group_span(
+                parent_job_id=parent_job_id,
+                backend="local",
+                attributes={"children_requested": len(request.workflows)},
+                config_context=self._runtime_config.as_context(),
+            ):
+                for item in request.workflows:
+                    child_name = workflow_group_item_name(item)
+                    child_job_id = await self.submit_job(
+                        item.workflow_type,
+                        item.inputs,
+                        provider_credentials=workflow_group_provider_credentials(item),
+                        metadata=workflow_group_child_metadata(
+                            parent_job_id,
+                            child_name,
+                            item,
+                            request.metadata,
+                        ),
+                    )
+                    children.append(
+                        {
+                            "name": child_name,
+                            "workflow_type": item.workflow_type.value,
+                            "job_id": child_job_id,
+                        }
+                    )
 
-            result = build_workflow_group_result(children, self._job_store.get_job)
-            self._job_store.update_job(
-                parent_job_id,
-                status=JobStatus.RUNNING,
-                result=result,
-                error=None,
-            )
-            self._job_store.log_event(
-                parent_job_id,
-                "running",
-                "Workflow group child jobs submitted.",
-                {"backend": "local", "children": children},
-            )
-            asyncio.create_task(self._monitor_workflow_group(parent_job_id, children))
+                result = build_workflow_group_result(children, self._job_store.get_job)
+                self._job_store.update_job(
+                    parent_job_id,
+                    status=JobStatus.RUNNING,
+                    result=result,
+                    error=None,
+                )
+                self._job_store.log_event(
+                    parent_job_id,
+                    "running",
+                    "Workflow group child jobs submitted.",
+                    {"backend": "local", "children": children},
+                )
+                asyncio.create_task(self._monitor_workflow_group(parent_job_id, children))
         except Exception as exc:
             logger.exception("Workflow group %s failed during submission", parent_job_id)
             result = build_workflow_group_result(children, self._job_store.get_job)
@@ -229,16 +243,27 @@ class MasterOrchestrator:
             },
         )
         try:
-            await self._submit_ready_route_children(parent_job_id, request, plan, children)
-            result = build_workflow_route_result(plan, children, self._job_store.get_job)
-            self._job_store.update_job(parent_job_id, status=workflow_route_status(result), result=result, error=None)
-            self._job_store.log_event(
-                parent_job_id,
-                "running",
-                "Workflow route initial child jobs submitted.",
-                {"backend": "local", "children": children},
-            )
-            asyncio.create_task(self._monitor_workflow_route(parent_job_id, request, plan, children))
+            with route_span(
+                parent_job_id=parent_job_id,
+                backend="local",
+                attributes={"planned_nodes": len(plan.nodes)},
+                config_context=self._runtime_config.as_context(),
+            ):
+                await self._submit_ready_route_children(parent_job_id, request, plan, children)
+                result = build_workflow_route_result(plan, children, self._job_store.get_job)
+                self._job_store.update_job(
+                    parent_job_id,
+                    status=workflow_route_status(result),
+                    result=result,
+                    error=None,
+                )
+                self._job_store.log_event(
+                    parent_job_id,
+                    "running",
+                    "Workflow route initial child jobs submitted.",
+                    {"backend": "local", "children": children},
+                )
+                asyncio.create_task(self._monitor_workflow_route(parent_job_id, request, plan, children))
         except Exception as exc:
             logger.exception("Workflow route %s failed during submission", parent_job_id)
             result = build_workflow_route_result(plan, children, self._job_store.get_job)
@@ -312,72 +337,79 @@ class MasterOrchestrator:
         config_context: dict[str, Any],
     ) -> None:
         try:
-            self._job_store.update_job(job_id, status=JobStatus.RUNNING)
-            self._job_store.log_event(
-                job_id,
-                "running",
-                "Workflow execution started.",
-                {"workflow_type": workflow_type.value, "backend": "local"},
-            )
-            crew_function = self._engine.crew_function(workflow_type)
-            config_context[PROGRESS_CONTEXT_KEY] = WorkflowProgressRecorder(
+            with workflow_span(
+                workflow_type.value,
                 job_id=job_id,
-                workflow_type=workflow_type.value,
-                job_store=self._job_store,
                 backend="local",
-            )
-            apply_runtime_environment(config_context)
-            started_at = monotonic_time()
-            result = await asyncio.to_thread(crew_function, inputs, config_context)
-            clean_result, usage_metrics = pop_usage_metrics(result)
-            usage_summary = build_usage_summary(
-                usage_metrics,
-                monotonic_time() - started_at,
-                config_context,
-            )
-            self._job_store.update_job(
-                job_id,
-                status=JobStatus.COMPLETED,
-                result=clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)},
-                **usage_summary,
-                error=None,
-            )
-            self._job_store.log_event(
-                job_id,
-                "completed",
-                "Workflow execution completed.",
-                {
-                    "workflow_type": workflow_type.value,
-                    "backend": "local",
-                    "total_tokens": usage_summary.get("total_tokens"),
-                    "cost_usd": usage_summary.get("cost_usd"),
-                    "duration_seconds": usage_summary.get("duration_seconds"),
-                },
-            )
-            if workflow_type == WorkflowType.SUPPORT and isinstance(clean_result, dict):
-                try:
-                    from services.support_auto_dispatch import process_completed_support_job
+                config_context=config_context,
+            ):
+                self._job_store.update_job(job_id, status=JobStatus.RUNNING)
+                self._job_store.log_event(
+                    job_id,
+                    "running",
+                    "Workflow execution started.",
+                    {"workflow_type": workflow_type.value, "backend": "local"},
+                )
+                crew_function = self._engine.crew_function(workflow_type)
+                config_context[PROGRESS_CONTEXT_KEY] = WorkflowProgressRecorder(
+                    job_id=job_id,
+                    workflow_type=workflow_type.value,
+                    job_store=self._job_store,
+                    backend="local",
+                )
+                apply_runtime_environment(config_context)
+                started_at = monotonic_time()
+                result = await asyncio.to_thread(crew_function, inputs, config_context)
+                clean_result, usage_metrics = pop_usage_metrics(result)
+                usage_summary = build_usage_summary(
+                    usage_metrics,
+                    monotonic_time() - started_at,
+                    config_context,
+                )
+                record_usage_metrics(usage_summary, config_context)
+                self._job_store.update_job(
+                    job_id,
+                    status=JobStatus.COMPLETED,
+                    result=clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)},
+                    **usage_summary,
+                    error=None,
+                )
+                self._job_store.log_event(
+                    job_id,
+                    "completed",
+                    "Workflow execution completed.",
+                    {
+                        "workflow_type": workflow_type.value,
+                        "backend": "local",
+                        "total_tokens": usage_summary.get("total_tokens"),
+                        "cost_usd": usage_summary.get("cost_usd"),
+                        "duration_seconds": usage_summary.get("duration_seconds"),
+                    },
+                )
+                if workflow_type == WorkflowType.SUPPORT and isinstance(clean_result, dict):
+                    try:
+                        from services.support_auto_dispatch import process_completed_support_job
 
-                    dispatch_result = await process_completed_support_job(
-                        job_id=job_id,
-                        inputs=inputs,
-                        result=clean_result,
-                        config_context=config_context,
-                    )
-                    self._job_store.log_event(
-                        job_id,
-                        "support_auto_dispatch",
-                        "Support auto-dispatch evaluated.",
-                        dispatch_result,
-                    )
-                except Exception as dispatch_exc:
-                    logger.exception("Support auto-dispatch failed for job %s", job_id)
-                    self._job_store.log_event(
-                        job_id,
-                        "support_auto_dispatch_failed",
-                        "Support auto-dispatch failed after workflow completion.",
-                        {"error": str(dispatch_exc)},
-                    )
+                        dispatch_result = await process_completed_support_job(
+                            job_id=job_id,
+                            inputs=inputs,
+                            result=clean_result,
+                            config_context=config_context,
+                        )
+                        self._job_store.log_event(
+                            job_id,
+                            "support_auto_dispatch",
+                            "Support auto-dispatch evaluated.",
+                            dispatch_result,
+                        )
+                    except Exception as dispatch_exc:
+                        logger.exception("Support auto-dispatch failed for job %s", job_id)
+                        self._job_store.log_event(
+                            job_id,
+                            "support_auto_dispatch_failed",
+                            "Support auto-dispatch failed after workflow completion.",
+                            {"error": str(dispatch_exc)},
+                        )
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._job_store.update_job(
@@ -526,6 +558,7 @@ class CeleryOrchestrator:
     def __init__(self, job_store: JobStore, runtime_config: RuntimeConfig | None = None) -> None:
         self._job_store = job_store
         self._runtime_config = runtime_config or RuntimeConfig()
+        init_observability("cross-border-celery-orchestrator", config_context=self._runtime_config.as_context())
         self._engine = WorkflowExecutionEngine(self._job_store, self._runtime_config)
         logger.info("Celery orchestrator initialized with %s job store.", self.job_store_name)
 
@@ -585,49 +618,55 @@ class CeleryOrchestrator:
         )
 
         try:
-            for item in request.workflows:
-                child_name = workflow_group_item_name(item)
-                child_job_id = await self.submit_job(
-                    item.workflow_type,
-                    item.inputs,
-                    provider_credentials=workflow_group_provider_credentials(item),
-                    metadata=workflow_group_child_metadata(
-                        parent_job_id,
-                        child_name,
-                        item,
-                        request.metadata,
-                    ),
-                )
-                children.append(
-                    {
-                        "name": child_name,
-                        "workflow_type": item.workflow_type.value,
-                        "job_id": child_job_id,
-                    }
-                )
+            with group_span(
+                parent_job_id=parent_job_id,
+                backend="celery",
+                attributes={"children_requested": len(request.workflows)},
+                config_context=self._runtime_config.as_context(),
+            ):
+                for item in request.workflows:
+                    child_name = workflow_group_item_name(item)
+                    child_job_id = await self.submit_job(
+                        item.workflow_type,
+                        item.inputs,
+                        provider_credentials=workflow_group_provider_credentials(item),
+                        metadata=workflow_group_child_metadata(
+                            parent_job_id,
+                            child_name,
+                            item,
+                            request.metadata,
+                        ),
+                    )
+                    children.append(
+                        {
+                            "name": child_name,
+                            "workflow_type": item.workflow_type.value,
+                            "job_id": child_job_id,
+                        }
+                    )
 
-            result = build_workflow_group_result(children, self._job_store.get_job)
-            self._job_store.update_job(
-                parent_job_id,
-                status=JobStatus.RUNNING,
-                result=result,
-                error=None,
-            )
-            monitor_task = celery_app.send_task(
-                WORKFLOW_GROUP_MONITOR_TASK,
-                args=[parent_job_id, children],
-                task_id=parent_job_id,
-            )
-            self._job_store.log_event(
-                parent_job_id,
-                "running",
-                "Workflow group child jobs submitted and monitor queued.",
-                {
-                    "backend": "celery",
-                    "monitor_task_id": monitor_task.id,
-                    "children": children,
-                },
-            )
+                result = build_workflow_group_result(children, self._job_store.get_job)
+                self._job_store.update_job(
+                    parent_job_id,
+                    status=JobStatus.RUNNING,
+                    result=result,
+                    error=None,
+                )
+                monitor_task = celery_app.send_task(
+                    WORKFLOW_GROUP_MONITOR_TASK,
+                    args=[parent_job_id, children],
+                    task_id=parent_job_id,
+                )
+                self._job_store.log_event(
+                    parent_job_id,
+                    "running",
+                    "Workflow group child jobs submitted and monitor queued.",
+                    {
+                        "backend": "celery",
+                        "monitor_task_id": monitor_task.id,
+                        "children": children,
+                    },
+                )
         except Exception as exc:
             logger.exception("Workflow group %s failed during Celery submission", parent_job_id)
             result = build_workflow_group_result(children, self._job_store.get_job)
@@ -673,39 +712,45 @@ class CeleryOrchestrator:
         )
 
         try:
-            children.extend(
-                await self._submit_ready_route_children(
-                    parent_job_id,
-                    request,
-                    plan,
-                    children,
+            with route_span(
+                parent_job_id=parent_job_id,
+                backend="celery",
+                attributes={"planned_nodes": len(plan.nodes)},
+                config_context=self._runtime_config.as_context(),
+            ):
+                children.extend(
+                    await self._submit_ready_route_children(
+                        parent_job_id,
+                        request,
+                        plan,
+                        children,
+                    )
                 )
-            )
-            result = build_workflow_route_result(plan, children, self._job_store.get_job)
-            self._job_store.update_job(parent_job_id, status=JobStatus.RUNNING, result=result, error=None)
-            monitor_task = celery_app.send_task(
-                WORKFLOW_ROUTE_MONITOR_TASK,
-                args=[
+                result = build_workflow_route_result(plan, children, self._job_store.get_job)
+                self._job_store.update_job(parent_job_id, status=JobStatus.RUNNING, result=result, error=None)
+                monitor_task = celery_app.send_task(
+                    WORKFLOW_ROUTE_MONITOR_TASK,
+                    args=[
+                        parent_job_id,
+                        plan.model_dump(mode="json"),
+                        children,
+                    ],
+                    kwargs={
+                        "provider_credentials": workflow_route_provider_credentials(request),
+                        "metadata": request.metadata or {},
+                    },
+                    task_id=parent_job_id,
+                )
+                self._job_store.log_event(
                     parent_job_id,
-                    plan.model_dump(mode="json"),
-                    children,
-                ],
-                kwargs={
-                    "provider_credentials": workflow_route_provider_credentials(request),
-                    "metadata": request.metadata or {},
-                },
-                task_id=parent_job_id,
-            )
-            self._job_store.log_event(
-                parent_job_id,
-                "running",
-                "Workflow route initial child jobs submitted and monitor queued.",
-                {
-                    "backend": "celery",
-                    "monitor_task_id": monitor_task.id,
-                    "children": children,
-                },
-            )
+                    "running",
+                    "Workflow route initial child jobs submitted and monitor queued.",
+                    {
+                        "backend": "celery",
+                        "monitor_task_id": monitor_task.id,
+                        "children": children,
+                    },
+                )
         except Exception as exc:
             logger.exception("Workflow route %s failed during Celery submission", parent_job_id)
             result = build_workflow_route_result(plan, children, self._job_store.get_job)
