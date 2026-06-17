@@ -45,7 +45,7 @@ services:
       --serve-artifacts
       --host 0.0.0.0
       --port 5000
-      --allowed-hosts localhost,127.0.0.1,mlflow,fastapi,celery_worker
+      --allowed-hosts localhost:*,127.0.0.1:*,mlflow,mlflow:5000,fastapi,celery_worker
     volumes:
       - mlflow_artifacts:/mlflow/artifacts
     networks:
