@@ -242,13 +242,22 @@ def indexed_payload(items: list[Any], index: int | None) -> list[Any]:
     return [items[index]] if 0 <= index < len(items) else []
 
 
+def generated_language_order(result: dict[str, Any]) -> list[str]:
+    return [
+        language_value(item)
+        for item in list_or_empty(result.get("multimodal_outputs"))
+        if isinstance(item, dict) and language_value(item)
+    ]
+
+
 def user_facing_language_payload(
     result: dict[str, Any],
     language: str,
     expected_language_order: list[str],
 ) -> dict[str, Any]:
     language = language.strip()
-    index = language_index(expected_language_order, language)
+    actual_generation_order = generated_language_order(result) or expected_language_order
+    index = language_index(actual_generation_order, language)
     return {
         "seo_outputs": indexed_payload(list_or_empty(result.get("seo_outputs")), index),
         "multimodal_outputs": [

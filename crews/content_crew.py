@@ -406,6 +406,10 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
 
 def _normalize_per_language_content_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
+    for list_field in ("visual_assets", "visual_asset_scores", "reddit_geo_posts"):
+        if normalized.get(list_field) is None:
+            normalized[list_field] = []
+
     article = normalized.get("localized_article")
     if not isinstance(article, dict):
         return normalized
@@ -559,15 +563,17 @@ def _localized_inputs_from_entities(
             localized[input_key] = value
 
     brand_name = str(entities.get("brand_name") or "").strip()
-    if brand_name:
+    if brand_name and not _contains_forbidden_source_term(brand_name, inputs, language):
         localized["brand_name"] = brand_name
     elif inputs.get("brand_name"):
         localized.pop("brand_name", None)
 
+    forbidden_source_terms = _forbidden_source_terms_for_language(inputs, language)
     primary_keywords = [
         str(keyword).strip()
         for keyword in entities.get("primary_keywords") or []
         if str(keyword).strip()
+        and not any(term in str(keyword).strip() for term in forbidden_source_terms)
     ]
     if primary_keywords:
         localized["primary_keywords"] = primary_keywords
@@ -578,6 +584,136 @@ def _localized_inputs_from_entities(
 def _localized_entities_payload(output: dict[str, Any]) -> dict[str, Any] | None:
     entities = output.get("localized_entities")
     return entities if isinstance(entities, dict) else None
+
+
+def _source_language_terms(inputs: dict[str, Any]) -> list[str]:
+    raw_terms: list[str] = []
+    for key in ("subject", "product_category", "brand_name", "brand_voice"):
+        value = str(inputs.get(key) or "").strip()
+        if value:
+            raw_terms.append(value)
+    raw_terms.extend(
+        str(keyword).strip()
+        for keyword in inputs.get("primary_keywords") or []
+        if str(keyword).strip()
+    )
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in raw_terms:
+        if term not in seen:
+            terms.append(term)
+            seen.add(term)
+    return sorted(terms, key=len, reverse=True)
+
+
+def _has_cjk(value: str) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in value)
+
+
+def _is_short_cjk_term(value: str) -> bool:
+    return 0 < len(value) <= 2 and all(
+        "\u4e00" <= character <= "\u9fff" for character in value
+    )
+
+
+def _source_term_allowed_in_language(term: str, language: str) -> bool:
+    normalized_language = language.casefold()
+    if normalized_language.startswith("zh") and _has_cjk(term):
+        return True
+    return normalized_language.startswith("ja") and _is_short_cjk_term(term)
+
+
+def _forbidden_source_terms_for_language(
+    inputs: dict[str, Any],
+    language: str,
+) -> list[str]:
+    return [
+        term
+        for term in _source_language_terms(inputs)
+        if not _source_term_allowed_in_language(term, language)
+    ]
+
+
+def _contains_forbidden_source_term(
+    value: str,
+    inputs: dict[str, Any],
+    language: str,
+) -> bool:
+    return any(term in value for term in _forbidden_source_terms_for_language(inputs, language))
+
+
+def _source_term_replacements(
+    inputs: dict[str, Any],
+    localized_inputs: dict[str, Any],
+    language: str,
+) -> dict[str, str]:
+    fallback_keywords = [
+        keyword
+        for keyword in _primary_keywords(localized_inputs)
+        if not _contains_forbidden_source_term(keyword, inputs, language)
+    ]
+    fallback = (
+        fallback_keywords[0]
+        if fallback_keywords
+        else str(
+            localized_inputs.get("subject")
+            or localized_inputs.get("product_category")
+            or ""
+        ).strip()
+    )
+    candidates = {
+        str(inputs.get("subject") or "").strip(): str(localized_inputs.get("subject") or "").strip(),
+        str(inputs.get("product_category") or "").strip(): str(localized_inputs.get("product_category") or "").strip(),
+        str(inputs.get("brand_name") or "").strip(): str(localized_inputs.get("brand_name") or fallback).strip(),
+        str(inputs.get("brand_voice") or "").strip(): str(localized_inputs.get("brand_voice") or "").strip(),
+    }
+    for keyword in inputs.get("primary_keywords") or []:
+        candidates[str(keyword).strip()] = fallback
+
+    replacements: dict[str, str] = {}
+    for source, replacement in candidates.items():
+        if (
+            source
+            and replacement
+            and source != replacement
+            and not _source_term_allowed_in_language(source, language)
+        ):
+            replacements[source] = replacement
+    return dict(sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True))
+
+
+def _replace_source_terms(
+    value: str,
+    inputs: dict[str, Any],
+    localized_inputs: dict[str, Any],
+    language: str,
+) -> str:
+    replaced = value
+    for source, replacement in _source_term_replacements(inputs, localized_inputs, language).items():
+        replaced = replaced.replace(source, replacement)
+    return replaced
+
+
+def _replace_source_terms_in_value(
+    value: Any,
+    inputs: dict[str, Any],
+    localized_inputs: dict[str, Any],
+    language: str,
+) -> Any:
+    if isinstance(value, str):
+        return _replace_source_terms(value, inputs, localized_inputs, language)
+    if isinstance(value, list):
+        return [
+            _replace_source_terms_in_value(item, inputs, localized_inputs, language)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _replace_source_terms_in_value(item, inputs, localized_inputs, language)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _build_reddit_geo_context(
@@ -1668,7 +1804,7 @@ def _apply_reddit_geo_context(
     ]
     if not reddit_geo_posts:
         reddit_geo_posts = _fallback_reddit_geo_posts(normalized, inputs, reddit_geo_context)
-    reddit_geo_posts = _sanitize_reddit_geo_posts(reddit_geo_posts, inputs)
+    reddit_geo_posts = _sanitize_reddit_geo_posts(reddit_geo_posts, inputs, normalized)
     normalized["reddit_geo_posts"] = reddit_geo_posts
     normalized["production_ready_assets"] = _production_ready_assets(
         normalized.get("localized_articles", []),
@@ -1763,20 +1899,59 @@ def _localized_entities_for_article(
 def _sanitize_reddit_geo_posts(
     reddit_geo_posts: list[dict[str, Any]],
     inputs: dict[str, Any],
+    result: dict[str, Any],
 ) -> list[dict[str, Any]]:
     return [
-        _sanitize_reddit_geo_post(post, inputs)
-        for post in reddit_geo_posts
+        _sanitize_reddit_geo_post(
+            post,
+            inputs,
+            _localized_inputs_for_reddit_post(inputs, result, post, index),
+        )
+        for index, post in enumerate(reddit_geo_posts)
         if isinstance(post, dict)
     ]
+
+
+def _localized_inputs_for_reddit_post(
+    inputs: dict[str, Any],
+    result: dict[str, Any],
+    post: dict[str, Any],
+    post_index: int,
+) -> dict[str, Any]:
+    language = str(post.get("language") or "").strip()
+    target_market = str(post.get("target_market") or "").strip()
+    entities_list = [
+        item
+        for item in result.get("localized_entities", [])
+        if isinstance(item, dict)
+    ]
+    entities = next(
+        (
+            item
+            for item in entities_list
+            if str(item.get("language") or "").strip() == language
+        ),
+        None,
+    )
+    if entities is None and 0 <= post_index < len(entities_list):
+        entities = entities_list[post_index]
+    if not language and entities:
+        language = str(entities.get("language") or "").strip()
+    if not target_market and entities:
+        target_market = str(entities.get("target_market") or "").strip()
+    return _localized_inputs_from_entities(inputs, entities, language, target_market)
 
 
 def _sanitize_reddit_geo_post(
     post: dict[str, Any],
     inputs: dict[str, Any],
+    localized_inputs: dict[str, Any],
 ) -> dict[str, Any]:
     product_url = str(inputs.get("product_url") or "").strip()
     sanitized = dict(post)
+    language = str(
+        sanitized.get("language") or localized_inputs.get("target_language") or ""
+    ).strip()
     body_without_link = _remove_product_links_and_placeholders(
         str(sanitized.get("body_without_link") or sanitized.get("body") or ""),
         product_url,
@@ -1786,10 +1961,38 @@ def _sanitize_reddit_geo_post(
         body = _replace_product_link_placeholders(body, product_url)
     else:
         body = body_without_link
-    sanitized["body"] = body
-    sanitized["body_without_link"] = body_without_link
+    sanitized["body"] = _replace_source_terms(body, inputs, localized_inputs, language)
+    sanitized["body_without_link"] = _replace_source_terms(
+        body_without_link,
+        inputs,
+        localized_inputs,
+        language,
+    )
+    sanitized["title_options"] = _replace_source_terms_in_value(
+        sanitized.get("title_options"),
+        inputs,
+        localized_inputs,
+        language,
+    )
+    sanitized["disclosure_note"] = _replace_source_terms(
+        str(sanitized.get("disclosure_note") or ""),
+        inputs,
+        localized_inputs,
+        language,
+    )
+    sanitized["ai_search_entity_signals"] = _replace_source_terms_in_value(
+        sanitized.get("ai_search_entity_signals"),
+        inputs,
+        localized_inputs,
+        language,
+    )
     sanitized["moderation_notes"] = _ensure_reddit_moderation_notes(
-        sanitized.get("moderation_notes")
+        _replace_source_terms_in_value(
+            sanitized.get("moderation_notes"),
+            inputs,
+            localized_inputs,
+            language,
+        )
     )
     return sanitized
 

@@ -79,6 +79,8 @@ content_creation_and_qa:
     If you include multimodal, SEO metadata, cultural risk, or visual asset fields, treat them as
     planning metadata only. Do not claim that an image was generated or scored; external image
     generation and visual scoring are controlled by the workflow after your task completes.
+    Optional list fields such as visual_assets, visual_asset_scores, and reddit_geo_posts must be
+    omitted or returned as [] when empty; never return null for list fields.
     If Reddit GEO enabled is true, include reddit_geo_posts with one Reddit-ready post draft for
     this language and target market. The Reddit post must be for manual review before publishing,
     use transparent weak-brand disclosure, avoid impersonating a neutral user, avoid hard-sell CTA,
