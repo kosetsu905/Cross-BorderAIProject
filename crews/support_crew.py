@@ -1181,6 +1181,11 @@ def _string_list(value: Any) -> list[str]:
         return []
     if isinstance(value, list):
         return [str(item) for item in value]
+    if isinstance(value, dict):
+        for key in ("action_items", "items", "steps", "next_steps"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return [str(item) for item in nested]
     return [str(value)]
 
 
@@ -1295,7 +1300,7 @@ def _catalog_offer_output(value: Any) -> dict[str, Any] | None:
         "status": str(value.get("status") or "not_found"),
         "product_found": value.get("product_found") if isinstance(value.get("product_found"), bool) else None,
         "product_name": value.get("product_name"),
-        "unit_price": value.get("unit_price"),
+        "unit_price": value.get("unit_price") or value.get("catalog_unit_price"),
         "carton_quantity": value.get("carton_quantity"),
         "carton_size": value.get("carton_size"),
         "carton_weight": value.get("carton_weight"),
@@ -1309,16 +1314,72 @@ def _catalog_offer_output(value: Any) -> dict[str, Any] | None:
     }
 
 
+def _catalog_offer_from_product_recommendation(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    product_name = value.get("product_name") or value.get("name") or value.get("title")
+    unit_price = value.get("unit_price") or value.get("catalog_unit_price")
+    has_catalog_fact = any(
+        value.get(key)
+        for key in (
+            "carton_quantity",
+            "carton_size",
+            "carton_weight",
+            "single_product_size",
+            "single_product_weight",
+        )
+    )
+    if not any((product_name, unit_price, has_catalog_fact)):
+        return None
+    return _catalog_offer_output(
+        {
+            "status": value.get("status") or "found",
+            "product_found": value.get("product_found") if isinstance(value.get("product_found"), bool) else True,
+            "product_name": product_name,
+            "unit_price": unit_price,
+            "carton_quantity": value.get("carton_quantity"),
+            "carton_size": value.get("carton_size"),
+            "carton_weight": value.get("carton_weight"),
+            "single_product_size": value.get("single_product_size"),
+            "single_product_weight": value.get("single_product_weight"),
+            "discount_policy": value.get("discount_policy"),
+            "source": value.get("source"),
+            "heading": value.get("heading"),
+            "evidence": value.get("evidence"),
+            "data_source": value.get("data_source"),
+        }
+    )
+
+
+def _product_recommendation_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in ("product_name", "name", "title", "recommendation"):
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        return None
+    return str(value)
+
+
 def _normalize_pre_sales_response(value: Any) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         return {"feature_explanation": str(value)}
     use_customer_facing_specs = value.get("data_source") != "mock_fallback" or isinstance(value.get("catalog_product_offer"), dict)
+    product_recommendation = value.get("product_recommendation")
+    catalog_product_offer = _catalog_offer_output(value.get("catalog_product_offer"))
+    if catalog_product_offer is None:
+        catalog_product_offer = _catalog_offer_from_product_recommendation(product_recommendation)
     return {
         "product_found": value.get("product_found") if isinstance(value.get("product_found"), bool) else None,
         "family_code": value.get("family_code"),
-        "product_recommendation": value.get("product_recommendation"),
+        "product_recommendation": _product_recommendation_text(product_recommendation),
         "feature_explanation": value.get("feature_explanation"),
         "comparison_summary": value.get("comparison_summary"),
         "next_steps": _string_list(value.get("next_steps")),
@@ -1334,7 +1395,7 @@ def _normalize_pre_sales_response(value: Any) -> dict[str, Any] | None:
         "data_source": value.get("data_source"),
         "knowledge_data_source": value.get("knowledge_data_source"),
         "catalog_knowledge_results": _knowledge_outputs(value.get("catalog_knowledge_results")),
-        "catalog_product_offer": _catalog_offer_output(value.get("catalog_product_offer")),
+        "catalog_product_offer": catalog_product_offer,
         "pricing_guardrails": _string_list(value.get("pricing_guardrails")),
     }
 

@@ -1,0 +1,21 @@
+{
+  "response_type": "pre_sales",
+  "product_recommendation": {
+    "product_name": "Wireless Bluetooth headset",
+    "catalog_unit_price": "$6.50",
+    "carton_quantity": "40PCS",
+    "carton_size": "52x38x51cm",
+    "carton_weight": "9 kg"
+  },
+  "feature_explanation": "The catalog does not provide detailed feature specifications for the Wireless Bluetooth headset. It lists carton quantity, price, carton size, and carton weight.",
+  "comparison_summary": "The $6.50 listing is the verified catalog unit price for the matched headset.",
+  "next_steps": {
+    "action_items": [
+      "Confirm how many units or cartons the customer wants.",
+      "Ask sales to review any discount request before quoting a reduced price."
+    ]
+  },
+  "confidence_level": 95,
+  "requires_human_review": true,
+  "final_response": "Hi Tonny, the Wireless Bluetooth headset is priced at $6.50 each, with one carton containing 40PCS. The carton size is 52x38x51cm and carton weight is 9 kg. Please let me know if you would like to proceed with an order or have any specific feature inquiries!"
+}

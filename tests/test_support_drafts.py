@@ -1,4 +1,7 @@
+import asyncio
+import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -7,8 +10,13 @@ from fastapi.testclient import TestClient
 
 from api.routes import create_router
 from database import get_db_session
+from services.support_auto_dispatch import process_completed_support_job
 from support_inbox import SupportInboxStore
 from utils.support_drafts import customer_facing_draft_text
+
+
+SUPPORT_FIXTURE_DIR = Path(__file__).parent / "fixtures"
+WIRELESS_HEADSET_PRE_SALES_FIXTURE = SUPPORT_FIXTURE_DIR / "support_wireless_headset_pre_sales.json"
 
 
 FENCED_SUPPORT_JSON = """```json
@@ -17,6 +25,59 @@ FENCED_SUPPORT_JSON = """```json
   "final_response": "Hi Tonny, the Wireless Bluetooth headset is priced at $6.50 each."
 }
 ```"""
+
+
+def _wireless_headset_pre_sales_fixture() -> dict[str, object]:
+    return json.loads(WIRELESS_HEADSET_PRE_SALES_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _fenced_json_payload(payload: dict[str, object]) -> str:
+    return "```json\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```"
+
+
+def _structured_pre_sales_job_result(conversation_id: str = "conv-1") -> dict[str, object]:
+    payload = _wireless_headset_pre_sales_fixture()
+    return {
+        "session_id": conversation_id,
+        "detected_intent": "pre_sales",
+        "routing_confidence": 0.95,
+        "pre_sales_response": {
+            "product_recommendation": payload["product_recommendation"],
+            "feature_explanation": payload["feature_explanation"],
+            "comparison_summary": payload["comparison_summary"],
+            "next_steps": payload["next_steps"],
+            "confidence_level": payload["confidence_level"],
+            "requires_human_review": payload["requires_human_review"],
+        },
+        "final_response": payload["final_response"],
+        "qa_status": "APPROVED",
+        "escalation_needed": False,
+        "compliance_flags": [],
+        "recommended_follow_up": "Follow up if the customer replies.",
+    }
+
+
+def _gmail_conversation(**overrides: object) -> SimpleNamespace:
+    values: dict[str, object] = {
+        "conversation_id": "conv-1",
+        "channel": "gmail",
+        "channel_thread_id": "gmail-thread-1",
+        "customer_display_name": "Tonny",
+        "customer_handle": "tonny@example.com",
+        "customer_handle_masked": "to***@example.com",
+        "assigned_to": None,
+        "status": "processing",
+        "latest_job_id": None,
+        "draft_response": None,
+        "draft_payload": None,
+        "requires_approval": True,
+        "escalation_flag": False,
+        "last_message_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 class FakeScalarResult:
@@ -57,6 +118,17 @@ class FakeDbSession:
 
     def execute(self, statement: object) -> object:
         return SimpleNamespace(scalars=lambda: FakeScalarResult(self.records))
+
+
+class FakeSessionContext:
+    def __init__(self, session: FakeDbSession) -> None:
+        self.session = session
+
+    def __enter__(self) -> FakeDbSession:
+        return self.session
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        return False
 
 
 class FakeSupportStore:
@@ -137,6 +209,37 @@ class SupportDraftTests(unittest.TestCase):
             "Hi Tonny, the Wireless Bluetooth headset is priced at $6.50 each.",
         )
         self.assertEqual(conversation.draft_payload["final_response"], FENCED_SUPPORT_JSON)
+
+    def test_get_conversation_syncs_structured_product_recommendation_with_real_store(self) -> None:
+        conversation = _gmail_conversation(latest_job_id="job-1")
+        fake_db = FakeDbSession(conversation)
+
+        class FakeOrchestrator:
+            registered_workflows = []
+
+            def get_job_status(self, job_id: str) -> dict[str, object]:
+                return {
+                    "job_id": job_id,
+                    "workflow_type": "support",
+                    "result": _structured_pre_sales_job_result("conv-1"),
+                }
+
+        app = FastAPI()
+        app.include_router(create_router(FakeOrchestrator()))
+        app.dependency_overrides[get_db_session] = lambda: fake_db
+
+        response = TestClient(app).get("/api/v1/support/conversations/conv-1")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        expected_final = _wireless_headset_pre_sales_fixture()["final_response"]
+        self.assertEqual(data["draft_response"], expected_final)
+        self.assertEqual(
+            data["draft_payload"]["pre_sales_response"]["product_recommendation"]["product_name"],
+            "Wireless Bluetooth headset",
+        )
+        self.assertFalse(data["requires_approval"])
+        self.assertFalse(data["escalation_flag"])
 
     @patch("api.routes.send_gmail_reply_message")
     @patch("api.routes._gmail_access_token_from_config", return_value="token")
@@ -255,6 +358,108 @@ class SupportDraftTests(unittest.TestCase):
         self.assertEqual(send_gmail.call_args.kwargs["body"], "Plain edited draft")
         self.assertEqual(fake_store.recorded_text, "Plain edited draft")
         access_token.assert_called_once()
+
+    @patch("api.routes.send_gmail_reply_message")
+    @patch("api.routes._gmail_access_token_from_config", return_value="token")
+    @patch("api.routes.load_runtime_config")
+    def test_approve_send_uses_real_store_and_sends_final_response_from_structured_json(
+        self,
+        load_config: Mock,
+        access_token: Mock,
+        send_gmail: Mock,
+    ) -> None:
+        load_config.return_value = SimpleNamespace(
+            gmail_send_enabled=True,
+            gmail_sender_email="support@example.com",
+        )
+        send_gmail.return_value = {"status": "sent", "message_id": "gmail-out-1", "error": None}
+        fixture_payload = _wireless_headset_pre_sales_fixture()
+        fenced_payload = _fenced_json_payload(fixture_payload)
+        conversation = _gmail_conversation(
+            draft_response=fenced_payload,
+            draft_payload={"final_response": fenced_payload},
+            status="draft_ready",
+        )
+        fake_db = FakeDbSession(
+            conversation,
+            records=[
+                SimpleNamespace(
+                    raw_payload={
+                        "headers": {
+                            "subject": "Bluetooth headset inquiry",
+                            "message-id": "<inbound@example.com>",
+                        }
+                    }
+                )
+            ],
+        )
+
+        class FakeOrchestrator:
+            registered_workflows = []
+
+            def get_job_status(self, job_id: str) -> dict[str, object]:
+                return {}
+
+        app = FastAPI()
+        app.include_router(create_router(FakeOrchestrator()))
+        app.dependency_overrides[get_db_session] = lambda: fake_db
+
+        response = TestClient(app).post(
+            "/api/v1/support/conversations/conv-1/approve-send",
+            json={"message": fenced_payload},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(send_gmail.call_args.kwargs["body"], fixture_payload["final_response"])
+        self.assertEqual(fake_db.added[-1].text, fixture_payload["final_response"])
+        self.assertEqual(fake_db.added[-1].raw_payload["draft_payload"]["final_response"], fenced_payload)
+        access_token.assert_called_once()
+
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_sends_final_response_from_structured_pre_sales_result(
+        self,
+        session_local: Mock,
+        send_gmail: Mock,
+    ) -> None:
+        send_gmail.return_value = {"status": "sent", "message_id": "gmail-out-1", "error": None}
+        conversation = _gmail_conversation()
+        fake_db = FakeDbSession(
+            conversation,
+            records=[
+                SimpleNamespace(
+                    raw_payload={
+                        "headers": {
+                            "subject": "Bluetooth headset inquiry",
+                            "message-id": "<inbound@example.com>",
+                        }
+                    }
+                )
+            ],
+        )
+        session_local.return_value = FakeSessionContext(fake_db)
+        fixture_payload = _wireless_headset_pre_sales_fixture()
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result=_structured_pre_sales_job_result("conv-1"),
+                config_context={
+                    "gmail_send_enabled": True,
+                    "gmail_access_token": "token",
+                    "gmail_sender_email": "support@example.com",
+                },
+            )
+        )
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(send_gmail.call_args.kwargs["body"], fixture_payload["final_response"])
+        self.assertEqual(fake_db.added[-1].text, fixture_payload["final_response"])
+        self.assertEqual(
+            conversation.draft_payload["pre_sales_response"]["product_recommendation"]["product_name"],
+            "Wireless Bluetooth headset",
+        )
 
 
 if __name__ == "__main__":

@@ -17,8 +17,10 @@ pre_sales_consultation:
     Avoid over-promising unverified features, integrations, certifications, or delivery timelines.
     Adapt tone for {channel} and language for {language_plan}.
   expected_output: >
-    JSON with response_type="pre_sales", product_recommendation, feature_explanation, comparison_summary,
-    next_steps, confidence_level, requires_human_review, and final_response.
+    JSON with response_type="pre_sales", product_recommendation as a concise string product name or recommendation,
+    feature_explanation, comparison_summary, next_steps, confidence_level, requires_human_review, and final_response.
+    Put structured catalog facts such as unit_price, carton_quantity, carton_size, and carton_weight in catalog_product_offer,
+    not inside product_recommendation.
 
 order_status_handling:
   description: >

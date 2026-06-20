@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
@@ -46,6 +47,18 @@ from tools.custom.customer_service_tools import IntentRouterTool, OrderTrackingT
 from tools.custom.support_automation_tools import process_rma_request
 from tools.custom.support_rag_tools import extract_catalog_product_offer, load_knowledge_chunks, search_knowledge_base
 from tools.custom.support_search_tools import build_support_external_search_tools
+
+
+SUPPORT_FIXTURE_DIR = Path(__file__).parent / "fixtures"
+WIRELESS_HEADSET_PRE_SALES_FIXTURE = SUPPORT_FIXTURE_DIR / "support_wireless_headset_pre_sales.json"
+
+
+def _wireless_headset_pre_sales_fixture() -> dict[str, object]:
+    return json.loads(WIRELESS_HEADSET_PRE_SALES_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _fenced_json_payload(payload: dict[str, object]) -> str:
+    return "```json\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```"
 
 
 class FakePIMResponse:
@@ -410,6 +423,69 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertNotIn("$12.99", result["final_response"])
         self.assertNotIn("HEADSET-BASIC", result["final_response"])
         self.assertNotIn("noise isolation", result["final_response"].lower())
+
+    def test_run_support_crew_normalizes_object_product_recommendation_from_json_dict(self) -> None:
+        crew_payload = _wireless_headset_pre_sales_fixture()
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, **kwargs):
+                self.task_count = len(tasks)
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(json_dict=json.loads(json.dumps(crew_payload)))
+
+        with patch("crews.support_crew.Crew", FakeCrew):
+            result = run_support_crew(
+                {
+                    "customer": "Tonny",
+                    "person": "Tonny",
+                    "inquiry": "Please share Wireless Bluetooth headset bulk pricing.",
+                    "product_category": "Wireless Bluetooth headset",
+                    "channel": "gmail",
+                    "session_id": "conv-wireless-headset",
+                },
+                {"support_qa_mode": "adaptive_fast"},
+            )
+
+        CustomerServiceOutput.model_validate(result)
+        pre_sales = result["pre_sales_response"]
+        self.assertEqual(pre_sales["product_recommendation"], "Wireless Bluetooth headset")
+        self.assertEqual(pre_sales["catalog_product_offer"]["unit_price"], "$6.50")
+        self.assertEqual(pre_sales["catalog_product_offer"]["carton_quantity"], "40PCS")
+        self.assertIn("$6.50", result["final_response"])
+        self.assertNotIn('"product_recommendation"', result["final_response"])
+
+    def test_run_support_crew_normalizes_object_product_recommendation_from_fenced_raw_json(self) -> None:
+        crew_payload = _wireless_headset_pre_sales_fixture()
+        raw_payload = _fenced_json_payload(crew_payload)
+
+        class FakeCrew:
+            def __init__(self, agents, tasks, **kwargs):
+                self.task_count = len(tasks)
+
+            def kickoff(self, inputs):
+                return SimpleNamespace(raw=raw_payload)
+
+        with patch("crews.support_crew.Crew", FakeCrew):
+            result = run_support_crew(
+                {
+                    "customer": "Tonny",
+                    "person": "Tonny",
+                    "inquiry": "Please share Wireless Bluetooth headset bulk pricing.",
+                    "product_category": "Wireless Bluetooth headset",
+                    "channel": "gmail",
+                    "session_id": "conv-wireless-headset",
+                },
+                {"support_qa_mode": "adaptive_fast"},
+            )
+
+        CustomerServiceOutput.model_validate(result)
+        pre_sales = result["pre_sales_response"]
+        self.assertEqual(pre_sales["product_recommendation"], "Wireless Bluetooth headset")
+        self.assertEqual(pre_sales["catalog_product_offer"]["unit_price"], "$6.50")
+        self.assertEqual(pre_sales["catalog_product_offer"]["carton_size"], "52x38x51cm")
+        self.assertIn("40PCS", result["final_response"])
+        self.assertNotIn("```json", result["final_response"])
 
     def test_adaptive_fast_support_qa_keeps_full_qa_for_unverified_pre_sales_context(self) -> None:
         task_counts: list[int] = []
@@ -1520,6 +1596,58 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(parsed.detected_intent, "pre_sales")
+
+    def test_attach_customer_service_context_accepts_object_product_recommendation_fixture(self) -> None:
+        crew_payload = _wireless_headset_pre_sales_fixture()
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": "How much is the Wireless Bluetooth headset?",
+                "product_category": "Wireless Bluetooth headset",
+                "channel": "gmail",
+                "session_id": "conv-wireless-headset",
+            }
+        )
+
+        result = _attach_customer_service_context(
+            result={
+                "pre_sales_response": {
+                    "product_recommendation": crew_payload["product_recommendation"],
+                    "feature_explanation": crew_payload["feature_explanation"],
+                    "comparison_summary": crew_payload["comparison_summary"],
+                    "next_steps": crew_payload["next_steps"],
+                    "confidence_level": crew_payload["confidence_level"],
+                    "requires_human_review": crew_payload["requires_human_review"],
+                },
+                "final_response": crew_payload["final_response"],
+                "qa_status": "REVIEW_REQUIRED",
+                "escalation_needed": True,
+            },
+            inputs=inputs,
+            automation_context={"escalation_flag": False, "compliance_tags": []},
+            router_result={"detected_intent": "pre_sales", "confidence_score": 0.95},
+            pre_sales_context={"data_source": "local_pdf_catalog", "product_found": True},
+            order_context={"data_source": "mock_order_db", "order_found": False},
+        )
+
+        CustomerServiceOutput.model_validate(result)
+        pre_sales = result["pre_sales_response"]
+        self.assertEqual(pre_sales["product_recommendation"], "Wireless Bluetooth headset")
+        self.assertEqual(
+            pre_sales["next_steps"],
+            [
+                "Confirm how many units or cartons the customer wants.",
+                "Ask sales to review any discount request before quoting a reduced price.",
+            ],
+        )
+        offer = pre_sales["catalog_product_offer"]
+        self.assertEqual(offer["status"], "found")
+        self.assertEqual(offer["product_name"], "Wireless Bluetooth headset")
+        self.assertEqual(offer["unit_price"], "$6.50")
+        self.assertEqual(offer["carton_quantity"], "40PCS")
+        self.assertEqual(offer["carton_size"], "52x38x51cm")
+        self.assertEqual(offer["carton_weight"], "9 kg")
 
     def test_customer_service_output_schema_has_no_open_objects(self) -> None:
         schema = CustomerServiceOutput.model_json_schema()
