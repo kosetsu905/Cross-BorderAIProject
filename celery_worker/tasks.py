@@ -22,6 +22,7 @@ from utils.observability import (
     group_span,
     init_observability,
     record_usage_metrics,
+    record_workflow_result_observability,
     route_span,
     workflow_span,
 )
@@ -143,6 +144,7 @@ def _run_with_job_state(
         workflow_type=workflow_type,
         job_store=job_store,
         backend="celery",
+        config_context=config_context,
     )
     apply_runtime_environment(config_context)
     self.update_state(state="PROGRESS", meta={"status": progress})
@@ -169,6 +171,10 @@ def _run_with_job_state(
                 usage_metrics,
                 monotonic_time() - started_at,
                 config_context,
+            )
+            record_workflow_result_observability(
+                normalized_result,
+                {**config_context, "workflow_type": workflow_type},
             )
             record_usage_metrics(usage_summary, config_context)
             job_store.update_job(

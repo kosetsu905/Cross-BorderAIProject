@@ -14,11 +14,19 @@ PROGRESS_SPAN = 0.7
 
 
 class WorkflowProgressRecorder:
-    def __init__(self, job_id: str, workflow_type: str, job_store: Any, backend: str) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        workflow_type: str,
+        job_store: Any,
+        backend: str,
+        config_context: dict[str, Any] | None = None,
+    ) -> None:
         self.job_id = job_id
         self.workflow_type = workflow_type
         self.job_store = job_store
         self.backend = backend
+        self.config_context = config_context
         self._lock = Lock()
         self._task_started_at: dict[tuple[int, str], float] = {}
         self._task_spans: dict[tuple[int, str], Any] = {}
@@ -43,6 +51,7 @@ class WorkflowProgressRecorder:
             task_name=task_name,
             agent_role=agent_role,
             backend=self.backend,
+            config_context=self.config_context,
         )
         progress = PROGRESS_START + (PROGRESS_SPAN * index / max(total, 1))
         self._update_progress(

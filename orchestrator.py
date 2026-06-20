@@ -14,6 +14,7 @@ from utils.observability import (
     group_span,
     init_observability,
     record_usage_metrics,
+    record_workflow_result_observability,
     route_span,
     workflow_span,
 )
@@ -356,6 +357,7 @@ class MasterOrchestrator:
                     workflow_type=workflow_type.value,
                     job_store=self._job_store,
                     backend="local",
+                    config_context=config_context,
                 )
                 apply_runtime_environment(config_context)
                 started_at = monotonic_time()
@@ -366,11 +368,16 @@ class MasterOrchestrator:
                     monotonic_time() - started_at,
                     config_context,
                 )
+                normalized_result = clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)}
+                record_workflow_result_observability(
+                    normalized_result,
+                    {**config_context, "workflow_type": workflow_type.value},
+                )
                 record_usage_metrics(usage_summary, config_context)
                 self._job_store.update_job(
                     job_id,
                     status=JobStatus.COMPLETED,
-                    result=clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)},
+                    result=normalized_result,
                     **usage_summary,
                     error=None,
                 )

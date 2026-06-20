@@ -2,10 +2,84 @@ import os
 import unittest
 from unittest.mock import patch
 
-from utils.observability import NoOpSpan, redact_observability_payload, workflow_span
+import utils.observability as observability
+from utils.observability import (
+    NoOpSpan,
+    end_span,
+    record_workflow_result_observability,
+    redact_observability_payload,
+    start_agent_span,
+    workflow_span,
+)
+
+
+class FakeLangfuseObservation:
+    def __init__(self, name: str, as_type: str, metadata: dict[str, object] | None) -> None:
+        self.name = name
+        self.as_type = as_type
+        self.metadata = metadata or {}
+        self.metadata_updates: list[dict[str, object]] = []
+        self.events: list[dict[str, object]] = []
+        self.ended = False
+
+    def update(self, **kwargs: object) -> "FakeLangfuseObservation":
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            self.metadata_updates.append(metadata)
+        return self
+
+    def end(self) -> "FakeLangfuseObservation":
+        self.ended = True
+        return self
+
+    def create_event(self, name: str, metadata: dict[str, object] | None = None) -> None:
+        self.events.append({"name": name, "metadata": metadata or {}})
+
+
+class FakeLangfuseContext:
+    def __init__(self, observation: FakeLangfuseObservation) -> None:
+        self.observation = observation
+        self.exited = False
+
+    def __enter__(self) -> FakeLangfuseObservation:
+        return self.observation
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.exited = True
+
+
+class FakeLangfuseClient:
+    def __init__(self) -> None:
+        self.observations: list[FakeLangfuseObservation] = []
+        self.current_span_updates: list[dict[str, object]] = []
+        self.scores: list[dict[str, object]] = []
+
+    def start_as_current_observation(self, **kwargs: object) -> FakeLangfuseContext:
+        observation = FakeLangfuseObservation(
+            name=str(kwargs["name"]),
+            as_type=str(kwargs.get("as_type") or "span"),
+            metadata=kwargs.get("metadata") if isinstance(kwargs.get("metadata"), dict) else None,
+        )
+        self.observations.append(observation)
+        return FakeLangfuseContext(observation)
+
+    def update_current_span(self, **kwargs: object) -> None:
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            self.current_span_updates.append(metadata)
+
+    def score_current_trace(self, **kwargs: object) -> None:
+        self.scores.append(dict(kwargs))
 
 
 class ObservabilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        observability._INITIALIZED_SERVICES.clear()
+        observability._INSTRUMENTED_FASTAPI_APP_IDS.clear()
+        observability._OTEL_CONFIGURED = False
+        observability._INSTRUMENTED_GLOBALS = False
+        observability._LANGFUSE_CLIENT = None
+
     def test_workflow_span_is_noop_when_disabled(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with workflow_span("analytics", job_id="job-1", backend="local") as span:
@@ -30,6 +104,97 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(redacted["nested"]["authorization"], "[REDACTED_SECRET]")
         self.assertIn("[REDACTED_EMAIL]", redacted["nested"]["message"])
         self.assertIn("[REDACTED_PHONE]", redacted["nested"]["message"])
+
+    @patch("utils.observability._instrument_fastapi")
+    @patch("utils.observability._init_langfuse")
+    @patch("utils.observability._init_openinference")
+    @patch("utils.observability._init_otel")
+    def test_otel_disabled_skips_otel_instrumentation_but_initializes_langfuse(
+        self,
+        init_otel,
+        init_openinference,
+        init_langfuse,
+        instrument_fastapi,
+    ) -> None:
+        observability.init_observability(
+            "cross-border-fastapi",
+            app=object(),
+            config_context={"observability_enabled": True, "otel_enabled": False},
+        )
+
+        init_otel.assert_not_called()
+        init_openinference.assert_not_called()
+        instrument_fastapi.assert_not_called()
+        init_langfuse.assert_called_once()
+
+    def test_langfuse_enabled_does_not_require_otel_enabled(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LANGFUSE_PUBLIC_KEY": "public",
+                "LANGFUSE_SECRET_KEY": "secret",
+            },
+            clear=True,
+        ):
+            self.assertTrue(
+                observability._langfuse_enabled(
+                    {"observability_enabled": True, "otel_enabled": False}
+                )
+            )
+
+    @patch("utils.observability._get_tracer")
+    def test_start_agent_span_creates_langfuse_agent_when_otel_disabled(self, get_tracer) -> None:
+        client = FakeLangfuseClient()
+        with patch.dict(
+            os.environ,
+            {"LANGFUSE_PUBLIC_KEY": "public", "LANGFUSE_SECRET_KEY": "secret"},
+            clear=True,
+        ), patch("utils.observability._langfuse_client", return_value=client):
+            span = start_agent_span(
+                job_id="job-1",
+                workflow_type="support",
+                task_name="pre_sales_consultation",
+                agent_role="E-commerce Pre-Sales Product Consultant",
+                backend="celery",
+                config_context={"observability_enabled": True, "otel_enabled": False},
+            )
+            span.set_attribute("duration_ms", 123)
+            end_span(span)
+
+        get_tracer.assert_not_called()
+        self.assertEqual(client.observations[0].name, "agent.pre_sales_consultation")
+        self.assertEqual(client.observations[0].as_type, "agent")
+        self.assertEqual(client.observations[0].metadata["task_name"], "pre_sales_consultation")
+        self.assertEqual(
+            client.observations[0].metadata["agent_role"],
+            "E-commerce Pre-Sales Product Consultant",
+        )
+        self.assertTrue(client.observations[0].ended)
+
+    def test_record_workflow_result_observability_updates_langfuse_scores(self) -> None:
+        client = FakeLangfuseClient()
+        with patch.dict(
+            os.environ,
+            {"LANGFUSE_PUBLIC_KEY": "public", "LANGFUSE_SECRET_KEY": "secret"},
+            clear=True,
+        ), patch("utils.observability._langfuse_client", return_value=client):
+            record_workflow_result_observability(
+                {
+                    "detected_intent": "pre_sales",
+                    "routing_confidence": 0.95,
+                    "qa_status": "APPROVED",
+                    "escalation_needed": False,
+                    "data_sources": ["local_pdf_catalog"],
+                },
+                {"observability_enabled": True, "otel_enabled": False, "workflow_type": "support"},
+            )
+
+        self.assertEqual(client.current_span_updates[0]["detected_intent"], "pre_sales")
+        self.assertEqual(client.current_span_updates[0]["qa_status"], "APPROVED")
+        score_names = {score["name"] for score in client.scores}
+        self.assertIn("routing_confidence", score_names)
+        self.assertIn("qa_status", score_names)
+        self.assertIn("escalation_needed", score_names)
 
 
 if __name__ == "__main__":

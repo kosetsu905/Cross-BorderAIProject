@@ -42,6 +42,7 @@ from utils.llm_config import (
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.shared_context import build_conversation_history_context
+from utils.support_drafts import customer_facing_draft_text, parse_json_like_object
 from utils.tool_cache import cached_tool_call
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
@@ -1432,7 +1433,7 @@ def _attach_customer_service_context(
     normalized = _expand_raw_json_result(dict(result))
     usage_metrics = normalized.pop(INTERNAL_USAGE_KEY, None)
     intent = router_result["detected_intent"]
-    final_response = (
+    final_response_candidate = (
         normalized.get("final_response")
         or normalized.get("drafted_response")
         or normalized.get("response")
@@ -1440,6 +1441,7 @@ def _attach_customer_service_context(
         or normalized.get("raw")
         or "Thank you for reaching out. We are reviewing your request and will follow up shortly."
     )
+    final_response = customer_facing_draft_text(final_response_candidate) or str(final_response_candidate)
     normalized["session_id"] = str(normalized.get("session_id") or inputs.get("session_id") or "unknown")
     normalized["customer_context"] = normalized.get("customer_context") or _customer_context(inputs)
     normalized["detected_language"] = str(normalized.get("detected_language") or inputs.get("detected_language") or "en")
@@ -1613,11 +1615,8 @@ def _expand_raw_json_result(result: dict[str, Any]) -> dict[str, Any]:
     raw = result.get("raw")
     if not isinstance(raw, str):
         return result
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return result
-    if not isinstance(parsed, dict):
+    parsed = parse_json_like_object(raw)
+    if parsed is None:
         return result
     return {**parsed, **{key: value for key, value in result.items() if key != "raw"}}
 

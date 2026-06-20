@@ -1988,6 +1988,33 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
         self.assertFalse(conversation.requires_approval)
         self.assertFalse(conversation.escalation_flag)
 
+    def test_attach_customer_service_context_extracts_fenced_raw_json_final_response(self) -> None:
+        result = _attach_customer_service_context(
+            result={
+                "raw": """```json
+{
+  "response_type": "pre_sales",
+  "final_response": "Hi Tonny, the headset catalog price is $6.50.",
+  "qa_status": "APPROVED",
+  "escalation_needed": false
+}
+```"""
+            },
+            inputs=_normalize_inputs(
+                {
+                    "customer": "Tonny",
+                    "inquiry": "How much is this Bluetooth headset?",
+                    "channel": "gmail",
+                }
+            ),
+            automation_context={"escalation_flag": False, "compliance_tags": []},
+            router_result={"detected_intent": "pre_sales", "confidence_score": 0.95},
+            pre_sales_context={"data_source": "mock_fallback", "product_found": True},
+            order_context={"data_source": "mock_order_db", "order_found": False},
+        )
+
+        self.assertEqual(result["final_response"], "Hi Tonny, the headset catalog price is $6.50.")
+
     def test_sync_job_result_does_not_downgrade_sent_conversation_to_draft_ready(self) -> None:
         conversation = SimpleNamespace(
             conversation_id="conv-1",

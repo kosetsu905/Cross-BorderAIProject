@@ -40,6 +40,7 @@ from tools.custom.whatsapp_tools import (
     verify_ycloud_signature,
     verify_whatsapp_signature,
 )
+from utils.support_drafts import customer_facing_draft_text
 
 AuthDependency = Annotated[None, Depends(verify_bearer_token)]
 DbDependency = Annotated[Session, Depends(get_db_session)]
@@ -483,7 +484,7 @@ def create_router(orchestrator: object) -> APIRouter:
             raise HTTPException(status_code=404, detail="Conversation not found")
         if conversation.escalation_flag:
             raise HTTPException(status_code=409, detail="Conversation requires human handoff and cannot be sent from approval API")
-        draft_text = payload.get("message") or conversation.draft_response
+        draft_text = customer_facing_draft_text(payload.get("message") or conversation.draft_response)
         if not draft_text:
             raise HTTPException(status_code=409, detail="No draft response is available for this conversation")
         if conversation.channel not in {"whatsapp", "gmail"}:

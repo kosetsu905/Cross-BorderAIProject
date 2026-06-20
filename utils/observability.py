@@ -51,6 +51,82 @@ class NoOpSpan:
         return None
 
 
+class ManagedObservationSpan:
+    """Span-like wrapper that updates both OpenTelemetry and Langfuse observations."""
+
+    def __init__(
+        self,
+        *,
+        otel_span: Any | None = None,
+        langfuse_context: Any | None = None,
+        langfuse_observation: Any | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
+        self._otel_span = otel_span
+        self._langfuse_context = langfuse_context
+        self._langfuse_observation = langfuse_observation
+        self._attributes = dict(attributes or {})
+        self._ended = False
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        if value is None:
+            return
+        self._attributes[str(key)] = value
+        if self._otel_span is not None:
+            self._otel_span.set_attribute(key, value)
+        self._update_langfuse_metadata()
+
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
+        if self._otel_span is not None:
+            self._otel_span.add_event(name, attributes=_safe_span_attributes(attributes or {}))
+        observation = self._langfuse_observation
+        if observation is not None and hasattr(observation, "create_event"):
+            try:
+                observation.create_event(
+                    name=name,
+                    metadata=_json_safe(redact_observability_payload(attributes or {}, capture_raw=False)),
+                )
+            except Exception:
+                logger.debug("Failed to create Langfuse observation event %s", name, exc_info=True)
+
+    def record_exception(self, exception: BaseException) -> None:
+        if self._otel_span is not None:
+            self._otel_span.record_exception(exception)
+        observation = self._langfuse_observation
+        if observation is not None and hasattr(observation, "update"):
+            try:
+                observation.update(level="ERROR", status_message=str(exception))
+            except Exception:
+                logger.debug("Failed to record Langfuse observation exception", exc_info=True)
+
+    def end(self) -> None:
+        if self._ended:
+            return
+        self._ended = True
+        self._update_langfuse_metadata()
+        if self._otel_span is not None:
+            self._otel_span.end()
+        if self._langfuse_observation is not None and hasattr(self._langfuse_observation, "end"):
+            try:
+                self._langfuse_observation.end()
+            except Exception:
+                logger.debug("Failed to end Langfuse observation", exc_info=True)
+        if self._langfuse_context is not None and hasattr(self._langfuse_context, "__exit__"):
+            try:
+                self._langfuse_context.__exit__(None, None, None)
+            except Exception:
+                logger.debug("Failed to exit Langfuse observation context", exc_info=True)
+
+    def _update_langfuse_metadata(self) -> None:
+        observation = self._langfuse_observation
+        if observation is None or not hasattr(observation, "update"):
+            return
+        try:
+            observation.update(metadata=_json_safe(redact_observability_payload(self._attributes, capture_raw=False)))
+        except Exception:
+            logger.debug("Failed to update Langfuse observation metadata", exc_info=True)
+
+
 def init_observability(
     service_name: str,
     app: FastAPI | None = None,
@@ -60,15 +136,17 @@ def init_observability(
     if not _observability_enabled(config_context):
         return
     _apply_observability_environment(config_context)
+    otel_enabled = _otel_enabled(config_context)
 
     with _INIT_LOCK:
         if service_name not in _INITIALIZED_SERVICES:
-            _init_otel(service_name, config_context)
-            _init_openinference()
+            if otel_enabled:
+                _init_otel(service_name, config_context)
+                _init_openinference()
             _init_langfuse(config_context)
             _INITIALIZED_SERVICES.add(service_name)
 
-        if app is not None and id(app) not in _INSTRUMENTED_FASTAPI_APP_IDS:
+        if otel_enabled and app is not None and id(app) not in _INSTRUMENTED_FASTAPI_APP_IDS:
             _instrument_fastapi(app)
             _INSTRUMENTED_FASTAPI_APP_IDS.add(id(app))
 
@@ -99,7 +177,12 @@ def workflow_span(
         "backend": backend,
         **(attributes or {}),
     }
-    with _observation_span(span_name, config_context=config_context, attributes=span_attributes) as span:
+    with _observation_span(
+        span_name,
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="chain",
+    ) as span:
         yield span
 
 
@@ -117,7 +200,12 @@ def group_span(
         "backend": backend,
         **(attributes or {}),
     }
-    with _observation_span("workflow_group", config_context=config_context, attributes=span_attributes) as span:
+    with _observation_span(
+        "workflow_group",
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="chain",
+    ) as span:
         yield span
 
 
@@ -135,7 +223,12 @@ def route_span(
         "backend": backend,
         **(attributes or {}),
     }
-    with _observation_span("workflow_route", config_context=config_context, attributes=span_attributes) as span:
+    with _observation_span(
+        "workflow_route",
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="chain",
+    ) as span:
         yield span
 
 
@@ -156,7 +249,12 @@ def agent_span(
         "agent_role": agent_role,
         "backend": backend,
     }
-    with _observation_span(f"agent.{task_name}", config_context=config_context, attributes=span_attributes) as span:
+    with _observation_span(
+        f"agent.{task_name}",
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="agent",
+    ) as span:
         yield span
 
 
@@ -168,7 +266,12 @@ def tool_span(
     attributes: dict[str, Any] | None = None,
 ) -> Iterator[Any]:
     span_attributes = {"tool_name": tool_name, **(attributes or {})}
-    with _observation_span(f"tool.{tool_name}", config_context=config_context, attributes=span_attributes) as span:
+    with _observation_span(
+        f"tool.{tool_name}",
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="tool",
+    ) as span:
         yield span
 
 
@@ -187,7 +290,12 @@ def evaluation_span(
         "evaluation_name": eval_name,
         **(attributes or {}),
     }
-    with _observation_span(f"eval.{eval_name}", config_context=config_context, attributes=span_attributes) as span:
+    with _observation_span(
+        f"eval.{eval_name}",
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="evaluator",
+    ) as span:
         yield span
 
 
@@ -202,20 +310,32 @@ def start_agent_span(
 ) -> Any:
     if not _observability_enabled(config_context):
         return NoOpSpan()
-    tracer = _get_tracer()
-    if tracer is None:
+    span_name = f"agent.{task_name}"
+    span_attributes = {
+        "job_id": job_id,
+        "workflow_type": workflow_type,
+        "task_name": task_name,
+        "agent_role": agent_role,
+        "backend": backend,
+    }
+    otel_span = None
+    if _otel_enabled(config_context):
+        tracer = _get_tracer()
+        if tracer is not None:
+            otel_span = tracer.start_span(span_name, attributes=_safe_span_attributes(span_attributes))
+    langfuse_context, langfuse_observation = _start_langfuse_observation(
+        span_name,
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="agent",
+    )
+    if otel_span is None and langfuse_observation is None:
         return NoOpSpan()
-    return tracer.start_span(
-        f"agent.{task_name}",
-        attributes=_safe_span_attributes(
-            {
-                "job_id": job_id,
-                "workflow_type": workflow_type,
-                "task_name": task_name,
-                "agent_role": agent_role,
-                "backend": backend,
-            }
-        ),
+    return ManagedObservationSpan(
+        otel_span=otel_span,
+        langfuse_context=langfuse_context,
+        langfuse_observation=langfuse_observation,
+        attributes=span_attributes,
     )
 
 
@@ -263,6 +383,7 @@ def set_span_attributes(
 ) -> None:
     if not _observability_enabled(config_context):
         return
+    _update_current_langfuse_span(attributes, config_context)
     span = _current_span()
     if span is None:
         return
@@ -293,6 +414,19 @@ def record_usage_metrics(
     set_span_attributes(attributes, config_context=config_context)
 
 
+def record_workflow_result_observability(
+    result: dict[str, Any],
+    config_context: dict[str, Any] | None = None,
+) -> None:
+    """Attach high-signal workflow result metadata and Langfuse scores."""
+    if not _observability_enabled(config_context) or not isinstance(result, dict):
+        return
+    summary = _workflow_result_summary(result)
+    if summary:
+        set_span_attributes(summary, config_context=config_context)
+    _record_langfuse_scores(_workflow_result_scores(result), config_context)
+
+
 def redact_observability_payload(value: Any, *, capture_raw: bool | None = None) -> Any:
     """Return a JSON-safe payload with secrets and PII-like values redacted."""
     if isinstance(value, dict):
@@ -319,18 +453,137 @@ def redact_observability_payload(value: Any, *, capture_raw: bool | None = None)
     return str(value)
 
 
+def _workflow_result_summary(result: dict[str, Any]) -> dict[str, Any]:
+    summary_fields = {
+        "detected_intent": result.get("detected_intent"),
+        "routing_confidence": result.get("routing_confidence"),
+        "qa_status": result.get("qa_status"),
+        "escalation_needed": result.get("escalation_needed"),
+        "requires_approval": result.get("requires_approval"),
+        "channel_recommended_action": result.get("channel_recommended_action"),
+        "data_sources": result.get("data_sources"),
+        "compliance_flags": result.get("compliance_flags"),
+    }
+    customer_context = result.get("customer_context")
+    if isinstance(customer_context, dict):
+        summary_fields["customer_tier"] = customer_context.get("tier")
+        summary_fields["customer_language"] = customer_context.get("language")
+        summary_fields["customer_channel"] = customer_context.get("channel")
+    return {key: value for key, value in summary_fields.items() if value not in (None, "", [])}
+
+
+def _workflow_result_scores(result: dict[str, Any]) -> list[dict[str, Any]]:
+    scores: list[dict[str, Any]] = []
+    routing_confidence = _optional_float(result.get("routing_confidence"))
+    if routing_confidence is not None:
+        scores.append(
+            {
+                "name": "routing_confidence",
+                "value": routing_confidence,
+                "data_type": "NUMERIC",
+                "comment": "Intent router confidence for this workflow result.",
+            }
+        )
+    qa_status = result.get("qa_status")
+    if qa_status:
+        scores.append(
+            {
+                "name": "qa_status",
+                "value": str(qa_status),
+                "data_type": "CATEGORICAL",
+                "comment": "Support QA decision for customer-facing response.",
+            }
+        )
+    if "escalation_needed" in result:
+        scores.append(
+            {
+                "name": "escalation_needed",
+                "value": bool(result.get("escalation_needed")),
+                "data_type": "BOOLEAN",
+                "comment": "Whether the workflow result requires human handoff.",
+            }
+        )
+    pre_sales = result.get("pre_sales_response")
+    if isinstance(pre_sales, dict):
+        confidence_level = _optional_float(pre_sales.get("confidence_level"))
+        if confidence_level is not None:
+            scores.append(
+                {
+                    "name": "pre_sales_confidence_level",
+                    "value": confidence_level,
+                    "data_type": "NUMERIC",
+                    "comment": "Pre-sales specialist confidence level from structured output.",
+                }
+            )
+    return scores
+
+
+def _record_langfuse_scores(scores: list[dict[str, Any]], config_context: dict[str, Any] | None) -> None:
+    if not scores or not _langfuse_enabled(config_context):
+        return
+    client = _langfuse_client()
+    if client is None or not hasattr(client, "score_current_trace"):
+        return
+    for score in scores:
+        try:
+            client.score_current_trace(
+                name=str(score["name"]),
+                value=score["value"],
+                data_type=score.get("data_type"),
+                comment=score.get("comment"),
+                metadata=_json_safe(
+                    redact_observability_payload(
+                        {
+                            "source": "cross_border_ai.workflow_result",
+                            "workflow_type": (config_context or {}).get("workflow_type"),
+                        },
+                        capture_raw=False,
+                    )
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to record Langfuse score %s", score.get("name"), exc_info=True)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _update_current_langfuse_span(
+    attributes: dict[str, Any],
+    config_context: dict[str, Any] | None,
+) -> None:
+    if not attributes or not _langfuse_enabled(config_context):
+        return
+    client = _langfuse_client()
+    if client is None or not hasattr(client, "update_current_span"):
+        return
+    try:
+        client.update_current_span(
+            metadata=_json_safe(redact_observability_payload(attributes, capture_raw=False))
+        )
+    except Exception:
+        logger.debug("Failed to update current Langfuse span", exc_info=True)
+
+
 @contextmanager
 def _observation_span(
     name: str,
     *,
     config_context: dict[str, Any] | None,
     attributes: dict[str, Any] | None = None,
+    observation_type: str = "span",
 ) -> Iterator[Any]:
     if not _observability_enabled(config_context):
         yield NoOpSpan()
         return
 
-    tracer = _get_tracer()
+    tracer = _get_tracer() if _otel_enabled(config_context) else None
     span_cm = (
         tracer.start_as_current_span(name, attributes=_safe_span_attributes(attributes or {}))
         if tracer is not None
@@ -339,11 +592,12 @@ def _observation_span(
     start_time = time.perf_counter()
     with ExitStack() as stack:
         span = stack.enter_context(span_cm)
-        stack.enter_context(_langfuse_observation(name, config_context, attributes or {}))
+        stack.enter_context(_langfuse_observation(name, config_context, attributes or {}, observation_type))
         try:
             yield span
             duration_ms = round((time.perf_counter() - start_time) * 1000, 3)
             span.set_attribute("duration_ms", duration_ms)
+            set_span_attributes({"duration_ms": duration_ms}, config_context=config_context)
         except Exception as exc:
             if exc.__class__.__name__ != "Retry":
                 try:
@@ -364,6 +618,7 @@ def _langfuse_observation(
     name: str,
     config_context: dict[str, Any] | None,
     attributes: dict[str, Any],
+    observation_type: str = "span",
 ) -> Iterator[None]:
     if not _langfuse_enabled(config_context):
         yield
@@ -375,7 +630,7 @@ def _langfuse_observation(
     try:
         observation = client.start_as_current_observation(
             name=name,
-            as_type="span",
+            as_type=observation_type,
             metadata=_json_safe(redact_observability_payload(attributes, capture_raw=False)),
         )
     except Exception:
@@ -386,10 +641,36 @@ def _langfuse_observation(
         yield
 
 
+def _start_langfuse_observation(
+    name: str,
+    *,
+    config_context: dict[str, Any] | None,
+    attributes: dict[str, Any],
+    observation_type: str = "span",
+) -> tuple[Any | None, Any | None]:
+    if not _langfuse_enabled(config_context):
+        return None, None
+    client = _langfuse_client()
+    if client is None or not hasattr(client, "start_as_current_observation"):
+        return None, None
+    try:
+        context = client.start_as_current_observation(
+            name=name,
+            as_type=observation_type,
+            metadata=_json_safe(redact_observability_payload(attributes, capture_raw=False)),
+            end_on_exit=False,
+        )
+        observation = context.__enter__()
+        return context, observation
+    except Exception:
+        logger.debug("Langfuse observation failed for %s", name, exc_info=True)
+        return None, None
+
+
 def _init_otel(service_name: str, config_context: dict[str, Any] | None) -> None:
     global _INSTRUMENTED_GLOBALS, _OTEL_CONFIGURED
 
-    if not _bool_config(config_context, "otel_enabled", _observability_enabled(config_context)):
+    if not _otel_enabled(config_context):
         return
     if _OTEL_CONFIGURED:
         return
@@ -597,6 +878,10 @@ def _truncate_attribute(value: str | int | float | bool) -> str | int | float | 
 
 def _observability_enabled(config_context: dict[str, Any] | None = None) -> bool:
     return _bool_config(config_context, "observability_enabled", False)
+
+
+def _otel_enabled(config_context: dict[str, Any] | None = None) -> bool:
+    return _bool_config(config_context, "otel_enabled", _observability_enabled(config_context))
 
 
 def _langfuse_enabled(config_context: dict[str, Any] | None = None) -> bool:

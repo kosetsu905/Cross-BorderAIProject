@@ -14,6 +14,7 @@ from services.language_detector import LanguageDetector
 from services.session_manager import SessionManager
 from tools.custom.support_handoff_tools import send_handoff_notification
 from tools.custom.whatsapp_tools import ChannelMessage, WhatsAppStatusUpdate, local_outbound_message_id
+from utils.support_drafts import customer_facing_draft_text
 
 
 def mask_contact(value: str | None) -> str | None:
@@ -158,8 +159,13 @@ def _handoff_inquiry_preview(result: dict[str, Any]) -> str:
 
 
 def _draft_response_from_result(result: dict[str, Any]) -> str | None:
-    value = result.get("final_response") or result.get("drafted_response")
-    return str(value) if value else None
+    value = (
+        result.get("final_response")
+        or result.get("drafted_response")
+        or result.get("response")
+        or result.get("body")
+    )
+    return customer_facing_draft_text(value if value is not None else result)
 
 
 class SupportInboxStore:
