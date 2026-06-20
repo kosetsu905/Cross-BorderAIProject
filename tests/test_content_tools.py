@@ -1,5 +1,7 @@
 import base64
+import contextvars
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -42,7 +44,69 @@ from tools.custom.content_tools import (
     RedditGeoSearchTool,
     VisualAssetScoringTool,
 )
+from utils.observability import workflow_span
 from utils.workflow_progress import PROGRESS_CONTEXT_KEY, WorkflowProgressRecorder
+
+
+class ContentTraceObservation:
+    def __init__(
+        self,
+        name: str,
+        as_type: str,
+        metadata: dict[str, object] | None,
+        parent_name: str | None,
+    ) -> None:
+        self.name = name
+        self.as_type = as_type
+        self.metadata = metadata or {}
+        self.parent_name = parent_name
+        self.ended = False
+
+
+class ContentTraceContext:
+    def __init__(self, client: "ContentTraceLangfuseClient", observation: ContentTraceObservation) -> None:
+        self.client = client
+        self.observation = observation
+        self._token: contextvars.Token[str | None] | None = None
+
+    def __enter__(self) -> ContentTraceObservation:
+        self._token = self.client.current_observation.set(self.observation.name)
+        return self.observation
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.observation.ended = True
+        if self._token is not None:
+            self.client.current_observation.reset(self._token)
+
+
+class ContentTraceLangfuseClient:
+    def __init__(self) -> None:
+        self.current_observation: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+            "content_trace_current_observation",
+            default=None,
+        )
+        self.observations: list[ContentTraceObservation] = []
+        self.current_span_updates: list[dict[str, object]] = []
+
+    def start_as_current_observation(self, **kwargs: object) -> ContentTraceContext:
+        observation = ContentTraceObservation(
+            name=str(kwargs["name"]),
+            as_type=str(kwargs.get("as_type") or "span"),
+            metadata=kwargs.get("metadata") if isinstance(kwargs.get("metadata"), dict) else None,
+            parent_name=self.current_observation.get(),
+        )
+        self.observations.append(observation)
+        return ContentTraceContext(self, observation)
+
+    def update_current_span(self, **kwargs: object) -> None:
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            self.current_span_updates.append(
+                {
+                    "name": self.current_observation.get(),
+                    "metadata": metadata,
+                }
+            )
 
 
 class ContentToolTests(unittest.TestCase):
@@ -1238,6 +1302,149 @@ class ContentToolTests(unittest.TestCase):
         search.assert_not_called()
         self.assertEqual(result["reddit_geo_posts"], [])
         self.assertEqual(result["reddit_geo_sources"], [])
+
+    def test_content_workflow_emits_threaded_language_agent_and_stage_spans(self) -> None:
+        class FakeRouter:
+            def __init__(self, config_context: dict[str, object]) -> None:
+                self.config_context = config_context
+
+            def llm_for_agent(self, agent_config: dict[str, object]) -> object:
+                return object()
+
+        class FakeAgent:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+        class FakeTask:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+        class FakeCrew:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+            def kickoff(self, inputs: dict[str, object]) -> dict[str, object]:
+                language = str(inputs["target_language"])
+                return {
+                    "localized_article": {
+                        "language": language,
+                        "title": f"Localized title {language}",
+                        "article": f"Localized body {language}",
+                    },
+                    "social_media_posts": [],
+                    "seo_keywords": [f"keyword-{language}"],
+                    "compliance_notes": "Reviewed.",
+                }
+
+        inputs = {
+            "subject": "Smart Thermos",
+            "product_category": "Drinkware",
+            "target_markets": "United States, China",
+            "target_languages": ["en", "zh"],
+            "platforms": ["Instagram"],
+            "generate_visual_assets": False,
+            "content_language_concurrency": 2,
+        }
+        store = InMemoryJobStore()
+        store.create_job("job-content-trace", WorkflowType.CONTENT, inputs)
+        config_context: dict[str, object] = {
+            "observability_enabled": True,
+            "otel_enabled": False,
+            "workflow_type": "content",
+        }
+        recorder = WorkflowProgressRecorder(
+            job_id="job-content-trace",
+            workflow_type="content",
+            job_store=store,
+            backend="local",
+            config_context=config_context,
+        )
+        config_context[PROGRESS_CONTEXT_KEY] = recorder
+        client = ContentTraceLangfuseClient()
+
+        with patch.dict(
+            os.environ,
+            {"LANGFUSE_PUBLIC_KEY": "public", "LANGFUSE_SECRET_KEY": "secret"},
+            clear=True,
+        ):
+            with patch("utils.observability._langfuse_client", return_value=client):
+                with patch("crews.content_crew.ModelTierRouter", FakeRouter):
+                    with patch("crews.content_crew.Agent", FakeAgent):
+                        with patch("crews.content_crew.Task", FakeTask):
+                            with patch("crews.content_crew.Crew", FakeCrew):
+                                with patch("crews.content_crew._build_creation_tools", return_value=[]):
+                                    with patch("crews.content_crew._crew_memory", return_value=None):
+                                        with patch(
+                                            "crews.content_crew._run_research_strategy",
+                                            return_value={"strategy": "ok"},
+                                        ):
+                                            with workflow_span(
+                                                "content",
+                                                job_id="job-content-trace",
+                                                backend="local",
+                                                config_context=config_context,
+                                            ):
+                                                result = run_content_crew(inputs, config_context)
+
+        observations_by_name = {observation.name: observation for observation in client.observations}
+        self.assertEqual(len(result["localized_articles"]), 2)
+        self.assertIn("workflow.content", observations_by_name)
+        for language in ("en", "zh"):
+            agent_name = f"agent.content_creation_and_qa:{language}"
+            self.assertIn(agent_name, observations_by_name)
+            self.assertEqual(observations_by_name[agent_name].as_type, "agent")
+            self.assertEqual(observations_by_name[agent_name].parent_name, "workflow.content")
+            self.assertEqual(
+                observations_by_name[agent_name].metadata["agent_role"],
+                "Multilingual Content Creator & Quality Editor",
+            )
+            for stage in (
+                "content_generation",
+                "visual_localization",
+                "seo_metadata",
+                "cultural_compliance",
+                "image_generation",
+                "visual_scoring",
+            ):
+                stage_name = f"stage.{stage}:{language}"
+                self.assertIn(stage_name, observations_by_name)
+                self.assertEqual(observations_by_name[stage_name].parent_name, agent_name)
+                self.assertEqual(observations_by_name[stage_name].metadata["language"], language)
+                self.assertEqual(observations_by_name[stage_name].metadata["stage"], stage)
+
+        self.assertIn("stage.content_assembly", observations_by_name)
+        self.assertEqual(
+            observations_by_name["stage.content_assembly"].parent_name,
+            "workflow.content",
+        )
+        status_updates = [
+            update
+            for update in client.current_span_updates
+            if isinstance(update.get("metadata"), dict) and update["metadata"].get("status")
+        ]
+        self.assertTrue(
+            any(
+                update["name"] == "stage.image_generation:en"
+                and update["metadata"].get("status") == "skipped"
+                for update in status_updates
+            )
+        )
+        self.assertTrue(
+            any(
+                update["name"] == "stage.visual_scoring:zh"
+                and update["metadata"].get("status") == "skipped"
+                for update in status_updates
+            )
+        )
+        serialized_trace_metadata = json.dumps(
+            [
+                observation.metadata
+                for observation in client.observations
+            ],
+            ensure_ascii=False,
+            default=str,
+        )
+        self.assertNotIn("Localized body", serialized_trace_metadata)
 
     def test_content_workflow_merges_successful_language_when_another_fails(self) -> None:
         inputs = {

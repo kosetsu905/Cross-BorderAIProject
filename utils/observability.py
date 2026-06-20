@@ -276,6 +276,46 @@ def tool_span(
 
 
 @contextmanager
+def stage_span(
+    stage: str,
+    *,
+    job_id: str | None = None,
+    workflow_type: str | None = None,
+    task_name: str | None = None,
+    agent_role: str | None = None,
+    language: str | None = None,
+    target_market: str | None = None,
+    status: str | None = None,
+    backend: str | None = None,
+    config_context: dict[str, Any] | None = None,
+    attributes: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    stage_name = str(stage).strip() or "unknown"
+    observation_name = f"stage.{stage_name}:{language}" if language else f"stage.{stage_name}"
+    span_attributes = _safe_stage_attributes(
+        {
+            "job_id": job_id,
+            "workflow_type": workflow_type,
+            "task_name": task_name,
+            "agent_role": agent_role,
+            "language": language,
+            "target_market": target_market,
+            "stage": stage_name,
+            "status": status,
+            "backend": backend,
+            **(attributes or {}),
+        }
+    )
+    with _observation_span(
+        observation_name,
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="span",
+    ) as span:
+        yield span
+
+
+@contextmanager
 def evaluation_span(
     eval_name: str,
     *,
@@ -868,6 +908,28 @@ def _safe_span_attributes(attributes: dict[str, Any]) -> dict[str, str | int | f
         else:
             flattened[str(key)] = _truncate_attribute(json.dumps(value, sort_keys=True, default=str))
     return flattened
+
+
+def _safe_stage_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "agent_role",
+        "asset_count",
+        "backend",
+        "duration_ms",
+        "job_id",
+        "language",
+        "score_count",
+        "stage",
+        "status",
+        "target_market",
+        "task_name",
+        "workflow_type",
+    }
+    return {
+        key: value
+        for key, value in attributes.items()
+        if key in allowed_keys and value not in (None, "", [])
+    }
 
 
 def _truncate_attribute(value: str | int | float | bool) -> str | int | float | bool:

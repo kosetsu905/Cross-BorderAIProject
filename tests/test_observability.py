@@ -9,6 +9,7 @@ from utils.observability import (
     record_workflow_result_observability,
     redact_observability_payload,
     start_agent_span,
+    stage_span,
     workflow_span,
 )
 
@@ -170,6 +171,50 @@ class ObservabilityTests(unittest.TestCase):
             "E-commerce Pre-Sales Product Consultant",
         )
         self.assertTrue(client.observations[0].ended)
+
+    @patch("utils.observability._get_tracer")
+    def test_stage_span_creates_langfuse_span_with_safe_metadata_when_otel_disabled(
+        self,
+        get_tracer,
+    ) -> None:
+        client = FakeLangfuseClient()
+        with patch.dict(
+            os.environ,
+            {"LANGFUSE_PUBLIC_KEY": "public", "LANGFUSE_SECRET_KEY": "secret"},
+            clear=True,
+        ), patch("utils.observability._langfuse_client", return_value=client):
+            with stage_span(
+                "content_generation",
+                job_id="job-1",
+                workflow_type="content",
+                task_name="content_creation_and_qa:zh",
+                agent_role="Multilingual Content Creator & Quality Editor",
+                language="zh",
+                target_market="China",
+                status="running",
+                backend="celery",
+                config_context={"observability_enabled": True, "otel_enabled": False},
+                attributes={
+                    "asset_count": 2,
+                    "raw_content": "full article body should not be stored",
+                    "prompt": "do not store this prompt",
+                },
+            ):
+                pass
+
+        get_tracer.assert_not_called()
+        self.assertEqual(client.observations[0].name, "stage.content_generation:zh")
+        self.assertEqual(client.observations[0].as_type, "span")
+        self.assertEqual(client.observations[0].metadata["stage"], "content_generation")
+        self.assertEqual(client.observations[0].metadata["language"], "zh")
+        self.assertEqual(client.observations[0].metadata["target_market"], "China")
+        self.assertEqual(client.observations[0].metadata["asset_count"], 2)
+        serialized_metadata = str(client.observations[0].metadata)
+        self.assertNotIn("raw_content", serialized_metadata)
+        self.assertNotIn("full article body", serialized_metadata)
+        self.assertNotIn("prompt", serialized_metadata)
+        self.assertTrue(client.current_span_updates)
+        self.assertIn("duration_ms", client.current_span_updates[-1])
 
     def test_record_workflow_result_observability_updates_langfuse_scores(self) -> None:
         client = FakeLangfuseClient()
