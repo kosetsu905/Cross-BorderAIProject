@@ -1,0 +1,4 @@
+interface:
+  display_name: "Content Generation Live E2E"
+  short_description: "Run live content GEO and image E2E checks."
+  default_prompt: "Use $content-generation-live-e2e to run the live Content Generation frontend E2E regression."

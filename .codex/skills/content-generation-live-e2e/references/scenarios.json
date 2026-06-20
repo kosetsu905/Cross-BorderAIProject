@@ -1,0 +1,70 @@
+{
+  "marker_prefix": "CB-CONTENT-E2E",
+  "default_suite": "multilingual_geo_visual",
+  "suites": {
+    "multilingual_geo_visual": [
+      "cold_mountaineering_geo_visual"
+    ]
+  },
+  "scenarios": {
+    "cold_mountaineering_geo_visual": {
+      "description": "Chinese-source multilingual Content Generation run with Reddit GEO and visual assets enabled.",
+      "inputs": {
+        "subject": "寒带登山套装",
+        "product_category": "登山套装",
+        "product_features": "设计给登山爱好者，适合6000到8000米高海拔地区。",
+        "target_markets": "Germany, Japan, Canada",
+        "target_languages": [
+          "de",
+          "ja",
+          "en"
+        ],
+        "platforms": [
+          "Instagram",
+          "LinkedIn",
+          "X"
+        ],
+        "brand_voice": "寒带地区登山",
+        "brand_name": "登山套装",
+        "product_url": "https://example.com/product",
+        "primary_keywords": [
+          "登山"
+        ],
+        "generate_reddit_geo": true,
+        "generate_visual_assets": true,
+        "image_generation_count": 1,
+        "image_quality": "low",
+        "image_size": "1024x1024"
+      },
+      "expected_languages": [
+        "de",
+        "ja",
+        "en"
+      ],
+      "source_terms": [
+        "寒带登山套装",
+        "登山套装",
+        "寒带地区登山",
+        "登山"
+      ],
+      "ja_allowed_terms": [
+        "登山"
+      ],
+      "required_result_keys": [
+        "localized_articles",
+        "localized_entities",
+        "seo_outputs",
+        "multimodal_outputs",
+        "visual_assets",
+        "reddit_geo_posts",
+        "production_ready_assets"
+      ],
+      "required_production_asset_types": [
+        "localized_article",
+        "seo_metadata",
+        "visual_asset",
+        "reddit_geo_post"
+      ]
+    }
+  }
+}
