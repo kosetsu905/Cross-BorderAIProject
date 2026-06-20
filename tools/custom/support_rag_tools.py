@@ -74,6 +74,18 @@ def _product_tokens(text: str) -> set[str]:
         "specifications",
         "feature",
         "features",
+        "catalog",
+        "stock",
+        "status",
+        "available",
+        "availability",
+        "variant",
+        "variants",
+        "current",
+        "unit",
+        "size",
+        "weight",
+        "site",
         "tell",
         "how",
         "bulk",
@@ -250,6 +262,8 @@ def extract_catalog_product_offer(
             matched = query_tokens.intersection(_product_tokens(window_text))
             if not matched:
                 continue
+            if not _catalog_match_is_specific_enough(query_tokens, matched, window_text):
+                continue
             score = len(matched)
             product_name = _catalog_product_name(query, window, PRICE_RE.search(window_text).group(0))
             product_tokens = _product_tokens(product_name)
@@ -285,6 +299,18 @@ def extract_catalog_product_offer(
         "evidence": evidence_lines,
         "data_source": "local_pdf_catalog",
     }
+
+
+def _catalog_match_is_specific_enough(query_tokens: set[str], matched: set[str], window_text: str) -> bool:
+    if not query_tokens:
+        return False
+    model_tokens = {token for token in query_tokens if any(character.isdigit() for character in token)}
+    window_tokens = _product_tokens(window_text)
+    if model_tokens and not model_tokens.intersection(window_tokens):
+        return False
+    if len(query_tokens) >= 2 and len(matched) < 2:
+        return False
+    return True
 
 
 def _catalog_product_name(query: str, evidence_lines: list[str], price: str | None) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -19,8 +20,14 @@ from services.whatsapp_provider import get_whatsapp_provider
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
 from support_inbox import SupportInboxStore
 from tools.custom.gmail_tools import resolve_gmail_access_token, send_gmail_reply_message
+from utils.support_drafts import customer_facing_draft_text, is_unsafe_customer_draft, parse_json_like_object
 
 logger = logging.getLogger(__name__)
+AUTO_DISPATCH_UNSUPPORTED_RMA_RE = re.compile(
+    r"\b(?:eligible\s+for\s+a\s+return|return\s+approved|pleased\s+to\s+inform\s+you|"
+    r"prepaid\s+return\s+label|labels\.example\.local|tracking\s+number\s+RTN)\b",
+    re.IGNORECASE,
+)
 
 
 async def process_completed_support_job(
@@ -60,9 +67,13 @@ async def process_completed_support_job(
         if _auto_dispatch_already_recorded(db, conversation_id, job_id):
             return {"status": "skipped", "reason": "already_dispatched"}
 
-        draft_text = conversation.draft_response or result.get("drafted_response")
+        draft_text = customer_facing_draft_text(conversation.draft_response or result.get("drafted_response"))
         if not draft_text:
             return {"status": "skipped", "reason": "missing_draft_response"}
+        if is_unsafe_customer_draft(str(draft_text)):
+            return {"status": "skipped", "reason": "unsafe_draft_response"}
+        if _contains_unsafe_rma_auto_dispatch_claim(str(draft_text), conversation.draft_payload):
+            return {"status": "skipped", "reason": "unsafe_rma_claim"}
 
         config = _config_object(config_context)
         if conversation.channel == "gmail":
@@ -131,7 +142,29 @@ def _auto_dispatch_already_recorded(db: Any, conversation_id: str, job_id: str) 
         raw_payload = record.raw_payload if isinstance(record.raw_payload, dict) else {}
         if raw_payload.get("auto_dispatch") and raw_payload.get("source_job_id") == job_id:
             return True
+        delivery = raw_payload.get("delivery") if isinstance(raw_payload.get("delivery"), dict) else {}
+        if raw_payload.get("auto_dispatch") and str(delivery.get("status") or record.status).lower() == "sent":
+            return True
     return False
+
+
+def _contains_unsafe_rma_auto_dispatch_claim(draft_text: str, draft_payload: Any) -> bool:
+    if not AUTO_DISPATCH_UNSUPPORTED_RMA_RE.search(draft_text):
+        return False
+    payload = draft_payload if isinstance(draft_payload, dict) else {}
+    support_response = payload.get("support_response") if isinstance(payload.get("support_response"), dict) else {}
+    rma = payload.get("rma_validation") if isinstance(payload.get("rma_validation"), dict) else None
+    if rma is None and isinstance(support_response, dict):
+        nested = support_response.get("rma_validation")
+        if isinstance(nested, dict):
+            rma = nested
+        elif isinstance(nested, str):
+            parsed = parse_json_like_object(nested)
+            rma = parsed if isinstance(parsed, dict) else None
+    logistics = payload.get("logistics_output") or (support_response.get("logistics_output") if isinstance(support_response, dict) else None)
+    if isinstance(rma, dict) and rma.get("eligible_for_return") is False:
+        return True
+    return logistics in (None, "", "null")
 
 
 def _send_gmail_auto_reply(

@@ -129,6 +129,7 @@ HYGIENE_SENSITIVE_KEYWORDS = (
 )
 PLACEHOLDER_ORDER_IDS = {"", "ORDER-NOT-PROVIDED", "NOT PROVIDED"}
 PLACEHOLDER_ITEM_SKUS = {"", "SKU-NOT-PROVIDED", "NOT PROVIDED"}
+DAYS_AGO_RE = re.compile(r"\b(\d{1,4})\s*(?:days?|d)\s+ago\b", re.IGNORECASE)
 
 
 def detect_language(text: str, fallback: str | None = None) -> str:
@@ -244,7 +245,12 @@ def process_rma_request(
     order_history: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     order_history = order_history or {}
-    delivered_days_ago = int(order_history.get("days_since_delivery") or 10)
+    inferred_days_since_delivery = _days_since_delivery_from_text(return_reason)
+    delivered_days_ago = int(
+        order_history.get("days_since_delivery")
+        if order_history.get("days_since_delivery") is not None
+        else inferred_days_since_delivery if inferred_days_since_delivery is not None else 10
+    )
     item_condition = str(order_history.get("item_condition") or "unopened").lower()
     region = str(order_history.get("region") or _infer_region(order_id, detected_language)).upper()
     return_window = 14 if region in {"EU", "DE", "FR"} else 30
@@ -313,6 +319,16 @@ def process_rma_request(
         return_instructions_localized=_localized_return_instructions(detected_language, refund_days),
     ).model_dump()
     return {"rma_validation": rma, "logistics_output": logistics}
+
+
+def _days_since_delivery_from_text(text: str) -> int | None:
+    match = DAYS_AGO_RE.search(text or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _infer_region(order_id: str, detected_language: str) -> str:

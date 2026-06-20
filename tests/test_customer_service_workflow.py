@@ -25,6 +25,7 @@ from crews.support_crew import (
     _parse_local_tracking_record,
     _rewrite_response_language,
     _should_skip_support_llm_qa,
+    _tracking_identifiers_from_inputs,
     run_support_crew,
 )
 from job_store import InMemoryJobStore
@@ -242,6 +243,136 @@ class CustomerServiceWorkflowTests(unittest.TestCase):
 
         self.assertTrue(result["rma_validation"]["eligible_for_return"])
         self.assertIsNone(result["logistics_output"])
+
+    def test_live_e2e_marker_is_removed_before_tracking_lookup(self) -> None:
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": (
+                    "Hello,\n\n"
+                    "Test marker: CB-SUPPORT-E2E-order_marker_pollution-20260620-062334\n\n"
+                    "The only tracking number I am asking about is C99943021. "
+                    "Please check that number only."
+                ),
+                "channel": "gmail",
+                "session_id": "live-marker-regression",
+            }
+        )
+
+        self.assertNotIn("CB-SUPPORT-E2E", inputs["inquiry_text"])
+        self.assertNotIn("20260620", _tracking_identifiers_from_inputs(inputs))
+        self.assertEqual(_tracking_identifiers_from_inputs(inputs), {"C99943021"})
+
+    def test_unknown_catalog_product_does_not_match_other_catalog_facts(self) -> None:
+        offer = extract_catalog_product_offer(
+            "Can you quote Quantum Solar Drone X9000 price, carton size, stock status, and variants?"
+        )
+
+        self.assertEqual(offer["status"], "not_found")
+
+    def test_pre_sales_python_dict_final_response_is_rewritten_to_customer_text(self) -> None:
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": (
+                    "I am interested in the Wireless Bluetooth headset. "
+                    "Please tell me the catalog price and carton facts."
+                ),
+                "channel": "gmail",
+                "session_id": "live-dict-draft-regression",
+            }
+        )
+        offer = extract_catalog_product_offer(inputs["inquiry_text"])
+        self.assertEqual(offer["status"], "found")
+        result = _attach_customer_service_context(
+            result={
+                "final_response": "{'catalog_product_offer': {'unit_price': '$6.50', 'carton_quantity': '40PCS'}}",
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context=_build_automation_context(inputs),
+            router_result={"detected_intent": "pre_sales", "confidence_score": 0.95},
+            pre_sales_context={
+                "product_found": True,
+                "product_recommendation": "Wireless Bluetooth headset",
+                "catalog_product_offer": offer,
+                "knowledge_data_source": "local_pdf_catalog",
+                "pricing_guardrails": [
+                    "Discount requests require sales approval before quoting any reduced price."
+                ],
+            },
+            order_context={},
+        )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertNotIn("{'catalog_product_offer'", result["final_response"])
+        self.assertNotIn("CB-SUPPORT-E2E", result["final_response"])
+        self.assertIn("$6.50", result["final_response"])
+        self.assertIn("40PCS", result["final_response"])
+
+    def test_rma_return_window_days_are_inferred_from_inquiry_text(self) -> None:
+        result = process_rma_request(
+            order_id="ORDER-NOT-PROVIDED",
+            item_sku="SKU-NOT-PROVIDED",
+            return_reason=(
+                "I received my order 45 days ago. The item is unopened, but I changed my mind "
+                "and want to return it for a refund."
+            ),
+            detected_language="en",
+            order_history={},
+        )
+
+        self.assertFalse(result["rma_validation"]["eligible_for_return"])
+        self.assertEqual(result["rma_validation"]["days_since_delivery"], 45)
+        self.assertIn("Return window expired", result["rma_validation"]["eligibility_reason"])
+        self.assertIsNone(result["logistics_output"])
+
+    def test_post_sales_guard_rewrites_45_day_eligible_claim(self) -> None:
+        inputs = _normalize_inputs(
+            {
+                "customer": "Tonny",
+                "person": "Tonny",
+                "inquiry": (
+                    "I received my order 45 days ago. The item is unopened, but I changed my mind "
+                    "and want to return it for a refund. Can you approve the return?"
+                ),
+                "channel": "gmail",
+                "session_id": "live-return-window-regression",
+            }
+        )
+        result = _attach_customer_service_context(
+            result={
+                "final_response": (
+                    "Pleased to inform you that you are eligible for a return. "
+                    "The return approved status means we can proceed."
+                ),
+                "qa_status": "APPROVED",
+                "escalation_needed": False,
+            },
+            inputs=inputs,
+            automation_context=_build_automation_context(inputs),
+            router_result={"detected_intent": "post_sales_support", "confidence_score": 0.95},
+            pre_sales_context={},
+            order_context={},
+        )
+
+        CustomerServiceOutput.model_validate(result)
+        self.assertNotIn("eligible for a return", result["final_response"].lower())
+        self.assertNotIn("return approved", result["final_response"].lower())
+        self.assertIn("45 days", result["final_response"])
+        self.assertIn("not able to approve", result["final_response"].lower())
+
+    def test_chinese_post_sales_complaint_routes_to_post_sales_support(self) -> None:
+        result = classify_intent(
+            "我收到的商品坏了，完全不能用。我现在很生气，想要退款，也希望主管或经理尽快联系我处理。",
+            language="zh",
+            config_context={"intent_router_llm_fallback_enabled": False},
+        )
+
+        self.assertEqual(result["detected_intent"], "post_sales_support")
 
     def test_post_sales_guard_rewrites_ineligible_rma_fake_label_response(self) -> None:
         inputs = _normalize_inputs(

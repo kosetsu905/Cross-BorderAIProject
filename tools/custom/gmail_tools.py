@@ -4,6 +4,7 @@ import base64
 import html
 import re
 from datetime import UTC, datetime
+from email.header import decode_header
 from email.message import EmailMessage
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
@@ -343,8 +344,23 @@ def parse_gmail_message(message: dict[str, Any], mailbox_email: str | None = Non
             "subject": subject,
             "message_id_header": headers.get("message-id"),
             "references": headers.get("references"),
+            "mailbox_email": mailbox_email,
+            "is_self_sent": is_mailbox_self_sent_message(message, mailbox_email),
         },
     )
+
+
+def is_mailbox_self_sent_message(message: dict[str, Any], mailbox_email: str | None) -> bool:
+    if not mailbox_email:
+        return False
+    payload = message.get("payload") or {}
+    headers = _headers_by_name(payload)
+    sender = _first_address(headers.get("from"))
+    mailbox = _normalize_email(mailbox_email)
+    if sender and _normalize_email(sender) == mailbox:
+        return True
+    label_ids = {str(label).upper() for label in message.get("labelIds") or []}
+    return "SENT" in label_ids and "INBOX" not in label_ids
 
 
 def gmail_label_ids(raw_label_ids: str | None) -> list[str]:
@@ -364,8 +380,21 @@ def _headers_by_name(payload: dict[str, Any]) -> dict[str, str]:
         name = str(header.get("name") or "").lower()
         value = header.get("value")
         if name and value is not None:
-            headers[name] = str(value)
+            headers[name] = _decode_mime_header(str(value))
     return headers
+
+
+def _decode_mime_header(value: str) -> str:
+    try:
+        decoded_parts = []
+        for content, charset in decode_header(value):
+            if isinstance(content, bytes):
+                decoded_parts.append(content.decode(charset or "utf-8", errors="replace"))
+            else:
+                decoded_parts.append(content)
+        return "".join(decoded_parts)
+    except Exception:
+        return value
 
 
 def _first_address(value: str | None) -> str | None:
@@ -382,6 +411,10 @@ def _first_display_name(value: str | None) -> str | None:
     return addresses[0][0] if addresses and addresses[0][0] else None
 
 
+def _normalize_email(value: str) -> str:
+    return _first_address(value).lower().strip() if _first_address(value) else value.lower().strip()
+
+
 def _header_datetime(value: str | None) -> datetime:
     if not value:
         return datetime.now(UTC)
@@ -394,14 +427,30 @@ def _header_datetime(value: str | None) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _decode_body_data(data: str | None) -> str:
+def _decode_body_data(data: str | None, charset: str | None = None) -> str:
     if not data:
         return ""
     padded = data + "=" * (-len(data) % 4)
     try:
-        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="replace")
-    except (ValueError, UnicodeDecodeError):
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except ValueError:
         return ""
+    encodings = [charset, "utf-8", "gb18030", "gbk", "big5", "latin-1"]
+    for encoding in encodings:
+        if not encoding:
+            continue
+        try:
+            return raw.decode(str(encoding), errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _charset_from_part(part: dict[str, Any]) -> str | None:
+    headers = _headers_by_name(part)
+    content_type = headers.get("content-type") or str(part.get("mimeType") or "")
+    match = re.search(r"charset=[\"']?([^\"';\s]+)", content_type, flags=re.IGNORECASE)
+    return match.group(1) if match else None
 
 
 def _html_to_text(value: str) -> str:
@@ -419,10 +468,11 @@ def _extract_text(payload: dict[str, Any]) -> str:
     def visit(part: dict[str, Any]) -> None:
         mime_type = str(part.get("mimeType") or "")
         body_data = (part.get("body") or {}).get("data")
+        charset = _charset_from_part(part)
         if mime_type == "text/plain":
-            plain_parts.append(_decode_body_data(body_data))
+            plain_parts.append(_decode_body_data(body_data, charset))
         elif mime_type == "text/html":
-            html_parts.append(_html_to_text(_decode_body_data(body_data)))
+            html_parts.append(_html_to_text(_decode_body_data(body_data, charset)))
         for child in part.get("parts") or []:
             visit(child)
 

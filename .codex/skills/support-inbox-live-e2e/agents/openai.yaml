@@ -1,0 +1,4 @@
+interface:
+  display_name: "Support Inbox Live E2E"
+  short_description: "Run QQ-to-Gmail support inbox live regression scenarios."
+  default_prompt: "Use $support-inbox-live-e2e to run the QQ-to-Gmail support inbox live E2E regression."

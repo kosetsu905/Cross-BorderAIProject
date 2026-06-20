@@ -106,10 +106,12 @@ class HybridIntentRouter:
         order_phrases = [
             "where is my order", "order status", "tracking", "shipping date", "delivery time",
             "change address", "modify order", "when will my package", "delivery eta",
+            "物流", "快递", "订单状态", "追踪", "包裹在哪",
         ]
         post_sales_phrases = [
             "return", "refund", "defective", "not working", "damaged", "wrong item", "setup help",
             "cracked", "replacement", "warranty", "arrived broken", "broken",
+            "坏了", "不能用", "退款", "退货", "售后", "投诉", "主管", "经理", "换货",
         ]
 
         if any(phrase in text for phrase in post_sales_phrases):

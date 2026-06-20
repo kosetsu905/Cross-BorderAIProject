@@ -176,6 +176,11 @@ class SupportDraftTests(unittest.TestCase):
             "A specialist can help confirm bulk pricing.",
         )
 
+    def test_structured_dict_without_customer_body_is_not_returned_as_email_text(self) -> None:
+        raw_catalog_only = "{'catalog_product_offer': {'unit_price': '$6.50', 'carton_quantity': '40PCS'}}"
+
+        self.assertIsNone(customer_facing_draft_text(raw_catalog_only))
+
     def test_sync_job_result_stores_plain_draft_and_keeps_payload(self) -> None:
         conversation = SimpleNamespace(
             conversation_id="conv-1",
@@ -209,6 +214,44 @@ class SupportDraftTests(unittest.TestCase):
             "Hi Tonny, the Wireless Bluetooth headset is priced at $6.50 each.",
         )
         self.assertEqual(conversation.draft_payload["final_response"], FENCED_SUPPORT_JSON)
+
+    def test_sync_job_result_requires_approval_for_nested_ineligible_rma(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-rma-nested",
+            channel="gmail",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeDbSession(conversation))  # type: ignore[arg-type]
+
+        store.sync_job_result(
+            "conv-rma-nested",
+            {
+                "job_id": "job-rma",
+                "workflow_type": "support",
+                "result": {
+                    "session_id": "conv-rma-nested",
+                    "detected_intent": "post_sales_support",
+                    "routing_confidence": 0.95,
+                    "final_response": "We are reviewing this return request.",
+                    "qa_status": "APPROVED",
+                    "escalation_needed": False,
+                    "support_response": {
+                        "rma_validation": json.dumps(
+                            {
+                                "eligible_for_return": False,
+                                "eligibility_reason": "Return window expired.",
+                            }
+                        )
+                    },
+                },
+            },
+        )
+
+        self.assertTrue(conversation.requires_approval)
 
     def test_get_conversation_syncs_structured_product_recommendation_with_real_store(self) -> None:
         conversation = _gmail_conversation(latest_job_id="job-1")
@@ -460,6 +503,46 @@ class SupportDraftTests(unittest.TestCase):
             conversation.draft_payload["pre_sales_response"]["product_recommendation"]["product_name"],
             "Wireless Bluetooth headset",
         )
+
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_skips_when_successful_outbound_already_exists(
+        self,
+        session_local: Mock,
+        send_gmail: Mock,
+    ) -> None:
+        conversation = _gmail_conversation()
+        fake_db = FakeDbSession(
+            conversation,
+            records=[
+                SimpleNamespace(
+                    status="sent",
+                    raw_payload={
+                        "auto_dispatch": True,
+                        "source_job_id": "job-earlier",
+                        "delivery": {"status": "sent"},
+                    },
+                )
+            ],
+        )
+        session_local.return_value = FakeSessionContext(fake_db)
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-2",
+                inputs={"session_id": "conv-1"},
+                result=_structured_pre_sales_job_result("conv-1"),
+                config_context={
+                    "gmail_send_enabled": True,
+                    "gmail_access_token": "token",
+                    "gmail_sender_email": "support@example.com",
+                },
+            )
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "already_dispatched")
+        send_gmail.assert_not_called()
 
 
 if __name__ == "__main__":

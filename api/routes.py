@@ -27,6 +27,7 @@ from support_inbox import SupportInboxStore
 from tools.custom.gmail_tools import (
     get_gmail_message,
     gmail_label_ids,
+    is_mailbox_self_sent_message,
     list_gmail_messages,
     parse_gmail_message,
     parse_gmail_pubsub_payload,
@@ -119,6 +120,15 @@ def create_router(orchestrator: object) -> APIRouter:
             message_id=message_id,
             message_format="full",
         )
+        if is_mailbox_self_sent_message(gmail_message, config.gmail_sender_email):
+            return {
+                "conversation_id": "",
+                "message_id": message_id,
+                "job_id": "",
+                "created": False,
+                "skipped": True,
+                "reason": "mailbox_self_sent",
+            }
         channel_message = parse_gmail_message(gmail_message, mailbox_email=config.gmail_sender_email)
         return await submit_channel_message(db, channel_message, source)
 
@@ -288,17 +298,20 @@ def create_router(orchestrator: object) -> APIRouter:
                 message_id=str(message_id),
                 source="gmail_sync_latest",
             )
+            results.append(synced)
             if synced.get("created"):
                 created_count += 1
+            elif synced.get("skipped"):
+                pass
             else:
                 duplicate_count += 1
-            results.append(synced)
         return {
             "status": "completed",
             "requested": max_results,
             "fetched": len(summaries),
             "created": created_count,
             "duplicates": duplicate_count,
+            "skipped": sum(1 for result in results if result.get("skipped")),
             "results": results,
         }
 
@@ -608,6 +621,8 @@ def _sync_gmail_message_background(message_id: str, source: str, orchestrator: o
             message_id=message_id,
             message_format="full",
         )
+        if is_mailbox_self_sent_message(gmail_message, config.gmail_sender_email):
+            return
         channel_message = parse_gmail_message(gmail_message, mailbox_email=config.gmail_sender_email)
         store = SupportInboxStore(db)
         conversation, message, created = store.upsert_inbound_message(channel_message)

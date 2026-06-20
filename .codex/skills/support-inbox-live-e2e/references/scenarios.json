@@ -1,0 +1,286 @@
+{
+  "recipient": "",
+  "marker_prefix": "CB-SUPPORT-E2E",
+  "max_outbound_message_count": 1,
+  "suites": {
+    "smoke": [
+      "pre_sales_catalog_headset",
+      "order_tracking_found",
+      "order_tracking_not_found",
+      "post_sales_worn_bra"
+    ],
+    "balanced": [
+      "pre_sales_catalog_headset",
+      "pre_sales_catalog_m90",
+      "pre_sales_feature_unknown",
+      "pre_sales_unknown_product",
+      "order_tracking_found",
+      "order_tracking_not_found",
+      "order_no_identifier",
+      "order_marker_pollution",
+      "post_sales_worn_bra",
+      "post_sales_defective_item",
+      "post_sales_return_window_expired",
+      "post_sales_zh_escalation"
+    ]
+  },
+  "scenarios": {
+    "pre_sales_catalog_headset": {
+      "expected_intent": "pre_sales",
+      "subject": "{marker} Wireless Bluetooth headset catalog question",
+      "body": "Hello,\n\nTest marker: {marker}\n\nI am interested in the Wireless Bluetooth headset. Could you tell me the current catalog unit price, how many pieces are in one carton, and the carton size and weight?\n\nI also want to know whether the catalog lists battery life, Bluetooth version, sound quality, or available variants. If I order multiple cartons, can you quote a discount, or does sales need to approve it first?\n\nBest,\nTonny",
+      "checks": {
+        "required_draft_terms": [
+          "$6.50",
+          "40PCS",
+          "52x38x51cm",
+          "9 kg"
+        ],
+        "required_any_draft_terms": [
+          "sales approval",
+          "sales team",
+          "requires approval",
+          "review"
+        ],
+        "payload_equals": [
+          {
+            "path": "pre_sales_response.product_recommendation",
+            "value": "Wireless Bluetooth headset",
+            "severity": "warning"
+          }
+        ]
+      }
+    },
+    "pre_sales_catalog_m90": {
+      "expected_intent": "pre_sales",
+      "subject": "{marker} M90 PRO wireless earphones bulk price question",
+      "body": "Hello,\n\nTest marker: {marker}\n\nPlease share the catalog price and carton quantity for M90 PRO wireless earphones. If I buy several cartons, can you give me a lower discount price immediately, or does your sales team need to approve the discount first?\n\nBest,\nTonny",
+      "checks": {
+        "required_draft_terms": [
+          "$2.39"
+        ],
+        "required_any_draft_terms": [
+          "sales approval",
+          "sales team",
+          "requires approval",
+          "review"
+        ],
+        "forbidden_draft_terms": [
+          "$2.20",
+          "$2.15",
+          "10% discount",
+          "discounted unit price is"
+        ]
+      }
+    },
+    "pre_sales_feature_unknown": {
+      "expected_intent": "pre_sales",
+      "subject": "{marker} Bluetooth headset battery and sound specs",
+      "body": "Hello,\n\nTest marker: {marker}\n\nFor the Wireless Bluetooth headset, does your catalog list battery life, Bluetooth version, microphone quality, latency, sound quality, and available colors? I need the exact verified specs before buying.\n\nBest,\nTonny",
+      "checks": {
+        "required_draft_terms": [
+          "$6.50"
+        ],
+        "required_any_draft_terms": [
+          "not listed",
+          "does not list",
+          "not available",
+          "not provide",
+          "not included"
+        ],
+        "forbidden_draft_terms": [
+          "Bluetooth 5.3",
+          "Bluetooth 5.2",
+          "20 hours",
+          "40 hours",
+          "active noise cancellation",
+          "ANC"
+        ]
+      }
+    },
+    "pre_sales_unknown_product": {
+      "expected_intent": "pre_sales",
+      "subject": "{marker} Quantum solar drone catalog request",
+      "body": "Hello,\n\nTest marker: {marker}\n\nCan you quote the price, carton size, stock status, and available variants for a Quantum Solar Drone X9000? I could not find the exact item on your site.\n\nBest,\nTonny",
+      "checks": {
+        "required_any_draft_terms": [
+          "model",
+          "SKU",
+          "exact item",
+          "not listed",
+          "not found",
+          "confirm"
+        ],
+        "forbidden_draft_terms": [
+          "$6.50",
+          "$2.39",
+          "40PCS",
+          "100 PCS",
+          "X9000 is available"
+        ]
+      }
+    },
+    "order_tracking_found": {
+      "expected_intent": "order_fulfillment",
+      "subject": "{marker} Tracking details for C88943021",
+      "body": "Hello,\n\nTest marker: {marker}\n\nI want to track my package. The tracking number is C88943021. Could you please tell me where it is now, whether it has been delivered, and provide the detailed tracking information you have?\n\nBest,\nTonny",
+      "checks": {
+        "expect_tracking_found": true,
+        "required_draft_terms": [
+          "C88943021",
+          "120399587991"
+        ],
+        "required_any_draft_terms": [
+          "Successfully Delivered",
+          "delivered"
+        ],
+        "forbidden_draft_terms": [
+          "could not find",
+          "no exact local tracking record",
+          "unable to find"
+        ]
+      }
+    },
+    "order_tracking_not_found": {
+      "expected_intent": "order_fulfillment",
+      "subject": "{marker} Tracking details for C99943021",
+      "body": "Hello,\n\nTest marker: {marker}\n\nI want to track my package. The tracking number is C99943021. Could you please check where it is and share any delivery details?\n\nBest,\nTonny",
+      "checks": {
+        "expect_tracking_not_found": true,
+        "required_draft_terms": [
+          "C99943021"
+        ],
+        "required_any_draft_terms": [
+          "verify",
+          "double-check",
+          "reference number",
+          "order ID",
+          "purchase email"
+        ],
+        "forbidden_conversation_terms": [
+          "C88943021",
+          "120399587991",
+          "Successfully Delivered"
+        ]
+      }
+    },
+    "order_no_identifier": {
+      "expected_intent": "order_fulfillment",
+      "subject": "{marker} Where is my package",
+      "body": "Hello,\n\nTest marker: {marker}\n\nWhere is my package? I ordered from you and need to know the delivery status, but I do not have the tracking number in front of me right now.\n\nBest,\nTonny",
+      "checks": {
+        "required_any_draft_terms": [
+          "tracking number",
+          "order ID",
+          "reference number",
+          "purchase email"
+        ],
+        "forbidden_draft_terms": [
+          "Successfully Delivered",
+          "C88943021",
+          "120399587991"
+        ],
+        "reject_marker_as_identifier": true
+      }
+    },
+    "order_marker_pollution": {
+      "expected_intent": "order_fulfillment",
+      "subject": "{marker} Tracking details for C99943021 only",
+      "body": "Hello,\n\nTest marker: {marker}\n\nPlease ignore the test marker above. The only tracking number I am asking about is C99943021. Please check that number only and tell me whether you can find a matching shipment.\n\nBest,\nTonny",
+      "checks": {
+        "expect_tracking_not_found": true,
+        "required_draft_terms": [
+          "C99943021"
+        ],
+        "forbidden_draft_terms": [
+          "{run_id}",
+          "{run_date}",
+          "{run_id_digits}",
+          "CB-SUPPORT-E2E"
+        ],
+        "forbidden_conversation_terms": [
+          "C88943021",
+          "120399587991",
+          "Successfully Delivered"
+        ],
+        "reject_marker_as_identifier": true
+      }
+    },
+    "post_sales_worn_bra": {
+      "expected_intent": "post_sales_support",
+      "subject": "{marker} Refund request for worn bra",
+      "body": "Hello,\n\nTest marker: {marker}\n\nI bought a bra from your store. I already wore it once, but I do not like how it looks on me, so I want to return it and get a refund. Can you send me a return label and tell me when the refund will be processed?\n\nBest,\nTonny",
+      "checks": {
+        "required_any_draft_terms": [
+          "worn",
+          "hygiene",
+          "intimate",
+          "not eligible"
+        ],
+        "forbidden_draft_terms": [
+          "we can proceed with the return",
+          "print the prepaid return label",
+          "prepaid return label:",
+          "initiate a refund",
+          "refund to your original payment",
+          "tracking number RTN"
+        ]
+      }
+    },
+    "post_sales_defective_item": {
+      "expected_intent": "post_sales_support",
+      "subject": "{marker} Defective item refund request",
+      "body": "Hello,\n\nTest marker: {marker}\n\nThe item I received is defective and does not work. It arrived yesterday and I want a refund or replacement. Can you tell me what you need from me and whether this needs an RMA review?\n\nBest,\nTonny",
+      "checks": {
+        "required_any_draft_terms": [
+          "defective",
+          "RMA",
+          "review",
+          "photo",
+          "proof"
+        ],
+        "forbid_return_logistics_without_payload": true
+      }
+    },
+    "post_sales_return_window_expired": {
+      "expected_intent": "post_sales_support",
+      "subject": "{marker} Return request after 45 days",
+      "body": "Hello,\n\nTest marker: {marker}\n\nI received my order 45 days ago. The item is unopened, but I changed my mind and want to return it for a refund. Can you approve the return and send me a label?\n\nBest,\nTonny",
+      "checks": {
+        "required_any_draft_terms": [
+          "45 days",
+          "return window",
+          "expired",
+          "review",
+          "order"
+        ],
+        "forbidden_draft_terms": [
+          "return approved",
+          "eligible for a return",
+          "pleased to inform you",
+          "we can proceed with the return",
+          "print the prepaid return label",
+          "prepaid return label:",
+          "refund to your original payment"
+        ]
+      }
+    },
+    "post_sales_zh_escalation": {
+      "expected_intent": "post_sales_support",
+      "subject": "{marker} 中文售后投诉",
+      "body": "你好，\n\n测试标记：{marker}\n\n我收到的商品坏了，完全不能用。我现在很生气，想要退款，也希望主管或经理尽快联系我处理。\n\nTonny",
+      "checks": {
+        "required_any_draft_terms": [
+          "退款",
+          "损坏",
+          "主管",
+          "经理",
+          "人工",
+          "客服"
+        ],
+        "require_language": "zh",
+        "require_escalation_signal": true
+      }
+    }
+  }
+}

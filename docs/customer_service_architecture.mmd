@@ -1,0 +1,102 @@
+flowchart LR
+  %% Customer Service architecture for Cross-BorderAIProject.
+
+  subgraph Channels["Inbound Channels"]
+    Gmail["Gmail sync / PubSub"]
+    WhatsApp["WhatsApp webhook"]
+    Manual["Support inbox UI"]
+  end
+
+  subgraph API["FastAPI Channel API"]
+    GmailTools["Gmail parse/list/get/watch tools"]
+    WhatsAppTools["WhatsApp parse + signature verify"]
+    ChannelMsg["ChannelMessage"]
+    ApprovalAPI["Approve-send API"]
+  end
+
+  subgraph Inbox["Support Inbox Storage"]
+    Store["SupportInboxStore"]
+    Conversations["SupportConversationRecord"]
+    Messages["SupportMessageRecord"]
+    Draft["Draft response + draft payload"]
+  end
+
+  subgraph Orchestration["Workflow Orchestration"]
+    Orchestrator["Orchestrator / Celery support job"]
+    Normalize["Normalize inputs + build automation context"]
+    Triage["IntentRouterTool runtime triage"]
+    Context["Build pre-sales + order context"]
+  end
+
+  subgraph Agents["CrewAI Agents"]
+    PreSalesAgent["pre_sales_specialist"]
+    OrderAgent["order_fulfillment_specialist"]
+    SupportAgent["senior_support_agent"]
+    QAAgent["support_qa_specialist"]
+    ConfigTriage["support_triage_specialist config only"]
+  end
+
+  subgraph Tools["Tools And Knowledge"]
+    PreSalesTools["PreSalesProductKnowledgeTool"]
+    CatalogTools["Catalog / PIM / RAG / search"]
+    OrderTools["OrderTrackingTool"]
+    TrackingTools["Local tracking + order knowledge"]
+    RMATools["RMAAutomationTool"]
+    SupportTools["Support KB / search / handoff tools"]
+  end
+
+  subgraph Output["Output And Delivery"]
+    Validation["CustomerServiceOutput validation"]
+    Guardrails["Draft normalization + safety guardrails"]
+    HumanApproval["Human approval path"]
+    AutoDispatch["Auto-dispatch path"]
+    GmailSend["Gmail reply send"]
+    WhatsAppSend["WhatsApp text/template send"]
+    OutboundRecord["Outbound message record"]
+  end
+
+  Gmail --> GmailTools --> ChannelMsg
+  WhatsApp --> WhatsAppTools --> ChannelMsg
+  Manual --> ApprovalAPI
+
+  ChannelMsg --> Store
+  Store --> Conversations
+  Store --> Messages
+  Store --> Orchestrator
+
+  Orchestrator --> Normalize --> Triage --> Context
+  Context --> PreSalesTools
+  Context --> OrderTools
+  PreSalesTools --> CatalogTools
+  OrderTools --> TrackingTools
+
+  Triage -->|"pre_sales"| PreSalesAgent
+  Triage -->|"order_fulfillment"| OrderAgent
+  Triage -->|"post_sales_support"| SupportAgent
+  ConfigTriage -. "runtime triage uses IntentRouterTool" .-> Triage
+
+  PreSalesAgent --> PreSalesTools
+  OrderAgent --> OrderTools
+  SupportAgent --> RMATools
+  SupportAgent --> SupportTools
+
+  PreSalesAgent --> QAAgent
+  OrderAgent --> QAAgent
+  SupportAgent --> QAAgent
+  QAAgent --> Validation
+  PreSalesAgent -. "adaptive_fast may skip QA" .-> Validation
+  SupportAgent -. "adaptive_fast may skip QA" .-> Validation
+
+  Validation --> Guardrails --> Draft
+  Draft --> Store
+  Draft --> HumanApproval
+  Draft --> AutoDispatch
+
+  ApprovalAPI --> HumanApproval
+  HumanApproval --> GmailSend
+  HumanApproval --> WhatsAppSend
+  AutoDispatch --> GmailSend
+  AutoDispatch --> WhatsAppSend
+  GmailSend --> OutboundRecord
+  WhatsAppSend --> OutboundRecord
+  OutboundRecord --> Messages

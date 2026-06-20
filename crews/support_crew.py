@@ -42,7 +42,13 @@ from utils.llm_config import (
 from utils.model_tiering import ModelTierRouter
 from utils.project_intelligence import augment_agents_config
 from utils.shared_context import build_conversation_history_context
-from utils.support_drafts import customer_facing_draft_text, parse_json_like_object
+from utils.support_drafts import (
+    contains_live_e2e_marker,
+    customer_facing_draft_text,
+    is_structured_draft_text,
+    parse_json_like_object,
+    strip_live_e2e_markers,
+)
 from utils.tool_cache import cached_tool_call
 from utils.usage_tracking import INTERNAL_USAGE_KEY
 from utils.workflow_progress import attach_task_progress
@@ -54,6 +60,7 @@ RETURN_LABEL_URL_RE = re.compile(r"https?://[^\s)\]]*(?:labels\.example\.local|/
 RMA_UNSUPPORTED_CLAIM_RE = re.compile(
     r"\b(?:prepaid\s+return\s+label|return\s+label|tracking\s+number|"
     r"we\s+can\s+proceed\s+with\s+the\s+return|proceed\s+with\s+the\s+return|"
+    r"eligible\s+for\s+a\s+return|return\s+approved|pleased\s+to\s+inform\s+you|"
     r"initiate\s+a\s+refund|refund\s+to\s+your\s+original\s+payment|"
     r"drop\s+off\s+the\s+package|pack\s+the\s+item|pack\s+the\s+earrings)\b",
     re.IGNORECASE,
@@ -367,8 +374,13 @@ def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     normalized["ticket_id"] = normalized.get("ticket_id") or "TKT-PENDING"
     normalized["customer_email"] = _fallback_customer_email(normalized)
     normalized["phone_number"] = normalized.get("phone_number")
-    normalized["inquiry_text"] = normalized.get("inquiry_text") or normalized.get("inquiry") or ""
-    normalized["return_reason"] = normalized.get("return_reason") or normalized["inquiry_text"]
+    raw_inquiry_text = normalized.get("inquiry_text") or normalized.get("inquiry") or ""
+    normalized["raw_inquiry_text"] = normalized.get("raw_inquiry_text") or raw_inquiry_text
+    normalized["inquiry_text"] = strip_live_e2e_markers(str(raw_inquiry_text))
+    normalized["inquiry"] = normalized["inquiry_text"]
+    normalized["return_reason"] = strip_live_e2e_markers(
+        str(normalized.get("return_reason") or normalized["inquiry_text"])
+    )
     normalized["order_id"] = normalized.get("order_id") or "ORDER-NOT-PROVIDED"
     normalized["item_sku"] = normalized.get("item_sku") or "SKU-NOT-PROVIDED"
     normalized["order_history"] = normalized.get("order_history") or {}
@@ -1042,11 +1054,23 @@ def _tracking_identifiers_from_inputs(inputs: dict[str, Any]) -> set[str]:
     ]
     identifiers: set[str] = set()
     for field in fields:
-        text = str(field or "")
+        text = strip_live_e2e_markers(str(field or ""))
         if not text or text == "ORDER-NOT-PROVIDED":
             continue
-        identifiers.update(match.group(0).upper() for match in TRACKING_IDENTIFIER_RE.finditer(text))
+        identifiers.update(
+            candidate
+            for candidate in (match.group(0).upper() for match in TRACKING_IDENTIFIER_RE.finditer(text))
+            if _is_customer_tracking_identifier(candidate, text)
+        )
     return identifiers
+
+
+def _is_customer_tracking_identifier(candidate: str, source_text: str) -> bool:
+    if contains_live_e2e_marker(source_text):
+        return False
+    if re.fullmatch(r"20\d{6}", candidate):
+        return False
+    return True
 
 
 def _parse_local_tracking_record(content: str, source: str | None = None) -> dict[str, Any] | None:
@@ -1534,13 +1558,20 @@ def _attach_customer_service_context(
     if intent == "pre_sales":
         _apply_authoritative_pre_sales_context(normalized["pre_sales_response"], pre_sales_context)
     if intent == "pre_sales":
+        before_pre_sales_guard = normalized["final_response"]
         normalized["final_response"] = _guard_pre_sales_catalog_pricing(
             normalized["final_response"],
             normalized["pre_sales_response"],
             inputs,
             config_context,
         )
-        if normalized["final_response"] != str(final_response):
+        normalized["final_response"] = _guard_pre_sales_unknown_or_unsafe_response(
+            normalized["final_response"],
+            normalized["pre_sales_response"],
+            inputs,
+            config_context,
+        )
+        if normalized["final_response"] != str(final_response) or normalized["final_response"] != before_pre_sales_guard:
             flags = list(normalized.get("compliance_flags") or [])
             if "UNVERIFIED_PRODUCT_FACT_REWRITTEN" not in flags:
                 flags.append("UNVERIFIED_PRODUCT_FACT_REWRITTEN")
@@ -1727,6 +1758,8 @@ def _guard_order_tracking_response(
     response_mentions_wrong_identifier = bool(lookup_query and (response_identifiers - lookup_query))
     response_language_mismatch = _response_language_mismatch(final_response, inputs)
     if order_response.get("tracking_record_found") is False:
+        if not lookup_query:
+            return _safe_tracking_missing_identifier_response(inputs=inputs, config_context=config_context)
         if (
             str(order_response.get("tracking_lookup_status") or "") == "not_found"
             and (response_mentions_wrong_identifier or not lookup_query.issubset(response_identifiers) or response_language_mismatch)
@@ -1933,6 +1966,28 @@ def _safe_tracking_not_found_response(
     )
 
 
+def _safe_tracking_missing_identifier_response(
+    *,
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    response = (
+        "Hello,\n\n"
+        "Thank you for reaching out. I do not have enough information to locate the shipment yet.\n\n"
+        "Please share the tracking number, reference number, order ID, or purchase email, and we will check the "
+        "delivery status again.\n\n"
+        "Best regards,\n"
+        "Customer Service Team"
+    )
+    return _localize_order_safe_response(
+        response=response,
+        inputs=inputs,
+        structured_facts={"response_type": "tracking_missing_identifier"},
+        config_context=config_context,
+        fallback_factory=lambda language: _deterministic_tracking_missing_identifier_response(language),
+    )
+
+
 def _localize_order_safe_response(
     *,
     response: str,
@@ -1995,6 +2050,23 @@ def _deterministic_tracking_found_response(record: dict[str, Any], language: str
         ]
     )
     return "\n".join(lines)
+
+
+def _deterministic_tracking_missing_identifier_response(language: str) -> str:
+    if str(language).lower() == "chinese":
+        return (
+            "你好，\n\n"
+            "感谢你的联系。目前信息还不足以定位包裹。\n\n"
+            "请提供追踪号、参考号、订单 ID 或购买邮箱，我们会再次为你查询物流状态。\n\n"
+            "此致，\n客服团队"
+        )
+    return (
+        "Hello,\n\n"
+        "Thank you for reaching out. I do not have enough information to locate the shipment yet.\n\n"
+        "Please share the tracking number, reference number, order ID, or purchase email, and we will check the "
+        "delivery status again.\n\n"
+        "Best regards,\nCustomer Service Team"
+    )
 
 
 def _deterministic_tracking_found_response_en(record: dict[str, Any]) -> str:
@@ -2160,7 +2232,10 @@ def _guard_pre_sales_catalog_pricing(
     has_variant_section = bool(re.search(r"\bvariants?\s+(?:available|options?)\b|\bbasic\s+headset\b|\bpro\s+headset\b", final_response, flags=re.I))
     has_unverified_feature = bool(re.search(r"\bnoise isolation\b|\bnoise cancellation\b", final_response, flags=re.I))
     understates_catalog_specs = bool(re.search(r"detailed specifications are not available|detailed feature specifications are not listed", final_response, flags=re.I))
+    unsafe_draft_shape = is_structured_draft_text(final_response) or contains_live_e2e_marker(final_response)
     if not (
+        unsafe_draft_shape
+        or
         has_unverified_price
         or missing_verified_price
         or missing_catalog_facts
@@ -2184,6 +2259,47 @@ def _guard_pre_sales_catalog_pricing(
         config_context=config_context,
     )
     return rewritten or safe_draft
+
+
+def _guard_pre_sales_unknown_or_unsafe_response(
+    final_response: str,
+    pre_sales_response: dict[str, Any] | None,
+    inputs: dict[str, Any],
+    config_context: dict[str, Any],
+) -> str:
+    if not (is_structured_draft_text(final_response) or contains_live_e2e_marker(final_response)):
+        return final_response
+    offer = pre_sales_response.get("catalog_product_offer") if isinstance(pre_sales_response, dict) else None
+    if isinstance(offer, dict) and offer.get("status") == "found" and offer.get("unit_price"):
+        return _guard_pre_sales_catalog_pricing(
+            final_response="",
+            pre_sales_response=pre_sales_response,
+            inputs=inputs,
+            config_context=config_context,
+        )
+    return _safe_unknown_pre_sales_response(inputs, config_context)
+
+
+def _safe_unknown_pre_sales_response(inputs: dict[str, Any], config_context: dict[str, Any]) -> str:
+    product_name = (
+        _product_name_from_inquiry(str(inputs.get("inquiry_text") or inputs.get("inquiry") or ""))
+        or str(inputs.get("product_category") or "the requested product")
+    )
+    response = (
+        "Hello,\n\n"
+        f"Thank you for your interest. I could not confirm a verified catalog match for {product_name} from the "
+        "available product data.\n\n"
+        "Please share the exact model name, SKU, product link, or a catalog page reference. Once we have that, "
+        "sales can confirm pricing, carton details, stock status, and any discount review path.\n\n"
+        "Best regards,\nCustomer Service Team"
+    )
+    rewritten = _rewrite_response_language(
+        response=response,
+        inputs=inputs,
+        structured_facts={"product_name": product_name, "status": "not_found"},
+        config_context=config_context,
+    )
+    return rewritten or response
 
 
 def _catalog_facts_payload(offer: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:

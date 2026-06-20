@@ -14,7 +14,7 @@ from services.language_detector import LanguageDetector
 from services.session_manager import SessionManager
 from tools.custom.support_handoff_tools import send_handoff_notification
 from tools.custom.whatsapp_tools import ChannelMessage, WhatsAppStatusUpdate, local_outbound_message_id
-from utils.support_drafts import customer_facing_draft_text
+from utils.support_drafts import customer_facing_draft_text, parse_json_like_object, strip_live_e2e_markers
 
 
 def mask_contact(value: str | None) -> str | None:
@@ -47,7 +47,7 @@ def _next_conversation_status(current_status: str | None, result: dict[str, Any]
 
 def _requires_approval(result: dict[str, Any]) -> bool:
     sentiment = result.get("sentiment_analysis") or {}
-    rma = result.get("rma_validation") or {}
+    rma = _rma_validation_from_result(result) or {}
     qa_status = str(result.get("qa_status") or "").upper()
     confidence = float(result.get("routing_confidence") or 1)
     if _is_pre_sales(result):
@@ -92,6 +92,26 @@ def _requires_handoff(result: dict[str, Any]) -> bool:
     )
 
 
+def _rma_validation_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    direct = result.get("rma_validation")
+    if isinstance(direct, dict):
+        return direct
+    if isinstance(direct, str):
+        parsed = parse_json_like_object(direct)
+        if isinstance(parsed, dict):
+            return parsed
+    support_response = result.get("support_response")
+    if not isinstance(support_response, dict):
+        return None
+    nested = support_response.get("rma_validation")
+    if isinstance(nested, dict):
+        return nested
+    if isinstance(nested, str):
+        parsed = parse_json_like_object(nested)
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _is_pre_sales(result: dict[str, Any]) -> bool:
     return str(result.get("detected_intent") or "").lower() == "pre_sales"
 
@@ -108,7 +128,7 @@ def _is_low_risk_order_fulfillment(result: dict[str, Any]) -> bool:
     if confidence < 0.75 or qa_status == "REJECTED":
         return False
     sentiment = result.get("sentiment_analysis") or {}
-    rma = result.get("rma_validation") or {}
+    rma = _rma_validation_from_result(result) or {}
     if (
         result.get("escalation_flag")
         or result.get("channel_recommended_action") == "human_handoff"
@@ -247,8 +267,9 @@ class SupportInboxStore:
         session_state = self.session_manager.load_session(conversation.conversation_id)
         session_history = session_state.get("history") if isinstance(session_state, dict) else None
         history = session_history if isinstance(session_history, list) else self._db_history(conversation.conversation_id)
+        history = _sanitize_history_for_support_inputs(history)
         display_name = conversation.customer_display_name or conversation.customer_handle_masked or "Channel Customer"
-        inquiry_text = message.text or "[Customer sent an attachment or unsupported message.]"
+        inquiry_text = strip_live_e2e_markers(message.text) or "[Customer sent an attachment or unsupported message.]"
         session_language = session_state.get("language_preference") if isinstance(session_state, dict) else None
         message_locale = getattr(message, "locale", None)
         detected_language = (
@@ -531,3 +552,16 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _sanitize_history_for_support_inputs(history: list[Any]) -> list[Any]:
+    sanitized: list[Any] = []
+    for item in history:
+        if not isinstance(item, dict):
+            sanitized.append(item)
+            continue
+        copy = dict(item)
+        if isinstance(copy.get("text"), str):
+            copy["text"] = strip_live_e2e_markers(copy["text"])
+        sanitized.append(copy)
+    return sanitized
