@@ -167,6 +167,34 @@ CONTENT_FORM_KEYS = [
 ]
 CONTENT_IMAGE_QUALITIES = ["auto", "low", "medium", "high"]
 CONTENT_IMAGE_SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"]
+USER_OAUTH_PROVIDERS = [
+    "google",
+    "facebook",
+    "twitter",
+    "linkedin",
+    "apple",
+    "github",
+    "microsoft",
+    "wechat",
+    "alipay",
+    "weibo",
+    "douyin",
+    "qq",
+]
+USER_PAYMENT_METHOD_TYPES = [
+    "credit_card",
+    "debit_card",
+    "paypal",
+    "stripe",
+    "apple_pay",
+    "google_pay",
+    "alipay_cn",
+    "wechat_pay",
+    "union_pay",
+    "bank_transfer",
+    "crypto",
+]
+USER_SUBSCRIPTION_PLANS = ["starter", "professional", "enterprise"]
 
 CONTENT_STAGE_LABELS = {
     "workflow_submitted": "Workflow submitted",
@@ -202,6 +230,10 @@ def _headers(token: str) -> dict[str, str]:
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
+
+
+def _user_headers(token: str) -> dict[str, str]:
+    return _headers(token)
 
 
 def _api_url(base_url: str, path: str) -> str:
@@ -241,6 +273,30 @@ def _parse_inputs_json(raw_json: str, fallback: dict[str, Any]) -> dict[str, Any
     except json.JSONDecodeError:
         return dict(fallback)
     return parsed if isinstance(parsed, dict) else dict(fallback)
+
+
+def _json_payload_from_text(raw_json: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _oauth_payload(provider: str, provider_user_id: str, provider_info_json: str) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "provider_user_id": provider_user_id.strip(),
+        "provider_info": _json_payload_from_text(provider_info_json),
+    }
+
+
+def _payment_method_payload(payment_type: str, payment_data_json: str, is_default: bool) -> dict[str, Any]:
+    return {
+        "payment_type": payment_type,
+        "payment_data": _json_payload_from_text(payment_data_json),
+        "is_default": is_default,
+    }
 
 
 def _support_value(inputs: dict[str, Any], key: str, default: Any = "") -> Any:
@@ -1835,6 +1891,246 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
         st.caption("Draft response will appear after the linked support job completes.")
 
 
+def _render_user_center(api_base_url: str) -> None:
+    user_token = st.session_state.get("user_access_token", "")
+    st.subheader("Users")
+    token_cols = st.columns([2, 1])
+    user_token = token_cols[0].text_input(
+        "User access token",
+        value=user_token,
+        type="password",
+        key="user_access_token",
+    )
+    if token_cols[1].button("Load profile", width="stretch", disabled=not bool(user_token)):
+        result, error = _request_json("GET", api_base_url, "/api/v1/users/me", user_token)
+        if error:
+            st.error(error)
+        elif isinstance(result, dict):
+            st.session_state.current_user_profile = result
+            st.success("Profile loaded")
+
+    register_tab, profile_tab, oauth_tab, payment_tab, subscription_tab = st.tabs(
+        ["Register / Login", "Profile", "OAuth", "Payment Methods", "Subscription"]
+    )
+
+    with register_tab:
+        st.caption("Email account")
+        email_cols = st.columns(2)
+        email = email_cols[0].text_input("Email", key="user_email")
+        password = email_cols[1].text_input("Password", type="password", key="user_password")
+        username = st.text_input("Username", key="user_username")
+        action_cols = st.columns(2)
+        if action_cols[0].button("Register email user", width="stretch"):
+            payload = {"email": email, "password": password}
+            if username.strip():
+                payload["username"] = username.strip()
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/register/email", "", payload)
+            _handle_user_auth_result(result, error)
+        if action_cols[1].button("Login email user", width="stretch"):
+            payload = {"email": email, "password": password}
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/login/email", "", payload)
+            _handle_user_auth_result(result, error)
+
+        st.caption("Phone account")
+        phone_cols = st.columns(3)
+        country_code = phone_cols[0].text_input("Country code", value="+86", key="user_phone_country_code")
+        phone = phone_cols[1].text_input("Phone", key="user_phone")
+        phone_password = phone_cols[2].text_input("Phone password", type="password", key="user_phone_password")
+        if st.button("Register phone user", width="stretch"):
+            payload = {
+                "country_code": country_code,
+                "phone": phone,
+                "password": phone_password,
+                "username": username.strip() or None,
+            }
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/register/phone", "", payload)
+            _handle_user_auth_result(result, error)
+
+        st.caption("Simulated OAuth login")
+        oauth_cols = st.columns(2)
+        provider = oauth_cols[0].selectbox("OAuth provider", USER_OAUTH_PROVIDERS, key="user_login_oauth_provider")
+        provider_user_id = oauth_cols[1].text_input("Provider user ID", key="user_login_provider_user_id")
+        provider_info_json = st.text_area(
+            "Provider info JSON",
+            value='{"email": "demo@example.com", "name": "Demo User", "email_verified": true}',
+            key="user_login_provider_info",
+            height=90,
+        )
+        if st.button("Login with simulated OAuth", width="stretch"):
+            payload = _oauth_payload(provider, provider_user_id, provider_info_json)
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/oauth/login", "", payload)
+            _handle_user_auth_result(result, error)
+
+    with profile_tab:
+        profile = st.session_state.get("current_user_profile")
+        if isinstance(profile, dict):
+            st.json(profile)
+        update_cols = st.columns(2)
+        first_name = update_cols[0].text_input("First name", key="user_profile_first_name")
+        last_name = update_cols[1].text_input("Last name", key="user_profile_last_name")
+        locale_cols = st.columns(3)
+        country = locale_cols[0].text_input("Country", key="user_profile_country")
+        timezone = locale_cols[1].text_input("Timezone", value="UTC", key="user_profile_timezone")
+        language = locale_cols[2].text_input("Language", value="en", key="user_profile_language")
+        if st.button("Update profile", width="stretch", disabled=not bool(user_token)):
+            payload = _clean_optional_fields(
+                {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "country": country,
+                    "timezone": timezone,
+                    "language": language,
+                }
+            )
+            result, error = _request_json("PATCH", api_base_url, "/api/v1/users/me", user_token, payload)
+            _handle_user_profile_result(result, error)
+
+        password_cols = st.columns(2)
+        old_password = password_cols[0].text_input("Old password", type="password", key="user_old_password")
+        new_password = password_cols[1].text_input("New password", type="password", key="user_new_password")
+        if st.button("Change password", width="stretch", disabled=not bool(user_token)):
+            payload = {"old_password": old_password, "new_password": new_password}
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/password", user_token, payload)
+            _handle_status_result(result, error)
+
+        reset_cols = st.columns(2)
+        reset_email = reset_cols[0].text_input("Reset email", key="user_reset_email")
+        reset_new_password = reset_cols[1].text_input("Reset new password", type="password", key="user_reset_new_password")
+        if st.button("Request reset token", width="stretch"):
+            result, error = _request_json(
+                "POST",
+                api_base_url,
+                "/api/v1/users/password-reset/request",
+                "",
+                {"email": reset_email},
+            )
+            if error:
+                st.error(error)
+            elif isinstance(result, dict):
+                st.session_state.user_reset_token = result.get("reset_token") or ""
+                st.success("Reset request accepted")
+                st.json(result)
+        reset_token = st.text_input(
+            "Reset token",
+            value=st.session_state.get("user_reset_token", ""),
+            type="password",
+            key="user_reset_token",
+        )
+        if st.button("Confirm password reset", width="stretch"):
+            payload = {"token": reset_token, "new_password": reset_new_password}
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/password-reset/confirm", "", payload)
+            _handle_status_result(result, error)
+
+    with oauth_tab:
+        link_cols = st.columns(2)
+        link_provider = link_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_link_oauth_provider")
+        link_provider_user_id = link_cols[1].text_input("Provider user ID", key="user_link_provider_user_id")
+        link_provider_info_json = st.text_area("Provider info JSON", value="{}", key="user_link_provider_info", height=90)
+        oauth_action_cols = st.columns(2)
+        if oauth_action_cols[0].button("Link OAuth provider", width="stretch", disabled=not bool(user_token)):
+            payload = _oauth_payload(link_provider, link_provider_user_id, link_provider_info_json)
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/oauth", user_token, payload)
+            _handle_user_profile_result(result, error)
+        if oauth_action_cols[1].button("Unlink OAuth provider", width="stretch", disabled=not bool(user_token)):
+            result, error = _request_json(
+                "DELETE",
+                api_base_url,
+                f"/api/v1/users/me/oauth/{link_provider}",
+                user_token,
+            )
+            _handle_status_result(result, error)
+
+    with payment_tab:
+        payment_cols = st.columns([1, 2, 1])
+        payment_type = payment_cols[0].selectbox("Payment type", USER_PAYMENT_METHOD_TYPES, key="user_payment_type")
+        payment_data_json = payment_cols[1].text_area(
+            "Tokenized payment data JSON",
+            value='{"last_four": "4242", "brand": "visa"}',
+            key="user_payment_data",
+            height=90,
+        )
+        is_default = payment_cols[2].checkbox("Default", value=True, key="user_payment_default")
+        if st.button("Add payment method", width="stretch", disabled=not bool(user_token)):
+            payload = _payment_method_payload(payment_type, payment_data_json, is_default)
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/payment-methods", user_token, payload)
+            _handle_status_result(result, error)
+        method_id = st.text_input("Payment method ID", key="user_payment_method_id")
+        method_action_cols = st.columns(2)
+        if method_action_cols[0].button("Set default", width="stretch", disabled=not bool(user_token)):
+            result, error = _request_json(
+                "POST",
+                api_base_url,
+                f"/api/v1/users/me/payment-methods/{method_id}/default",
+                user_token,
+            )
+            _handle_status_result(result, error)
+        if method_action_cols[1].button("Remove payment method", width="stretch", disabled=not bool(user_token)):
+            result, error = _request_json(
+                "DELETE",
+                api_base_url,
+                f"/api/v1/users/me/payment-methods/{method_id}",
+                user_token,
+            )
+            _handle_status_result(result, error)
+
+    with subscription_tab:
+        plan_id = st.selectbox("Plan", USER_SUBSCRIPTION_PLANS, key="user_subscription_plan")
+        subscription_cols = st.columns(2)
+        if subscription_cols[0].button("Subscribe", width="stretch", disabled=not bool(user_token)):
+            result, error = _request_json(
+                "POST",
+                api_base_url,
+                "/api/v1/users/me/subscription",
+                user_token,
+                {"plan_id": plan_id},
+            )
+            _handle_user_profile_result(result, error)
+        if subscription_cols[1].button("Cancel subscription", width="stretch", disabled=not bool(user_token)):
+            result, error = _request_json(
+                "POST",
+                api_base_url,
+                "/api/v1/users/me/subscription/cancel",
+                user_token,
+            )
+            _handle_user_profile_result(result, error)
+
+
+def _handle_user_auth_result(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
+    if error:
+        st.error(error)
+        return
+    if not isinstance(result, dict):
+        st.error("Unexpected user auth response")
+        return
+    st.session_state.user_access_token = str(result.get("access_token") or "")
+    user = result.get("user")
+    if isinstance(user, dict):
+        st.session_state.current_user_profile = user
+    st.success("User session ready")
+    st.json(result)
+
+
+def _handle_user_profile_result(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
+    if error:
+        st.error(error)
+        return
+    if isinstance(result, dict):
+        st.session_state.current_user_profile = result
+        st.success("User profile updated")
+        st.json(result)
+    else:
+        st.error("Unexpected user profile response")
+
+
+def _handle_status_result(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
+    if error:
+        st.error(error)
+        return
+    st.success("Request completed")
+    if result is not None:
+        st.json(result)
+
+
 def main() -> None:
     st.set_page_config(page_title="Cross-Border AI Admin", layout="wide")
     st.title("Cross-Border AI Admin")
@@ -1843,6 +2139,7 @@ def main() -> None:
         st.header("API")
         api_base_url = st.text_input("Base URL", value=DEFAULT_API_BASE_URL)
         bearer_token = st.text_input("Bearer token", value=DEFAULT_BEARER_TOKEN, type="password")
+        view = st.selectbox("View", ["Workflow runner", "Users"])
         if st.button("Check health", width="stretch"):
             health, error = _request_json("GET", api_base_url, "/health", bearer_token)
             if error:
@@ -1850,6 +2147,10 @@ def main() -> None:
             else:
                 st.success("API reachable")
                 st.json(health)
+
+    if view == "Users":
+        _render_user_center(api_base_url)
+        return
 
     workflow_type = st.selectbox("Workflow", list(WORKFLOW_EXAMPLES.keys()))
     selected_example = WORKFLOW_EXAMPLES[workflow_type]

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from api.routes import create_router
+from api.user_routes import create_user_router
 from crews.analytics_crew import run_analytics_crew
 from crews.bizdev_crew import run_bizdev_crew
 from crews.content_crew import run_content_crew
@@ -55,6 +56,7 @@ app.add_middleware(
 )
 
 app.include_router(create_router(orchestrator))
+app.include_router(create_user_router())
 
 
 if __name__ == "__main__":

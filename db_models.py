@@ -1,10 +1,14 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
+
+
+JSON_DICT = JSONB().with_variant(JSON(), "sqlite")
+JSON_LIST = JSONB().with_variant(JSON(), "sqlite")
 
 
 def utc_now() -> datetime:
@@ -59,6 +63,94 @@ class ToolCacheEntryRecord(Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class UserRecord(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    language: Mapped[str] = mapped_column(String(32), nullable=False, default="en")
+    is_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_phone_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    subscription_plan: Mapped[str] = mapped_column(String(64), nullable=False, default="starter")
+    subscription_status: Mapped[str] = mapped_column(String(32), nullable=False, default="inactive", index=True)
+    subscription_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    subscription_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    total_workflows_run: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_api_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class UserAuthProviderRecord(Base):
+    __tablename__ = "user_auth_providers"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_user_auth_provider_identity"),
+        UniqueConstraint("user_id", "provider", name="uq_user_auth_provider_user_provider"),
+    )
+
+    auth_provider_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    provider_info: Mapped[dict | None] = mapped_column(JSON_DICT, nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class UserSessionRecord(Base):
+    __tablename__ = "user_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class UserPasswordResetTokenRecord(Base):
+    __tablename__ = "user_password_reset_tokens"
+
+    reset_token_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class UserPaymentMethodRecord(Base):
+    __tablename__ = "user_payment_methods"
+
+    payment_method_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), nullable=False, index=True)
+    payment_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payment_data: Mapped[dict] = mapped_column(JSON_DICT, nullable=False, default=dict)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
