@@ -30,10 +30,13 @@ from crews.content_crew import (
     CONTENT_ARTICLE_MAX_CHARS,
     CONTENT_GENERATION_MAX_TOKENS,
     CONTENT_SEO_KEYWORDS_MAX_COUNT,
+    PerLanguageContentOutput,
+    _apply_reddit_geo_context,
     _content_generation_llm_context,
     _enrich_language_output,
     _error_summary,
     _normalize_inputs,
+    _normalize_per_language_content_payload,
     run_content_crew,
 )
 from job_store import InMemoryJobStore
@@ -107,6 +110,26 @@ class ContentTraceLangfuseClient:
                     "metadata": metadata,
                 }
             )
+
+
+def localized_entities(
+    language: str = "ja",
+    target_market: str = "Japan",
+    subject: str = "Smart Thermos",
+    product_category: str = "Drinkware",
+    brand_name: str = "ThermoCo",
+    brand_voice: str = "Premium",
+    primary_keywords: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "language": language,
+        "target_market": target_market,
+        "subject": subject,
+        "product_category": product_category,
+        "brand_name": brand_name,
+        "brand_voice": brand_voice,
+        "primary_keywords": primary_keywords or ["smart thermos"],
+    }
 
 
 class ContentToolTests(unittest.TestCase):
@@ -771,7 +794,177 @@ class ContentToolTests(unittest.TestCase):
         self.assertIn("Return at most one social post per requested", prompt)
         self.assertIn("All reddit_geo_posts fields that contain prose", prompt)
         self.assertIn("must be written in", prompt)
+        self.assertIn("localized_entities", prompt)
+        self.assertIn("Do not preserve source-language brand names", prompt)
+        self.assertIn("Return compliance_notes as a top-level field", prompt)
+        self.assertIn("localized_article must contain only language, title, and article", prompt)
         self.assertIn("Never output placeholder links", prompt)
+
+    def test_per_language_content_output_requires_localized_entities(self) -> None:
+        with self.assertRaises(ValidationError):
+            PerLanguageContentOutput.model_validate(
+                {
+                    "localized_article": {
+                        "language": "de",
+                        "title": "Titel",
+                        "article": "Artikel",
+                    },
+                    "social_media_posts": [],
+                    "seo_keywords": ["Bergsteigen"],
+                    "compliance_notes": "Geprüft.",
+                }
+            )
+
+    def test_per_language_payload_normalizes_misnested_compliance_notes(self) -> None:
+        payload = {
+            "localized_article": {
+                "language": "de",
+                "title": "Titel",
+                "article": "Artikel",
+                "compliance_notes": "Reviewed.",
+            },
+            "social_media_posts": [],
+            "seo_keywords": ["Bergsteigen"],
+            "localized_entities": localized_entities(
+                language="de",
+                target_market="Germany",
+                subject="Bergsteiger-Set",
+                product_category="Alpine Ausrustung",
+                brand_name="Alpen-Set",
+                brand_voice="Praktisch",
+                primary_keywords=["Bergsteigen"],
+            ),
+        }
+
+        normalized = _normalize_per_language_content_payload(payload)
+        result = PerLanguageContentOutput.model_validate(normalized)
+
+        self.assertEqual(result.compliance_notes, "Reviewed.")
+        self.assertNotIn("compliance_notes", normalized["localized_article"])
+
+    def test_per_language_payload_normalization_keeps_unknown_article_extras_strict(self) -> None:
+        payload = {
+            "localized_article": {
+                "language": "de",
+                "title": "Titel",
+                "article": "Artikel",
+                "compliance_notes": "Reviewed.",
+                "foo": "bar",
+            },
+            "social_media_posts": [],
+            "seo_keywords": ["Bergsteigen"],
+            "localized_entities": localized_entities(
+                language="de",
+                target_market="Germany",
+                subject="Bergsteiger-Set",
+                product_category="Alpine Ausrustung",
+                brand_name="Alpen-Set",
+                brand_voice="Praktisch",
+                primary_keywords=["Bergsteigen"],
+            ),
+        }
+
+        normalized = _normalize_per_language_content_payload(payload)
+
+        with self.assertRaises(ValidationError):
+            PerLanguageContentOutput.model_validate(normalized)
+
+    def test_content_enrichment_uses_localized_entities_for_seo_and_visuals(self) -> None:
+        output = {
+            "localized_article": {
+                "language": "de",
+                "title": "Bergsteiger-Set für kalte Höhenlagen",
+                "article": "Ein praktischer Leitfaden für alpine Touren.",
+            },
+            "social_media_posts": [],
+            "seo_keywords": ["Bergsteigen", "Kälteschutz"],
+            "compliance_notes": "Geprüft.",
+            "localized_entities": localized_entities(
+                language="de",
+                target_market="Germany",
+                subject="Bergsteiger-Set für kalte Höhenlagen",
+                product_category="Alpine Ausrüstung",
+                brand_name="Alpen-Set",
+                brand_voice="Praktisch und vertrauenswürdig",
+                primary_keywords=["Bergsteigen", "Kälteschutz"],
+            ),
+        }
+        inputs = {
+            "subject": "寒带登山套装",
+            "product_category": "登山套装",
+            "target_markets": "Germany",
+            "target_languages": ["de"],
+            "platforms": ["Instagram"],
+            "brand_voice": "寒带地区登山",
+            "brand_name": "登山套装",
+            "primary_keywords": ["登山"],
+            "generate_visual_assets": False,
+        }
+
+        result = _enrich_language_output(output, inputs, "de", "Germany", {})
+
+        serialized = json.dumps(
+            {
+                "seo_metadata": result["seo_metadata"],
+                "multimodal_output": result["multimodal_output"],
+            },
+            ensure_ascii=False,
+        )
+        for source_term in ("寒带登山套装", "登山套装", "登山"):
+            self.assertNotIn(source_term, serialized)
+        self.assertIn("Bergsteiger-Set", serialized)
+        self.assertIn("Bergsteigen", serialized)
+
+    def test_reddit_geo_fallback_uses_localized_entities(self) -> None:
+        result = {
+            "localized_articles": [
+                {
+                    "language": "de",
+                    "title": "Bergsteiger-Set für kalte Höhenlagen",
+                    "article": "Artikel über alpine Ausrüstung.",
+                }
+            ],
+            "social_media_posts": [],
+            "seo_outputs": [],
+            "visual_assets": [],
+            "reddit_geo_posts": [],
+            "localized_entities": [
+                localized_entities(
+                    language="de",
+                    target_market="Germany",
+                    subject="Bergsteiger-Set für kalte Höhenlagen",
+                    product_category="Alpine Ausrüstung",
+                    brand_name="Alpen-Set",
+                    brand_voice="Praktisch und vertrauenswürdig",
+                    primary_keywords=["Bergsteigen", "Kälteschutz"],
+                )
+            ],
+        }
+        inputs = {
+            "subject": "寒带登山套装",
+            "product_category": "登山套装",
+            "target_markets": "Germany",
+            "target_languages": ["de"],
+            "platforms": ["Reddit"],
+            "brand_name": "登山套装",
+            "product_url": "https://example.com/product",
+            "primary_keywords": ["登山"],
+            "generate_reddit_geo": True,
+        }
+        reddit_context = {
+            "enabled": True,
+            "data_source": "serper_unavailable",
+            "confidence_level": "low",
+            "sources": [],
+        }
+
+        localized_result = _apply_reddit_geo_context(result, inputs, reddit_context)
+
+        serialized = json.dumps(localized_result["reddit_geo_posts"], ensure_ascii=False)
+        for source_term in ("寒带登山套装", "登山套装", "登山"):
+            self.assertNotIn(source_term, serialized)
+        self.assertIn("Bergsteiger-Set", serialized)
+        self.assertIn("Alpen-Set", serialized)
 
     def test_content_timeline_entries_normalize_task_and_stage_events(self) -> None:
         events = [
@@ -1334,6 +1527,15 @@ class ContentToolTests(unittest.TestCase):
                     "social_media_posts": [],
                     "seo_keywords": [f"keyword-{language}"],
                     "compliance_notes": "Reviewed.",
+                    "localized_entities": localized_entities(
+                        language=language,
+                        target_market=str(inputs["target_market"]),
+                        subject=f"Localized product {language}",
+                        product_category=f"Localized category {language}",
+                        brand_name=f"Localized brand {language}",
+                        brand_voice=f"Localized voice {language}",
+                        primary_keywords=[f"keyword-{language}"],
+                    ),
                 }
 
         inputs = {

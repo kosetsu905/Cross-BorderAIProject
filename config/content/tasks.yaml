@@ -15,6 +15,9 @@ research_and_strategy:
     {brand_voice_summary}
     Primary keyword seeds:
     {primary_keywords_summary}
+    Treat subject, product_category, brand_name, brand_voice, and primary keyword seeds as
+    source-language descriptors. In market-specific guidance, tell the downstream editor to
+    translate or localize those descriptors into each target language instead of copying them.
     Ground the blueprint in these user-provided product features when available:
     {product_features_summary}
     Treat product features as first-party input. Use them to shape article angles, examples, CTAs, and benefit-led
@@ -27,6 +30,15 @@ content_creation_and_qa:
     Write one full localized blog/article in markdown format about {subject} for the requested language
     {target_language} and target market scope {target_market}. Then generate localized platform-specific social media posts for {target_language}
     that cover the requested platforms: {platforms}.
+    Also return localized_entities with language={target_language}, target_market={target_market}, and
+    localized versions of subject, product_category, brand_name, brand_voice, and primary_keywords.
+    Treat all user-provided text fields as source-language descriptors that must be translated or
+    naturally localized into {target_language}; do not copy source-language Chinese, English, or other
+    non-target-language product, brand, keyword, or brand-voice phrases into localized_entities.
+    If no source brand_name was provided, set localized_entities.brand_name to an empty string.
+    Return compliance_notes as a top-level field next to localized_article and localized_entities.
+    localized_article must contain only language, title, and article; do not nest compliance_notes
+    or localized_entities inside localized_article.
     Keep the output compact and parseable. Hard limits: localized_article.title must be at most
     {content_title_max_chars} characters; localized_article.article must be at most
     {content_article_max_chars} characters; each social_media_posts item must be at most
@@ -55,9 +67,11 @@ content_creation_and_qa:
     Product URL: {product_url_summary}
     Make the article concrete by connecting these features to practical user needs, usage scenarios, and CTAs.
     If no product features are provided, avoid inventing specific capabilities.
-    The article, social posts, SEO keywords, and compliance notes must be written in {target_language};
-    do not mix in another language except unavoidable brand names, product names, URLs, or standard
-    platform hashtags. Do not invent named local brands, exact market statistics, regulations,
+    The article, social posts, SEO keywords, compliance notes, and localized_entities must be written
+    in {target_language}; do not mix in another language except URLs, source_ids, subreddit names,
+    platform names, or standard platform hashtags. Do not preserve source-language brand names,
+    product names, or keywords; translate or localize them for {target_language}. Do not invent named
+    local brands, exact market statistics, regulations,
     material innovations, or cultural claims. If the strategy does not provide a verified source
     for a specific claim, use cautious generic language such as "some brands", "many consumers",
     or "consider checking certified materials" rather than presenting it as factual local market data.
@@ -74,6 +88,6 @@ content_creation_and_qa:
     moderation_notes. Do not claim that Reddit users agree with any point unless the source context
     explicitly supports it. All reddit_geo_posts fields that contain prose, including title_options,
     body, body_without_link, disclosure_note, and moderation_notes, must be written in
-    {target_language}; only brand names, product names, URLs, source_ids, and standard subreddit names
-    may remain in another language. Never output placeholder links such as [your product link].
-  expected_output: "A compact final structured single-language content package with one bounded localized_article, at most one bounded social_media_posts item per requested platform, up to 12 seo_keywords, concise compliance_notes, optional reddit_geo_posts when Reddit GEO is enabled, and optional multimodal/SEO/compliance planning metadata."
+    {target_language}; only URLs, source_ids, and standard subreddit names may remain in another
+    language. Never output placeholder links such as [your product link].
+  expected_output: "A compact final structured single-language content package with top-level localized_entities and top-level compliance_notes, one bounded localized_article containing only language, title, and article, at most one bounded social_media_posts item per requested platform, up to 12 seo_keywords, optional reddit_geo_posts when Reddit GEO is enabled, and optional multimodal/SEO/compliance planning metadata."

@@ -213,6 +213,23 @@ class RedditGeoPost(BaseModel):
     confidence_level: str = Field(..., description="Confidence level based on source availability")
 
 
+class LocalizedContentEntities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(..., description="Requested target language code or name")
+    target_market: str = Field(..., description="Target market for the localized entities")
+    subject: str = Field(..., min_length=1, description="Localized content subject")
+    product_category: str = Field(..., min_length=1, description="Localized product category")
+    brand_name: str = Field(
+        "",
+        description="Localized brand or entity name; empty when no source brand name was provided",
+    )
+    brand_voice: str = Field(..., min_length=1, description="Localized brand voice guidance")
+    primary_keywords: list[str] = Field(
+        ..., min_length=1, description="Localized SEO keyword seeds"
+    )
+
+
 class MarketMultimodalOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -237,6 +254,10 @@ class ContentOutput(BaseModel):
         ..., description="Primary and secondary SEO keywords used"
     )
     compliance_notes: str = Field(..., description="Quality and compliance review notes")
+    localized_entities: list[LocalizedContentEntities] = Field(
+        default_factory=list,
+        description="Localized product, brand, and SEO entities by language and market",
+    )
     multimodal_outputs: list[MarketMultimodalOutput] = Field(
         default_factory=list,
         description="Market and language-specific visual localization outputs",
@@ -280,6 +301,9 @@ class PerLanguageContentOutput(BaseModel):
         ..., description="Primary and secondary SEO keywords used for this language"
     )
     compliance_notes: str = Field(..., description="Quality and compliance review notes")
+    localized_entities: LocalizedContentEntities = Field(
+        ..., description="Localized product, brand, and SEO entities for downstream tools"
+    )
     multimodal_output: MarketMultimodalOutput | None = Field(
         None,
         description="Market-specific multimodal localization output",
@@ -380,6 +404,20 @@ def _serialize_crew_result(result: Any) -> dict[str, Any]:
     return serialize_crew_result(result)
 
 
+def _normalize_per_language_content_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    article = normalized.get("localized_article")
+    if not isinstance(article, dict):
+        return normalized
+
+    article_payload = dict(article)
+    nested_compliance_notes = article_payload.pop("compliance_notes", None)
+    normalized["localized_article"] = article_payload
+    if "compliance_notes" not in normalized and nested_compliance_notes is not None:
+        normalized["compliance_notes"] = nested_compliance_notes
+    return normalized
+
+
 def _normalize_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(inputs)
     normalized["product_features_summary"] = _summarize_product_features(
@@ -478,6 +516,68 @@ def _target_market_for_language(inputs: dict[str, Any], language_index: int) -> 
     if len(markets) == len(languages):
         return markets[language_index]
     return str(inputs.get("target_markets", ""))
+
+
+def _localized_inputs_for_language(
+    output: dict[str, Any],
+    inputs: dict[str, Any],
+    language: str,
+    target_market: str,
+) -> dict[str, Any]:
+    return _localized_inputs_from_entities(
+        inputs,
+        _localized_entities_payload(output),
+        language,
+        target_market,
+    )
+
+
+def _localized_inputs_from_entities(
+    inputs: dict[str, Any],
+    entities: dict[str, Any] | None,
+    language: str,
+    target_market: str,
+) -> dict[str, Any]:
+    localized = {
+        **inputs,
+        "target_language": language,
+        "target_languages": [language],
+        "target_market": target_market,
+        "target_markets": target_market,
+    }
+    if not entities:
+        return localized
+
+    field_map = {
+        "subject": "subject",
+        "product_category": "product_category",
+        "brand_voice": "brand_voice",
+    }
+    for entity_key, input_key in field_map.items():
+        value = str(entities.get(entity_key) or "").strip()
+        if value:
+            localized[input_key] = value
+
+    brand_name = str(entities.get("brand_name") or "").strip()
+    if brand_name:
+        localized["brand_name"] = brand_name
+    elif inputs.get("brand_name"):
+        localized.pop("brand_name", None)
+
+    primary_keywords = [
+        str(keyword).strip()
+        for keyword in entities.get("primary_keywords") or []
+        if str(keyword).strip()
+    ]
+    if primary_keywords:
+        localized["primary_keywords"] = primary_keywords
+
+    return localized
+
+
+def _localized_entities_payload(output: dict[str, Any]) -> dict[str, Any] | None:
+    entities = output.get("localized_entities")
+    return entities if isinstance(entities, dict) else None
 
 
 def _build_reddit_geo_context(
@@ -594,12 +694,14 @@ def _enrich_language_output(
     target_market: str,
     config_context: dict[str, Any],
 ) -> dict[str, Any]:
-    product = _product_name(inputs)
-    brand_voice = _brand_voice(inputs)
-    primary_keywords = _primary_keywords(inputs)
+    tool_inputs = _localized_inputs_for_language(output, inputs, language, target_market)
+    product = _product_name(tool_inputs)
+    brand_voice = _brand_voice(tool_inputs)
+    primary_keywords = _primary_keywords(tool_inputs)
+    brand_name = str(tool_inputs.get("brand_name") or "").strip() or "YourBrand"
     platforms = [
         str(platform).strip()
-        for platform in inputs.get("platforms", [])
+        for platform in tool_inputs.get("platforms", [])
         if str(platform).strip()
     ]
 
@@ -677,6 +779,7 @@ def _enrich_language_output(
                 target_market=target_market,
                 language=language,
                 primary_keywords=primary_keywords,
+                brand_name=brand_name,
             )
     except Exception as exc:
         _emit_content_stage(
@@ -761,7 +864,7 @@ def _enrich_language_output(
 
     visual_assets: list[dict[str, Any]] = []
     visual_asset_scores: list[dict[str, Any]] = []
-    if bool(inputs.get("generate_visual_assets")):
+    if bool(tool_inputs.get("generate_visual_assets")):
         image_tool = OpenAIImageGenerationTool(
             openai_api_key=_openai_api_key_for_images(config_context),
             image_model=str(config_context.get("content_image_model") or "gpt-image-2"),
@@ -792,18 +895,18 @@ def _enrich_language_output(
                     with image_generation_lock:
                         image_result = image_tool._run(
                             prompt=localization_output["visual_spec"]["ai_image_prompt"],
-                            output_slug=_asset_output_slug(inputs, language, target_market),
-                            image_generation_count=int(inputs.get("image_generation_count") or 1),
-                            image_quality=str(inputs.get("image_quality") or "auto"),
-                            image_size=str(inputs.get("image_size") or "1024x1024"),
+                            output_slug=_asset_output_slug(tool_inputs, language, target_market),
+                            image_generation_count=int(tool_inputs.get("image_generation_count") or 1),
+                            image_quality=str(tool_inputs.get("image_quality") or "auto"),
+                            image_size=str(tool_inputs.get("image_size") or "1024x1024"),
                         )
                 else:
                     image_result = image_tool._run(
                         prompt=localization_output["visual_spec"]["ai_image_prompt"],
-                        output_slug=_asset_output_slug(inputs, language, target_market),
-                        image_generation_count=int(inputs.get("image_generation_count") or 1),
-                        image_quality=str(inputs.get("image_quality") or "auto"),
-                        image_size=str(inputs.get("image_size") or "1024x1024"),
+                        output_slug=_asset_output_slug(tool_inputs, language, target_market),
+                        image_generation_count=int(tool_inputs.get("image_generation_count") or 1),
+                        image_quality=str(tool_inputs.get("image_quality") or "auto"),
+                        image_size=str(tool_inputs.get("image_size") or "1024x1024"),
                     )
                 visual_assets = _visual_assets_from_generation_result(image_result)
                 image_status = str(image_result.get("status") or "completed")
@@ -1014,6 +1117,11 @@ def _content_generation_preview(output: dict[str, Any]) -> dict[str, Any]:
         "localized_article": article if isinstance(article, dict) else None,
         "social_media_posts": social_posts if isinstance(social_posts, list) else [],
         "seo_keywords": output.get("seo_keywords") if isinstance(output.get("seo_keywords"), list) else [],
+        "localized_entities": (
+            output.get("localized_entities")
+            if isinstance(output.get("localized_entities"), dict)
+            else None
+        ),
         "compliance_notes": str(output.get("compliance_notes") or "").strip(),
     }
 
@@ -1405,6 +1513,7 @@ def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
     social_posts: list[dict[str, Any]] = []
     seo_keywords: list[str] = []
     compliance_notes: list[str] = []
+    localized_entities: list[dict[str, Any]] = []
     multimodal_outputs: list[dict[str, Any]] = []
     seo_outputs: list[dict[str, Any]] = []
     cultural_risk_assessments: list[dict[str, Any]] = []
@@ -1425,6 +1534,9 @@ def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
             note_language = _output_language(output)
             prefix = f"[{note_language}] " if note_language else ""
             compliance_notes.append(f"{prefix}{note}")
+        entities = _localized_entities_payload(output)
+        if entities:
+            localized_entities.append(entities)
         multimodal_output = output.get("multimodal_output")
         if isinstance(multimodal_output, dict):
             multimodal_outputs.append(multimodal_output)
@@ -1455,6 +1567,7 @@ def _merge_language_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
         "social_media_posts": social_posts,
         "seo_keywords": seo_keywords,
         "compliance_notes": " ".join(compliance_notes),
+        "localized_entities": localized_entities,
         "multimodal_outputs": multimodal_outputs,
         "seo_outputs": seo_outputs,
         "cultural_risk_assessments": cultural_risk_assessments,
@@ -1581,11 +1694,17 @@ def _fallback_reddit_geo_posts(
     for index, article in enumerate(articles):
         language = str(article.get("language") or "").strip()
         target_market = _target_market_for_language(inputs, index)
+        localized_inputs = _localized_inputs_from_entities(
+            inputs,
+            _localized_entities_for_article(result, article, index),
+            language,
+            target_market,
+        )
         sources = _reddit_sources_for_market(reddit_geo_context, target_market)
         source_ids = [str(source.get("source_id")) for source in sources[:3] if source.get("source_id")]
         recommended_subreddit = _recommended_subreddit(sources)
-        title = str(article.get("title") or inputs.get("subject") or "Product discussion").strip()
-        body_without_link = _fallback_reddit_body_without_link(article, inputs, target_market)
+        title = str(article.get("title") or localized_inputs.get("subject") or "Product discussion").strip()
+        body_without_link = _fallback_reddit_body_without_link(article, localized_inputs, target_market)
         product_url = str(inputs.get("product_url") or "").strip()
         body = (
             f"{body_without_link}\n\nProduct reference for context: {product_url}"
@@ -1599,12 +1718,16 @@ def _fallback_reddit_geo_posts(
                 "recommended_subreddit": recommended_subreddit,
                 "title_options": [
                     title[:180],
-                    f"What should buyers in {target_market} check before choosing {inputs.get('subject') or inputs.get('product_category')}?"[:180],
+                    (
+                        "What should buyers in "
+                        f"{target_market} check before choosing "
+                        f"{localized_inputs.get('subject') or localized_inputs.get('product_category')}?"
+                    )[:180],
                 ],
                 "body": body,
                 "body_without_link": body_without_link,
-                "disclosure_note": _reddit_disclosure_note(inputs),
-                "ai_search_entity_signals": _reddit_entity_signals(inputs, target_market, language),
+                "disclosure_note": _reddit_disclosure_note(localized_inputs),
+                "ai_search_entity_signals": _reddit_entity_signals(localized_inputs, target_market, language),
                 "source_ids": source_ids,
                 "moderation_notes": [
                     "Manual review required before posting; verify subreddit rules, flair, and self-promotion limits.",
@@ -1616,6 +1739,25 @@ def _fallback_reddit_geo_posts(
             }
         )
     return posts
+
+
+def _localized_entities_for_article(
+    result: dict[str, Any],
+    article: dict[str, Any],
+    article_index: int,
+) -> dict[str, Any] | None:
+    entities_list = [
+        item
+        for item in result.get("localized_entities", [])
+        if isinstance(item, dict)
+    ]
+    language = str(article.get("language") or "").strip()
+    for entities in entities_list:
+        if str(entities.get("language") or "").strip() == language:
+            return entities
+    if 0 <= article_index < len(entities_list):
+        return entities_list[article_index]
+    return None
 
 
 def _sanitize_reddit_geo_posts(
@@ -1941,7 +2083,21 @@ def _run_language_generation(
                 language=language,
                 target_market=target_market,
             ):
-                result = _serialize_crew_result(content_crew.kickoff(inputs=language_inputs))
+                raw_result = _serialize_crew_result(content_crew.kickoff(inputs=language_inputs))
+                usage_metrics = raw_result.get(INTERNAL_USAGE_KEY)
+                validation_payload = {
+                    key: value
+                    for key, value in raw_result.items()
+                    if key != INTERNAL_USAGE_KEY
+                }
+                validation_payload = _normalize_per_language_content_payload(
+                    validation_payload
+                )
+                result = PerLanguageContentOutput.model_validate(
+                    validation_payload
+                ).model_dump()
+                if isinstance(usage_metrics, dict):
+                    result[INTERNAL_USAGE_KEY] = usage_metrics
         except Exception as exc:
             error_summary = _error_summary(exc)
             _emit_content_stage(
@@ -1980,9 +2136,15 @@ def _run_language_generation(
             language=language,
             target_market=target_market,
         )
+        localized_inputs = _localized_inputs_for_language(
+            result,
+            language_inputs,
+            language,
+            target_market,
+        )
         return _enrich_language_output(
             result,
-            inputs,
+            localized_inputs,
             language,
             target_market,
             traced_config_context,
