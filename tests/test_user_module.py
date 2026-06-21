@@ -7,7 +7,16 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from admin_dashboard import _headers, _oauth_payload, _payment_method_payload, _user_headers
+from admin_dashboard import (
+    USER_AUTH_METHODS,
+    _friendly_user_error,
+    _headers,
+    _oauth_payload,
+    _payment_method_payload,
+    _user_auth_state_from_response,
+    _user_headers,
+    _user_profile_summary,
+)
 from api.user_routes import create_user_router
 from database import get_db_session
 from db_models import (
@@ -72,6 +81,20 @@ def register_email(client: TestClient, email: str = "john@example.com", password
     return response.json()
 
 
+def register_phone(client: TestClient, phone: str = "13800138000", password: str = "PhonePass123!") -> dict[str, Any]:
+    response = client.post(
+        "/api/v1/users/register/phone",
+        json={
+            "country_code": "+86",
+            "phone": phone,
+            "password": password,
+            "username": "phone_user",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_email_register_duplicate_and_login() -> None:
     client, _ = make_client()
     created = register_email(client)
@@ -100,6 +123,34 @@ def test_email_register_duplicate_and_login() -> None:
     )
     assert login.status_code == 200
     assert login.json()["user"]["email"] == "john@example.com"
+
+
+def test_phone_register_duplicate_and_login() -> None:
+    client, _ = make_client()
+    created = register_phone(client)
+
+    assert created["access_token"]
+    assert created["user"]["phone"] == "+8613800138000"
+    assert any(provider["provider"] == "phone" for provider in created["user"]["auth_providers"])
+
+    duplicate = client.post(
+        "/api/v1/users/register/phone",
+        json={"country_code": "+86", "phone": "13800138000", "password": "PhonePass123!"},
+    )
+    assert duplicate.status_code == 409
+
+    bad_login = client.post(
+        "/api/v1/users/login/phone",
+        json={"country_code": "+86", "phone": "13800138000", "password": "wrong"},
+    )
+    assert bad_login.status_code == 401
+
+    login = client.post(
+        "/api/v1/users/login/phone",
+        json={"country_code": "+86", "phone": "13800138000", "password": "PhonePass123!"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["phone"] == "+8613800138000"
 
 
 def test_session_can_access_me_and_logout_revokes_token() -> None:
@@ -324,15 +375,61 @@ def test_response_does_not_expose_secret_hashes() -> None:
 
 
 def test_dashboard_user_helpers_do_not_change_workflow_headers() -> None:
+    assert USER_AUTH_METHODS == ["Email", "Phone", "Simulated OAuth"]
     assert _headers("workflow-token") == {"Authorization": "Bearer workflow-token"}
     assert _user_headers("user-token") == {"Authorization": "Bearer user-token"}
-    assert _oauth_payload("google", "google-1", '{"email": "a@example.com"}') == {
+    assert _oauth_payload("google", "google-1", {"email": "a@example.com"}) == {
         "provider": "google",
         "provider_user_id": "google-1",
         "provider_info": {"email": "a@example.com"},
     }
-    assert _payment_method_payload("paypal", '{"account": "masked@example.com"}', True) == {
+    assert _payment_method_payload("paypal", {"account": "masked@example.com"}, True) == {
         "payment_type": "paypal",
         "payment_data": {"account": "masked@example.com"},
         "is_default": True,
     }
+
+
+def test_dashboard_user_errors_are_human_readable() -> None:
+    validation_message = _friendly_user_error(
+        '422: {"detail":[{"loc":["body","password"],"msg":"String should have at least 8 characters","type":"string_too_short"}]}'
+    )
+    conflict_message = _friendly_user_error('409: {"detail":"Email already registered"}')
+    session_message = _friendly_user_error('401: {"detail":"Invalid or expired user session"}')
+
+    for message in [validation_message, conflict_message, session_message]:
+        assert "{" not in message
+        assert "}" not in message
+        assert "access_token" not in message
+        assert "token_hash" not in message
+    assert validation_message == "Password must be at least 8 characters."
+    assert conflict_message == "This email is already registered. Try logging in instead."
+    assert session_message == "Your session has expired. Please sign in again."
+
+
+def test_dashboard_auth_state_keeps_token_out_of_display_payload() -> None:
+    result = {
+        "access_token": "secret-session-token",
+        "token_type": "bearer",
+        "expires_at": "2026-06-22T00:00:00Z",
+        "user": {
+            "username": "jane",
+            "email": "jane@example.com",
+            "subscription_plan": "professional",
+            "subscription_status": "active",
+        },
+    }
+
+    state = _user_auth_state_from_response(result, None)
+
+    assert state["ok"] is True
+    assert state["session_token"] == "secret-session-token"
+    assert state["display"] == {
+        "account": "jane",
+        "email": "jane@example.com",
+        "plan": "Professional",
+        "status": "Active",
+    }
+    assert "access_token" not in str(state["display"])
+    assert "secret-session-token" not in str(state["display"])
+    assert _user_profile_summary(result["user"]) == state["display"]

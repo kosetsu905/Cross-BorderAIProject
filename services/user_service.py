@@ -22,6 +22,7 @@ from user_models import (
     EmailRegisterRequest,
     OAuthLinkRequest,
     OAuthLoginRequest,
+    PhoneLoginRequest,
     PaymentMethodResponse,
     PhoneRegisterRequest,
     SubscriptionRequest,
@@ -151,6 +152,16 @@ class UserService:
         if user is None or not user.password_hash or not user.is_active:
             raise UserAuthenticationError()
         if not verify_password(password, user.password_hash):
+            raise UserAuthenticationError()
+        user.last_login = _utc_now()
+        user.updated_at = _utc_now()
+        return user, self.create_session(user.user_id)
+
+    def login_with_phone(self, request: PhoneLoginRequest) -> tuple[UserRecord, SessionToken]:
+        user = self._user_by_phone(_normalize_phone(request.phone, request.country_code))
+        if user is None or not user.password_hash or not user.is_active:
+            raise UserAuthenticationError()
+        if not verify_password(request.password, user.password_hash):
             raise UserAuthenticationError()
         user.last_login = _utc_now()
         user.updated_at = _utc_now()

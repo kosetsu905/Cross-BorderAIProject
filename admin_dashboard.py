@@ -195,6 +195,7 @@ USER_PAYMENT_METHOD_TYPES = [
     "crypto",
 ]
 USER_SUBSCRIPTION_PLANS = ["starter", "professional", "enterprise"]
+USER_AUTH_METHODS = ["Email", "Phone", "Simulated OAuth"]
 
 CONTENT_STAGE_LABELS = {
     "workflow_submitted": "Workflow submitted",
@@ -275,7 +276,9 @@ def _parse_inputs_json(raw_json: str, fallback: dict[str, Any]) -> dict[str, Any
     return parsed if isinstance(parsed, dict) else dict(fallback)
 
 
-def _json_payload_from_text(raw_json: str) -> dict[str, Any]:
+def _json_payload_from_text(raw_json: str | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(raw_json, dict):
+        return raw_json
     try:
         parsed = json.loads(raw_json or "{}")
     except json.JSONDecodeError:
@@ -283,18 +286,18 @@ def _json_payload_from_text(raw_json: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _oauth_payload(provider: str, provider_user_id: str, provider_info_json: str) -> dict[str, Any]:
+def _oauth_payload(provider: str, provider_user_id: str, provider_info: str | dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": provider,
         "provider_user_id": provider_user_id.strip(),
-        "provider_info": _json_payload_from_text(provider_info_json),
+        "provider_info": _json_payload_from_text(provider_info),
     }
 
 
-def _payment_method_payload(payment_type: str, payment_data_json: str, is_default: bool) -> dict[str, Any]:
+def _payment_method_payload(payment_type: str, payment_data: str | dict[str, Any], is_default: bool) -> dict[str, Any]:
     return {
         "payment_type": payment_type,
-        "payment_data": _json_payload_from_text(payment_data_json),
+        "payment_data": _json_payload_from_text(payment_data),
         "is_default": is_default,
     }
 
@@ -1892,243 +1895,583 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
 
 
 def _render_user_center(api_base_url: str) -> None:
-    user_token = st.session_state.get("user_access_token", "")
     st.subheader("Users")
-    token_cols = st.columns([2, 1])
-    user_token = token_cols[0].text_input(
-        "User access token",
-        value=user_token,
-        type="password",
-        key="user_access_token",
-    )
-    if token_cols[1].button("Load profile", width="stretch", disabled=not bool(user_token)):
+    _render_user_flash()
+
+    user_token = _current_user_token()
+    profile = st.session_state.get("current_user_profile")
+    if user_token and not isinstance(profile, dict):
         result, error = _request_json("GET", api_base_url, "/api/v1/users/me", user_token)
         if error:
-            st.error(error)
-        elif isinstance(result, dict):
+            _clear_user_session()
+            st.warning(_friendly_user_error(error))
+            _render_user_auth_gate(api_base_url)
+            return
+        if isinstance(result, dict):
             st.session_state.current_user_profile = result
-            st.success("Profile loaded")
+            profile = result
 
-    register_tab, profile_tab, oauth_tab, payment_tab, subscription_tab = st.tabs(
-        ["Register / Login", "Profile", "OAuth", "Payment Methods", "Subscription"]
-    )
+    if not user_token or not isinstance(profile, dict):
+        _render_user_auth_gate(api_base_url)
+        return
 
-    with register_tab:
-        st.caption("Email account")
-        email_cols = st.columns(2)
-        email = email_cols[0].text_input("Email", key="user_email")
-        password = email_cols[1].text_input("Password", type="password", key="user_password")
-        username = st.text_input("Username", key="user_username")
-        action_cols = st.columns(2)
-        if action_cols[0].button("Register email user", width="stretch"):
-            payload = {"email": email, "password": password}
-            if username.strip():
-                payload["username"] = username.strip()
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/register/email", "", payload)
-            _handle_user_auth_result(result, error)
-        if action_cols[1].button("Login email user", width="stretch"):
-            payload = {"email": email, "password": password}
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/login/email", "", payload)
-            _handle_user_auth_result(result, error)
+    _render_authenticated_user_center(api_base_url, profile)
 
-        st.caption("Phone account")
-        phone_cols = st.columns(3)
-        country_code = phone_cols[0].text_input("Country code", value="+86", key="user_phone_country_code")
-        phone = phone_cols[1].text_input("Phone", key="user_phone")
-        phone_password = phone_cols[2].text_input("Phone password", type="password", key="user_phone_password")
-        if st.button("Register phone user", width="stretch"):
-            payload = {
-                "country_code": country_code,
-                "phone": phone,
-                "password": phone_password,
-                "username": username.strip() or None,
-            }
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/register/phone", "", payload)
-            _handle_user_auth_result(result, error)
 
-        st.caption("Simulated OAuth login")
+def _render_user_auth_gate(api_base_url: str) -> None:
+    mode = st.session_state.get("user_auth_mode", "login")
+    action_cols = st.columns(2)
+    if action_cols[0].button("Login", type="primary" if mode == "login" else "secondary", width="stretch"):
+        st.session_state.user_auth_mode = "login"
+        st.rerun()
+    if action_cols[1].button("Create account", type="primary" if mode == "register" else "secondary", width="stretch"):
+        st.session_state.user_auth_mode = "register"
+        st.rerun()
+
+    mode = st.session_state.get("user_auth_mode", "login")
+    method = st.radio("Method", USER_AUTH_METHODS, horizontal=True, key=f"user_{mode}_method")
+
+    if method == "Email":
+        _render_email_auth_form(api_base_url, mode)
+    elif method == "Phone":
+        _render_phone_auth_form(api_base_url, mode)
+    else:
+        _render_simulated_oauth_form(api_base_url)
+
+
+def _render_email_auth_form(api_base_url: str, mode: str) -> None:
+    with st.form(f"user_email_{mode}_form"):
+        email = st.text_input("Email", key=f"user_email_{mode}")
+        password = st.text_input("Password", type="password", key=f"user_password_{mode}")
+        username = ""
+        if mode == "register":
+            username = st.text_input("Username", key="user_register_username")
+        submitted = st.form_submit_button("Create account" if mode == "register" else "Login", width="stretch")
+
+    if not submitted:
+        return
+
+    payload: dict[str, Any] = {"email": email, "password": password}
+    if username.strip():
+        payload["username"] = username.strip()
+    path = "/api/v1/users/register/email" if mode == "register" else "/api/v1/users/login/email"
+    result, error = _request_json("POST", api_base_url, path, "", payload)
+    _apply_user_auth_response(result, error)
+
+
+def _render_phone_auth_form(api_base_url: str, mode: str) -> None:
+    with st.form(f"user_phone_{mode}_form"):
+        phone_cols = st.columns([1, 2])
+        country_code = phone_cols[0].text_input("Country code", value="+86", key=f"user_{mode}_phone_country_code")
+        phone = phone_cols[1].text_input("Phone", key=f"user_{mode}_phone")
+        password = st.text_input("Password", type="password", key=f"user_{mode}_phone_password")
+        username = ""
+        if mode == "register":
+            username = st.text_input("Username", key="user_register_phone_username")
+        submitted = st.form_submit_button("Create account" if mode == "register" else "Login", width="stretch")
+
+    if not submitted:
+        return
+
+    payload = {
+        "country_code": country_code,
+        "phone": phone,
+        "password": password,
+    }
+    if username.strip():
+        payload["username"] = username.strip()
+    path = "/api/v1/users/register/phone" if mode == "register" else "/api/v1/users/login/phone"
+    result, error = _request_json("POST", api_base_url, path, "", payload)
+    _apply_user_auth_response(result, error)
+
+
+def _render_simulated_oauth_form(api_base_url: str) -> None:
+    with st.form("user_simulated_oauth_form"):
         oauth_cols = st.columns(2)
-        provider = oauth_cols[0].selectbox("OAuth provider", USER_OAUTH_PROVIDERS, key="user_login_oauth_provider")
+        provider = oauth_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_login_oauth_provider")
         provider_user_id = oauth_cols[1].text_input("Provider user ID", key="user_login_provider_user_id")
-        provider_info_json = st.text_area(
-            "Provider info JSON",
-            value='{"email": "demo@example.com", "name": "Demo User", "email_verified": true}',
-            key="user_login_provider_info",
-            height=90,
-        )
-        if st.button("Login with simulated OAuth", width="stretch"):
-            payload = _oauth_payload(provider, provider_user_id, provider_info_json)
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/oauth/login", "", payload)
-            _handle_user_auth_result(result, error)
+        profile_cols = st.columns(2)
+        provider_email = profile_cols[0].text_input("Account email", key="user_login_provider_email")
+        provider_name = profile_cols[1].text_input("Display name", key="user_login_provider_name")
+        submitted = st.form_submit_button("Continue", width="stretch")
 
+    if not submitted:
+        return
+
+    payload = _oauth_payload(
+        provider,
+        provider_user_id,
+        {
+            "email": provider_email.strip(),
+            "name": provider_name.strip(),
+            "email_verified": bool(provider_email.strip()),
+        },
+    )
+    result, error = _request_json("POST", api_base_url, "/api/v1/users/oauth/login", "", payload)
+    _apply_user_auth_response(result, error)
+
+
+def _render_authenticated_user_center(api_base_url: str, profile: dict[str, Any]) -> None:
+    header_cols = st.columns([2, 1])
+    header_cols[0].markdown(f"**{_user_display_name(profile)}**")
+    header_cols[0].caption(str(profile.get("email") or profile.get("phone") or "Account"))
+    if header_cols[1].button("Sign out", width="stretch"):
+        _clear_user_session()
+        _set_user_flash("success", "Signed out.")
+        st.rerun()
+
+    summary = _user_profile_summary(profile)
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Account", summary["account"])
+    summary_cols[1].metric("Email", summary["email"])
+    summary_cols[2].metric("Plan", summary["plan"])
+    summary_cols[3].metric("Status", summary["status"])
+
+    profile_tab, security_tab, connected_tab, billing_tab = st.tabs(
+        ["Profile", "Security", "Connected accounts", "Billing"]
+    )
     with profile_tab:
-        profile = st.session_state.get("current_user_profile")
-        if isinstance(profile, dict):
-            st.json(profile)
-        update_cols = st.columns(2)
-        first_name = update_cols[0].text_input("First name", key="user_profile_first_name")
-        last_name = update_cols[1].text_input("Last name", key="user_profile_last_name")
+        _render_profile_settings(api_base_url, profile)
+    with security_tab:
+        _render_security_settings(api_base_url, profile)
+    with connected_tab:
+        _render_connected_accounts(api_base_url, profile)
+    with billing_tab:
+        _render_billing_settings(api_base_url, profile)
+
+
+def _render_profile_settings(api_base_url: str, profile: dict[str, Any]) -> None:
+    with st.form("user_profile_form"):
+        name_cols = st.columns(2)
+        first_name = name_cols[0].text_input("First name", value=str(profile.get("first_name") or ""))
+        last_name = name_cols[1].text_input("Last name", value=str(profile.get("last_name") or ""))
         locale_cols = st.columns(3)
-        country = locale_cols[0].text_input("Country", key="user_profile_country")
-        timezone = locale_cols[1].text_input("Timezone", value="UTC", key="user_profile_timezone")
-        language = locale_cols[2].text_input("Language", value="en", key="user_profile_language")
-        if st.button("Update profile", width="stretch", disabled=not bool(user_token)):
-            payload = _clean_optional_fields(
-                {
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "country": country,
-                    "timezone": timezone,
-                    "language": language,
-                }
-            )
-            result, error = _request_json("PATCH", api_base_url, "/api/v1/users/me", user_token, payload)
-            _handle_user_profile_result(result, error)
+        country = locale_cols[0].text_input("Country", value=str(profile.get("country") or ""))
+        timezone_value = locale_cols[1].text_input("Timezone", value=str(profile.get("timezone") or "UTC"))
+        language = locale_cols[2].text_input("Language", value=str(profile.get("language") or "en"))
+        submitted = st.form_submit_button("Save profile", width="stretch")
 
+    if not submitted:
+        return
+
+    payload = _clean_optional_fields(
+        {
+            "first_name": first_name,
+            "last_name": last_name,
+            "country": country,
+            "timezone": timezone_value,
+            "language": language,
+        }
+    )
+    result, error = _request_json("PATCH", api_base_url, "/api/v1/users/me", _current_user_token(), payload)
+    _apply_user_profile_response(result, error, "Profile updated.")
+
+
+def _render_security_settings(api_base_url: str, profile: dict[str, Any]) -> None:
+    with st.form("user_change_password_form"):
         password_cols = st.columns(2)
-        old_password = password_cols[0].text_input("Old password", type="password", key="user_old_password")
-        new_password = password_cols[1].text_input("New password", type="password", key="user_new_password")
-        if st.button("Change password", width="stretch", disabled=not bool(user_token)):
-            payload = {"old_password": old_password, "new_password": new_password}
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/password", user_token, payload)
-            _handle_status_result(result, error)
+        old_password = password_cols[0].text_input("Current password", type="password")
+        new_password = password_cols[1].text_input("New password", type="password")
+        submitted = st.form_submit_button("Change password", width="stretch")
 
-        reset_cols = st.columns(2)
-        reset_email = reset_cols[0].text_input("Reset email", key="user_reset_email")
-        reset_new_password = reset_cols[1].text_input("Reset new password", type="password", key="user_reset_new_password")
-        if st.button("Request reset token", width="stretch"):
-            result, error = _request_json(
-                "POST",
-                api_base_url,
-                "/api/v1/users/password-reset/request",
-                "",
-                {"email": reset_email},
-            )
-            if error:
-                st.error(error)
-            elif isinstance(result, dict):
-                st.session_state.user_reset_token = result.get("reset_token") or ""
-                st.success("Reset request accepted")
-                st.json(result)
-        reset_token = st.text_input(
-            "Reset token",
-            value=st.session_state.get("user_reset_token", ""),
-            type="password",
-            key="user_reset_token",
+    if submitted:
+        result, error = _request_json(
+            "POST",
+            api_base_url,
+            "/api/v1/users/me/password",
+            _current_user_token(),
+            {"old_password": old_password, "new_password": new_password},
         )
-        if st.button("Confirm password reset", width="stretch"):
-            payload = {"token": reset_token, "new_password": reset_new_password}
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/password-reset/confirm", "", payload)
-            _handle_status_result(result, error)
+        _apply_status_response(result, error, "Password changed.")
 
-    with oauth_tab:
+    st.divider()
+    with st.form("user_password_reset_form"):
+        reset_email = st.text_input("Account email", value=str(profile.get("email") or ""))
+        reset_new_password = st.text_input("New password", type="password", key="user_reset_new_password")
+        reset_submitted = st.form_submit_button("Reset password", width="stretch")
+
+    if not reset_submitted:
+        return
+
+    requested, request_error = _request_json(
+        "POST",
+        api_base_url,
+        "/api/v1/users/password-reset/request",
+        "",
+        {"email": reset_email},
+    )
+    if request_error:
+        st.error(_friendly_user_error(request_error))
+        return
+    reset_token = requested.get("reset_token") if isinstance(requested, dict) else None
+    st.session_state.user_reset_token = reset_token or ""
+    if not reset_token:
+        st.info("If that email exists, password reset instructions are prepared.")
+        return
+    confirmed, confirm_error = _request_json(
+        "POST",
+        api_base_url,
+        "/api/v1/users/password-reset/confirm",
+        "",
+        {"token": reset_token, "new_password": reset_new_password},
+    )
+    _apply_status_response(confirmed, confirm_error, "Password reset completed.")
+
+
+def _render_connected_accounts(api_base_url: str, profile: dict[str, Any]) -> None:
+    connected_rows = _connected_account_rows(profile)
+    if connected_rows:
+        st.dataframe(connected_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No connected accounts yet.")
+
+    with st.form("user_link_oauth_form"):
         link_cols = st.columns(2)
-        link_provider = link_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_link_oauth_provider")
-        link_provider_user_id = link_cols[1].text_input("Provider user ID", key="user_link_provider_user_id")
-        link_provider_info_json = st.text_area("Provider info JSON", value="{}", key="user_link_provider_info", height=90)
-        oauth_action_cols = st.columns(2)
-        if oauth_action_cols[0].button("Link OAuth provider", width="stretch", disabled=not bool(user_token)):
-            payload = _oauth_payload(link_provider, link_provider_user_id, link_provider_info_json)
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/oauth", user_token, payload)
-            _handle_user_profile_result(result, error)
-        if oauth_action_cols[1].button("Unlink OAuth provider", width="stretch", disabled=not bool(user_token)):
-            result, error = _request_json(
-                "DELETE",
-                api_base_url,
-                f"/api/v1/users/me/oauth/{link_provider}",
-                user_token,
-            )
-            _handle_status_result(result, error)
+        provider = link_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_link_oauth_provider")
+        provider_user_id = link_cols[1].text_input("Provider user ID", key="user_link_provider_user_id")
+        profile_cols = st.columns(2)
+        provider_email = profile_cols[0].text_input("Account email", key="user_link_provider_email")
+        provider_name = profile_cols[1].text_input("Display name", key="user_link_provider_name")
+        submitted = st.form_submit_button("Connect account", width="stretch")
 
-    with payment_tab:
-        payment_cols = st.columns([1, 2, 1])
-        payment_type = payment_cols[0].selectbox("Payment type", USER_PAYMENT_METHOD_TYPES, key="user_payment_type")
-        payment_data_json = payment_cols[1].text_area(
-            "Tokenized payment data JSON",
-            value='{"last_four": "4242", "brand": "visa"}',
-            key="user_payment_data",
-            height=90,
+    if submitted:
+        payload = _oauth_payload(
+            provider,
+            provider_user_id,
+            {
+                "email": provider_email.strip(),
+                "name": provider_name.strip(),
+                "email_verified": bool(provider_email.strip()),
+            },
         )
-        is_default = payment_cols[2].checkbox("Default", value=True, key="user_payment_default")
-        if st.button("Add payment method", width="stretch", disabled=not bool(user_token)):
-            payload = _payment_method_payload(payment_type, payment_data_json, is_default)
-            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/payment-methods", user_token, payload)
-            _handle_status_result(result, error)
-        method_id = st.text_input("Payment method ID", key="user_payment_method_id")
-        method_action_cols = st.columns(2)
-        if method_action_cols[0].button("Set default", width="stretch", disabled=not bool(user_token)):
-            result, error = _request_json(
-                "POST",
-                api_base_url,
-                f"/api/v1/users/me/payment-methods/{method_id}/default",
-                user_token,
-            )
-            _handle_status_result(result, error)
-        if method_action_cols[1].button("Remove payment method", width="stretch", disabled=not bool(user_token)):
+        result, error = _request_json("POST", api_base_url, "/api/v1/users/me/oauth", _current_user_token(), payload)
+        _apply_user_profile_response(result, error, "Account connected.")
+
+    linked_providers = [row["Provider"] for row in connected_rows if row["Provider"] not in {"email", "phone"}]
+    if linked_providers:
+        unlink_cols = st.columns([2, 1])
+        unlink_provider = unlink_cols[0].selectbox("Connected provider", linked_providers, key="user_unlink_provider")
+        if unlink_cols[1].button("Disconnect", width="stretch"):
             result, error = _request_json(
                 "DELETE",
                 api_base_url,
-                f"/api/v1/users/me/payment-methods/{method_id}",
-                user_token,
+                f"/api/v1/users/me/oauth/{unlink_provider}",
+                _current_user_token(),
             )
-            _handle_status_result(result, error)
+            _apply_status_response(result, error, "Account disconnected.", refresh_profile=True, api_base_url=api_base_url)
 
-    with subscription_tab:
-        plan_id = st.selectbox("Plan", USER_SUBSCRIPTION_PLANS, key="user_subscription_plan")
-        subscription_cols = st.columns(2)
-        if subscription_cols[0].button("Subscribe", width="stretch", disabled=not bool(user_token)):
+
+def _render_billing_settings(api_base_url: str, profile: dict[str, Any]) -> None:
+    st.markdown("**Payment methods**")
+    payment_rows = _payment_method_rows(profile)
+    if payment_rows:
+        st.dataframe(payment_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No payment methods yet.")
+
+    with st.form("user_add_payment_form"):
+        payment_cols = st.columns(3)
+        payment_type = payment_cols[0].selectbox("Payment type", USER_PAYMENT_METHOD_TYPES, key="user_payment_type")
+        account_label = payment_cols[1].text_input("Account label", key="user_payment_account")
+        last_four = payment_cols[2].text_input("Last four", max_chars=4, key="user_payment_last_four")
+        brand = st.text_input("Brand", key="user_payment_brand")
+        is_default = st.checkbox("Set as default", value=not bool(payment_rows), key="user_payment_default")
+        submitted = st.form_submit_button("Add payment method", width="stretch")
+
+    if submitted:
+        payment_data = _clean_optional_fields(
+            {
+                "account": account_label,
+                "last_four": last_four,
+                "brand": brand,
+            }
+        )
+        payload = _payment_method_payload(payment_type, payment_data, is_default)
+        result, error = _request_json(
+            "POST",
+            api_base_url,
+            "/api/v1/users/me/payment-methods",
+            _current_user_token(),
+            payload,
+        )
+        _apply_status_response(result, error, "Payment method added.", refresh_profile=True, api_base_url=api_base_url)
+
+    active_payment_ids = [row["ID"] for row in payment_rows]
+    if active_payment_ids:
+        payment_action_cols = st.columns([2, 1, 1])
+        selected_method = payment_action_cols[0].selectbox("Payment method", active_payment_ids)
+        if payment_action_cols[1].button("Set default", width="stretch"):
             result, error = _request_json(
                 "POST",
                 api_base_url,
-                "/api/v1/users/me/subscription",
-                user_token,
-                {"plan_id": plan_id},
+                f"/api/v1/users/me/payment-methods/{selected_method}/default",
+                _current_user_token(),
             )
-            _handle_user_profile_result(result, error)
-        if subscription_cols[1].button("Cancel subscription", width="stretch", disabled=not bool(user_token)):
+            _apply_status_response(result, error, "Default payment method updated.", refresh_profile=True, api_base_url=api_base_url)
+        if payment_action_cols[2].button("Remove", width="stretch"):
             result, error = _request_json(
-                "POST",
+                "DELETE",
                 api_base_url,
-                "/api/v1/users/me/subscription/cancel",
-                user_token,
+                f"/api/v1/users/me/payment-methods/{selected_method}",
+                _current_user_token(),
             )
-            _handle_user_profile_result(result, error)
+            _apply_status_response(result, error, "Payment method removed.", refresh_profile=True, api_base_url=api_base_url)
+
+    st.divider()
+    st.markdown("**Subscription**")
+    plan_cols = st.columns([2, 1, 1])
+    plan_id = plan_cols[0].selectbox("Plan", USER_SUBSCRIPTION_PLANS, key="user_subscription_plan")
+    if plan_cols[1].button("Subscribe", width="stretch"):
+        result, error = _request_json(
+            "POST",
+            api_base_url,
+            "/api/v1/users/me/subscription",
+            _current_user_token(),
+            {"plan_id": plan_id},
+        )
+        _apply_user_profile_response(result, error, "Subscription updated.")
+    if plan_cols[2].button("Cancel", width="stretch"):
+        result, error = _request_json(
+            "POST",
+            api_base_url,
+            "/api/v1/users/me/subscription/cancel",
+            _current_user_token(),
+        )
+        _apply_user_profile_response(result, error, "Subscription cancelled.")
 
 
-def _handle_user_auth_result(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
-    if error:
-        st.error(error)
+def _current_user_token() -> str:
+    return str(st.session_state.get("user_access_token") or "")
+
+
+def _clear_user_session() -> None:
+    st.session_state.pop("user_access_token", None)
+    st.session_state.pop("current_user_profile", None)
+    st.session_state.pop("user_reset_token", None)
+
+
+def _set_user_flash(level: str, message: str) -> None:
+    st.session_state.user_flash = {"level": level, "message": message}
+
+
+def _render_user_flash() -> None:
+    flash = st.session_state.pop("user_flash", None)
+    if not isinstance(flash, dict):
         return
-    if not isinstance(result, dict):
-        st.error("Unexpected user auth response")
+    level = flash.get("level")
+    message = str(flash.get("message") or "")
+    if level == "success":
+        st.success(message)
+    elif level == "warning":
+        st.warning(message)
+    elif level == "error":
+        st.error(message)
+    elif message:
+        st.info(message)
+
+
+def _apply_user_auth_response(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
+    state = _user_auth_state_from_response(result, error)
+    if not state["ok"]:
+        st.error(str(state["message"]))
         return
-    st.session_state.user_access_token = str(result.get("access_token") or "")
-    user = result.get("user")
-    if isinstance(user, dict):
-        st.session_state.current_user_profile = user
-    st.success("User session ready")
-    st.json(result)
+    st.session_state.user_access_token = state["session_token"]
+    st.session_state.current_user_profile = state["profile"]
+    _set_user_flash("success", str(state["message"]))
+    st.rerun()
 
 
-def _handle_user_profile_result(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
+def _apply_user_profile_response(
+    result: dict[str, Any] | list[dict[str, Any]] | None,
+    error: str | None,
+    success_message: str,
+) -> None:
     if error:
-        st.error(error)
+        st.error(_friendly_user_error(error))
         return
     if isinstance(result, dict):
         st.session_state.current_user_profile = result
-        st.success("User profile updated")
-        st.json(result)
+        _set_user_flash("success", success_message)
+        st.rerun()
     else:
-        st.error("Unexpected user profile response")
+        st.error("We could not update your account. Please try again.")
 
 
-def _handle_status_result(result: dict[str, Any] | list[dict[str, Any]] | None, error: str | None) -> None:
+def _apply_status_response(
+    result: dict[str, Any] | list[dict[str, Any]] | None,
+    error: str | None,
+    success_message: str,
+    *,
+    refresh_profile: bool = False,
+    api_base_url: str | None = None,
+) -> None:
     if error:
-        st.error(error)
+        st.error(_friendly_user_error(error))
         return
-    st.success("Request completed")
-    if result is not None:
-        st.json(result)
+    if refresh_profile and api_base_url:
+        profile, profile_error = _request_json("GET", api_base_url, "/api/v1/users/me", _current_user_token())
+        if profile_error:
+            st.error(_friendly_user_error(profile_error))
+            return
+        if isinstance(profile, dict):
+            st.session_state.current_user_profile = profile
+    _set_user_flash("success", success_message)
+    st.rerun()
+
+
+def _friendly_user_error(error: str | None) -> str:
+    if not error:
+        return "Something went wrong. Please try again."
+    status_code, detail = _parse_api_error(error)
+    detail_text = _plain_error_detail(detail)
+    lowered = detail_text.lower()
+    if status_code == 401:
+        return "Your session has expired. Please sign in again."
+    if "invalid user credentials" in lowered:
+        return "Email, phone, or password is incorrect."
+    if "email already registered" in lowered:
+        return "This email is already registered. Try logging in instead."
+    if "phone number already registered" in lowered:
+        return "This phone number is already registered."
+    if "at least 8" in lowered or "minimum length" in lowered:
+        return "Password must be at least 8 characters."
+    if "payment_data" in lowered or "card" in lowered or "secret" in lowered:
+        return "Payment details must be masked or tokenized. Do not enter full card numbers or security codes."
+    if "oauth provider identity" in lowered:
+        return "That connected account is already linked to another user."
+    if status_code == 422:
+        return "Please check the fields and try again."
+    if detail_text:
+        return _sanitize_user_message(detail_text)
+    return "Something went wrong. Please try again."
+
+
+def _parse_api_error(error: str) -> tuple[int | None, Any]:
+    status_code: int | None = None
+    body = error
+    if ":" in error:
+        code_text, possible_body = error.split(":", 1)
+        try:
+            status_code = int(code_text.strip())
+            body = possible_body.strip()
+        except ValueError:
+            body = error
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return status_code, body
+    if isinstance(parsed, dict) and "detail" in parsed:
+        return status_code, parsed["detail"]
+    return status_code, parsed
+
+
+def _plain_error_detail(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, list):
+        messages = []
+        for item in detail:
+            if isinstance(item, dict):
+                msg = item.get("msg") or item.get("type")
+                loc = item.get("loc")
+                if isinstance(loc, list) and loc:
+                    field = str(loc[-1]).replace("_", " ")
+                    messages.append(f"{field}: {msg}")
+                elif msg:
+                    messages.append(str(msg))
+            else:
+                messages.append(str(item))
+        return "; ".join(messages)
+    if isinstance(detail, dict):
+        message = detail.get("message") or detail.get("msg") or detail.get("error")
+        return str(message or "")
+    return str(detail or "")
+
+
+def _sanitize_user_message(message: str) -> str:
+    sanitized = re.sub(r"[{}\[\]\"']", "", message)
+    sanitized = sanitized.replace("access_token", "token").replace("token_hash", "token")
+    return sanitized.strip() or "Something went wrong. Please try again."
+
+
+def _user_auth_state_from_response(
+    result: dict[str, Any] | list[dict[str, Any]] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    if error:
+        return {
+            "ok": False,
+            "message": _friendly_user_error(error),
+            "session_token": None,
+            "profile": None,
+            "display": {},
+        }
+    if not isinstance(result, dict) or not isinstance(result.get("user"), dict) or not result.get("access_token"):
+        return {
+            "ok": False,
+            "message": "We could not start your session. Please try again.",
+            "session_token": None,
+            "profile": None,
+            "display": {},
+        }
+    profile = result["user"]
+    return {
+        "ok": True,
+        "message": "Signed in successfully.",
+        "session_token": str(result["access_token"]),
+        "profile": profile,
+        "display": _user_profile_summary(profile),
+    }
+
+
+def _user_profile_summary(profile: dict[str, Any]) -> dict[str, str]:
+    return {
+        "account": _user_display_name(profile),
+        "email": str(profile.get("email") or "Not set"),
+        "plan": str(profile.get("subscription_plan") or "starter").title(),
+        "status": str(profile.get("subscription_status") or "inactive").title(),
+    }
+
+
+def _user_display_name(profile: dict[str, Any]) -> str:
+    full_name = " ".join(
+        part for part in [str(profile.get("first_name") or "").strip(), str(profile.get("last_name") or "").strip()]
+        if part
+    )
+    return full_name or str(profile.get("username") or profile.get("email") or profile.get("phone") or "User")
+
+
+def _connected_account_rows(profile: dict[str, Any]) -> list[dict[str, str]]:
+    rows = []
+    for provider in profile.get("auth_providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        rows.append(
+            {
+                "Provider": str(provider.get("provider") or ""),
+                "Account": str(provider.get("provider_user_id") or ""),
+                "Connected": str(provider.get("connected_at") or ""),
+            }
+        )
+    return rows
+
+
+def _payment_method_rows(profile: dict[str, Any]) -> list[dict[str, str]]:
+    rows = []
+    for method in profile.get("payment_methods") or []:
+        if not isinstance(method, dict):
+            continue
+        data = method.get("payment_data") if isinstance(method.get("payment_data"), dict) else {}
+        label = data.get("brand") or data.get("account") or data.get("last_four") or method.get("payment_type")
+        rows.append(
+            {
+                "ID": str(method.get("payment_method_id") or ""),
+                "Type": str(method.get("payment_type") or ""),
+                "Label": str(label or ""),
+                "Default": "Yes" if method.get("is_default") else "No",
+            }
+        )
+    return rows
 
 
 def main() -> None:

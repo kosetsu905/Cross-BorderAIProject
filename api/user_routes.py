@@ -21,6 +21,7 @@ from user_models import (
     PasswordResetRequest,
     PasswordResetRequestResponse,
     PaymentMethodResponse,
+    PhoneLoginRequest,
     PhoneRegisterRequest,
     StatusResponse,
     SubscriptionRequest,
@@ -71,6 +72,20 @@ def create_user_router() -> APIRouter:
         service = UserService(db)
         try:
             user, session_token = service.login_with_email(request.email, request.password)
+            _commit(db)
+            return AuthResponse(
+                user=service.user_response(user),
+                access_token=session_token.token,
+                expires_at=session_token.expires_at,
+            )
+        except UserServiceError as exc:
+            _rollback_and_raise(db, exc)
+
+    @router.post("/login/phone", response_model=AuthResponse)
+    async def login_with_phone(request: PhoneLoginRequest, db: DbDependency) -> AuthResponse:
+        service = UserService(db)
+        try:
+            user, session_token = service.login_with_phone(request)
             _commit(db)
             return AuthResponse(
                 user=service.user_response(user),

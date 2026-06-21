@@ -78,6 +78,12 @@ class PhoneRegisterRequest(StrictUserModel):
     country: str | None = Field(None, min_length=1, max_length=80)
 
 
+class PhoneLoginRequest(StrictUserModel):
+    phone: str = Field(..., min_length=6, max_length=32, pattern=PHONE_PATTERN)
+    password: str = Field(..., min_length=1, max_length=256)
+    country_code: str = Field("+86", min_length=1, max_length=8)
+
+
 class EmailLoginRequest(StrictUserModel):
     email: str = Field(..., min_length=3, max_length=255, pattern=EMAIL_PATTERN)
     password: str = Field(..., min_length=1, max_length=256)
