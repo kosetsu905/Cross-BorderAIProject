@@ -1,0 +1,89 @@
+{
+  "marker_prefix": "CB-USER2-E2E",
+  "default_suite": "full",
+  "suites": {
+    "full": [
+      "user_2_full"
+    ]
+  },
+  "scenarios": {
+    "user_2_full": {
+      "description": "Full User 2.0 live Streamlit UI regression with email, phone, simulated OAuth, profile, security, connected accounts, billing, and subscription coverage.",
+      "email_domain": "example.com",
+      "phone_country_code": "+86",
+      "phone_prefix": "139",
+      "initial_password_template": "E2EStart!{suffix}",
+      "changed_password_template": "E2EChanged!{suffix}",
+      "reset_password_template": "E2EReset!{suffix}",
+      "phone_password_template": "PhoneE2E!{suffix}",
+      "profile_update": {
+        "first_name": "Live",
+        "last_name": "UserE2E",
+        "country": "Australia",
+        "timezone": "Australia/Sydney",
+        "language": "en"
+      },
+      "oauth_login": {
+        "provider": "github",
+        "provider_user_id": "cb-user2-oauth-{suffix}",
+        "provider_info": {
+          "username": "user2-oauth-{suffix}",
+          "name": "User 2 OAuth {suffix}",
+          "email": "cb-user2-oauth+{suffix}@example.com",
+          "email_verified": true,
+          "country": "Australia",
+          "language": "en"
+        }
+      },
+      "oauth_link_keep": {
+        "provider": "linkedin",
+        "provider_user_id": "cb-user2-linkedin-{suffix}",
+        "provider_info": {
+          "username": "user2-linkedin-{suffix}",
+          "profile_url": "https://example.com/user2-linkedin-{suffix}"
+        }
+      },
+      "oauth_link_then_unlink": {
+        "provider": "google",
+        "provider_user_id": "cb-user2-google-{suffix}",
+        "provider_info": {
+          "email": "cb-user2-google+{suffix}@example.com",
+          "email_verified": true
+        }
+      },
+      "payment_methods": [
+        {
+          "label": "Demo card",
+          "payment_type": "credit_card",
+          "is_default": true,
+          "payment_data": {
+            "brand": "visa",
+            "last4": "4242",
+            "processor_reference": "pm-card-{suffix}"
+          }
+        },
+        {
+          "label": "Demo PayPal",
+          "payment_type": "paypal",
+          "is_default": true,
+          "payment_data": {
+            "email_alias": "billing-{suffix}@example.com",
+            "processor_reference": "pm-paypal-{suffix}"
+          }
+        }
+      ],
+      "expected_final_payment_reference": "pm-paypal-{suffix}",
+      "removed_payment_reference": "pm-card-{suffix}",
+      "subscription_plan": "professional",
+      "expected_final_subscription_status": "cancelled",
+      "forbidden_report_terms": [
+        "access_token",
+        "token_hash",
+        "reset_token",
+        "password_hash",
+        "session_token",
+        "cookie"
+      ]
+    }
+  }
+}

@@ -18,7 +18,8 @@ Keep the workflow live at the UI/workflow boundary. Do not mock `run_content_cre
 - Treat `OPENAI_API_KEY` as required for the live image-generation E2E. If it is missing, fail the E2E with an environment readiness issue.
 - Treat `SERPER_API_KEY` as optional for Reddit source enrichment. If missing, accept low-confidence fallback posts but record a warning.
 - Keep image cost controlled: use `image_generation_count=1`, `image_quality=low`, and `image_size=1024x1024` unless the user explicitly asks for a heavier run.
-- If browser automation cannot submit through the dashboard, print the prepared fields and ask the user to submit manually, then verify the copied `job_id`.
+- Do not use Codex's in-app browser for this regression. Follow the same style as `support-inbox-live-e2e`: prefer the user's local Chrome/dashboard session when it is available.
+- If local Chrome automation cannot submit through the dashboard, print the prepared fields and ask the user to submit manually, then verify the copied `job_id`.
 
 ## Workflow
 
@@ -29,13 +30,13 @@ Keep the workflow live at the UI/workflow boundary. Do not mock `run_content_cre
    .\.venv\Scripts\python.exe .\.codex\skills\content-generation-live-e2e\scripts\run_content_generation_live_e2e.py --suite multilingual_geo_visual --print-ui-fields
    ```
 
-3. Open the Streamlit admin dashboard, normally:
+3. Open the Streamlit admin dashboard in the user's local Chrome session, normally:
 
    ```powershell
    streamlit run .\admin_dashboard.py
    ```
 
-   Use `http://localhost:8501` unless the local run prints a different URL.
+   Use `http://localhost:8501` unless the local run prints a different URL. Do not route this check through the Codex in-app browser.
 
 4. In the dashboard:
    - Confirm the sidebar API base URL points to `http://localhost:8000` or the requested `API_BASE_URL`.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "User 2 Live E2E"
+  short_description: "Run live User 2.0 UI and API regression"
+  default_prompt: "Use $user-2-live-e2e to run the live User 2.0 Streamlit UI regression and verify the user API state."
