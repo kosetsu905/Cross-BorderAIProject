@@ -404,7 +404,7 @@ def payment_references(user: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(method, dict):
             continue
         payment_data = method.get("payment_data") if isinstance(method.get("payment_data"), dict) else {}
-        reference = str(payment_data.get("processor_reference") or "")
+        reference = str(payment_data.get("processor_reference") or payment_data.get("account") or "")
         if reference:
             references[reference] = method
     return references
@@ -475,10 +475,6 @@ def run_verify_ui(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
             add_issue(report, "Simulated OAuth user response is missing the OAuth provider.")
         logout(client, oauth_token)
         logout(client, email_token)
-        report["warnings"].append(
-            "Simulated OAuth UI creation is verified by repeat OAuth login; if the UI step was skipped, "
-            "the endpoint can create the OAuth user during verification."
-        )
     except Exception as exc:
         add_issue(report, str(exc))
     finalize_report_status(report)

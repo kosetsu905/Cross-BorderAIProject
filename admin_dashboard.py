@@ -1899,8 +1899,8 @@ def _render_user_center(api_base_url: str) -> None:
     _render_user_flash()
 
     user_token = _current_user_token()
-    profile = st.session_state.get("current_user_profile")
-    if user_token and not isinstance(profile, dict):
+    profile: dict[str, Any] | None = None
+    if user_token:
         result, error = _request_json("GET", api_base_url, "/api/v1/users/me", user_token)
         if error:
             _clear_user_session()
@@ -2147,9 +2147,11 @@ def _render_connected_accounts(api_base_url: str, profile: dict[str, Any]) -> No
         result, error = _request_json("POST", api_base_url, "/api/v1/users/me/oauth", _current_user_token(), payload)
         _apply_user_profile_response(result, error, "Account connected.")
 
-    linked_providers = [row["Provider"] for row in connected_rows if row["Provider"] not in {"email", "phone"}]
+    linked_providers = _linked_oauth_provider_names(profile)
     if linked_providers:
         unlink_cols = st.columns([2, 1])
+        if st.session_state.get("user_unlink_provider") not in linked_providers:
+            st.session_state.user_unlink_provider = linked_providers[0]
         unlink_provider = unlink_cols[0].selectbox("Connected provider", linked_providers, key="user_unlink_provider")
         if unlink_cols[1].button("Disconnect", width="stretch"):
             result, error = _request_json(
@@ -2454,6 +2456,14 @@ def _connected_account_rows(profile: dict[str, Any]) -> list[dict[str, str]]:
             }
         )
     return rows
+
+
+def _linked_oauth_provider_names(profile: dict[str, Any]) -> list[str]:
+    return [
+        row["Provider"]
+        for row in _connected_account_rows(profile)
+        if row["Provider"] and row["Provider"] not in {"email", "phone"}
+    ]
 
 
 def _payment_method_rows(profile: dict[str, Any]) -> list[dict[str, str]]:

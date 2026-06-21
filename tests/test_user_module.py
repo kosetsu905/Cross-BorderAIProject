@@ -9,8 +9,10 @@ from sqlalchemy.pool import StaticPool
 
 from admin_dashboard import (
     USER_AUTH_METHODS,
+    _connected_account_rows,
     _friendly_user_error,
     _headers,
+    _linked_oauth_provider_names,
     _oauth_payload,
     _payment_method_payload,
     _user_auth_state_from_response,
@@ -433,3 +435,19 @@ def test_dashboard_auth_state_keeps_token_out_of_display_payload() -> None:
     assert "access_token" not in str(state["display"])
     assert "secret-session-token" not in str(state["display"])
     assert _user_profile_summary(result["user"]) == state["display"]
+
+
+def test_dashboard_connected_accounts_expose_all_unlinkable_oauth_providers() -> None:
+    profile = {
+        "auth_providers": [
+            {"provider": "email", "provider_user_id": "jane@example.com", "connected_at": "2026-06-21T00:00:00Z"},
+            {"provider": "phone", "provider_user_id": "+8613900000000", "connected_at": "2026-06-21T00:00:00Z"},
+            {"provider": "linkedin", "provider_user_id": "linkedin-1", "connected_at": "2026-06-21T00:00:00Z"},
+            {"provider": "google", "provider_user_id": "google-1", "connected_at": "2026-06-21T00:00:00Z"},
+        ]
+    }
+
+    rows = _connected_account_rows(profile)
+
+    assert [row["Provider"] for row in rows] == ["email", "phone", "linkedin", "google"]
+    assert _linked_oauth_provider_names(profile) == ["linkedin", "google"]
