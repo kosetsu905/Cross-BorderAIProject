@@ -31,6 +31,16 @@ class AuthProvider(str, Enum):
     PHONE = "phone"
 
 
+class RealOAuthProvider(str, Enum):
+    GOOGLE = "google"
+    GITHUB = "github"
+
+
+class OAuthAction(str, Enum):
+    LOGIN = "login"
+    LINK = "link"
+
+
 class PaymentMethodType(str, Enum):
     CREDIT_CARD = "credit_card"
     DEBIT_CARD = "debit_card"
@@ -98,6 +108,21 @@ class OAuthLoginRequest(StrictUserModel):
     provider: AuthProvider
     provider_user_id: str = Field(..., min_length=1, max_length=255)
     provider_info: dict[str, Any] = Field(default_factory=dict)
+
+
+class OAuthStartRequest(StrictUserModel):
+    action: OAuthAction
+
+
+class OAuthStartResponse(StrictUserModel):
+    provider: RealOAuthProvider
+    action: OAuthAction
+    authorization_url: str
+    expires_at: datetime
+
+
+class OAuthCompleteRequest(StrictUserModel):
+    result_code: str = Field(..., min_length=20, max_length=256)
 
 
 class UserUpdateRequest(StrictUserModel):

@@ -1,5 +1,8 @@
 from collections.abc import Generator
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -9,6 +12,8 @@ from sqlalchemy.pool import StaticPool
 
 from admin_dashboard import (
     USER_AUTH_METHODS,
+    USER_OAUTH_PROVIDERS,
+    USER_REAL_OAUTH_PROVIDERS,
     _connected_account_rows,
     _friendly_user_error,
     _headers,
@@ -23,17 +28,21 @@ from api.user_routes import create_user_router
 from database import get_db_session
 from db_models import (
     UserAuthProviderRecord,
+    UserOAuthFlowRecord,
     UserPasswordResetTokenRecord,
     UserPaymentMethodRecord,
     UserRecord,
     UserSessionRecord,
 )
+from services.oauth_provider_service import ProviderIdentity
 from services.user_service import hash_token
+from user_models import AuthProvider
 
 
 USER_TABLES = [
     UserRecord.__table__,
     UserAuthProviderRecord.__table__,
+    UserOAuthFlowRecord.__table__,
     UserSessionRecord.__table__,
     UserPasswordResetTokenRecord.__table__,
     UserPaymentMethodRecord.__table__,
@@ -281,16 +290,210 @@ def test_oauth_link_and_unlink() -> None:
     linked = client.post(
         "/api/v1/users/me/oauth",
         headers=auth_header(token),
-        json={"provider": "google", "provider_user_id": "google_john", "provider_info": {"email": "john@gmail.com"}},
+        json={"provider": "linkedin", "provider_user_id": "linkedin_john", "provider_info": {"profile_url": "https://example.com/john"}},
     )
     assert linked.status_code == 200
-    assert {provider["provider"] for provider in linked.json()["auth_providers"]} == {"email", "google"}
+    assert {provider["provider"] for provider in linked.json()["auth_providers"]} == {"email", "linkedin"}
 
-    unlinked = client.delete("/api/v1/users/me/oauth/google", headers=auth_header(token))
+    unlinked = client.delete("/api/v1/users/me/oauth/linkedin", headers=auth_header(token))
     assert unlinked.status_code == 200
 
     profile = client.get("/api/v1/users/me", headers=auth_header(token))
     assert {provider["provider"] for provider in profile.json()["auth_providers"]} == {"email"}
+
+
+def test_simulated_google_and_github_oauth_are_rejected() -> None:
+    client, _ = make_client()
+    token = register_email(client)["access_token"]
+
+    google_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "google", "provider_user_id": "google-1", "provider_info": {}},
+    )
+    github_link = client.post(
+        "/api/v1/users/me/oauth",
+        headers=auth_header(token),
+        json={"provider": "github", "provider_user_id": "github-1", "provider_info": {}},
+    )
+
+    assert google_login.status_code == 400
+    assert github_link.status_code == 400
+    assert "real OAuth flow" in google_login.json()["detail"]
+    assert "real OAuth flow" in github_link.json()["detail"]
+
+
+def test_real_oauth_start_requires_provider_configuration(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    for name in ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+    response = client.post("/api/v1/users/oauth/google/start", json={"action": "login"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Google OAuth is not configured"
+
+
+def test_real_oauth_link_requires_user_session(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    _configure_oauth_env(monkeypatch, "google")
+
+    response = client.post("/api/v1/users/oauth/google/start", json={"action": "link"})
+
+    assert response.status_code == 401
+
+
+def test_google_oauth_callback_and_complete_are_one_time(monkeypatch: Any) -> None:
+    client, testing_session = make_client()
+    _configure_oauth_env(monkeypatch, "google")
+    start = client.post("/api/v1/users/oauth/google/start", json={"action": "login"})
+    assert start.status_code == 200
+    state = _state_from_authorization_url(start.json()["authorization_url"])
+
+    with testing_session() as db:
+        flow = db.execute(select(UserOAuthFlowRecord)).scalars().one()
+        assert flow.state_hash == hash_token(state)
+        assert state not in flow.state_hash
+        assert flow.result_code_hash is None
+
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._provider_identity",
+        return_value=ProviderIdentity(
+            provider=AuthProvider.GOOGLE,
+            provider_user_id="google-sub-1",
+            provider_info={"email": "google@example.com", "email_verified": True, "name": "Google User"},
+        ),
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/google/callback?code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    callback_query = parse_qs(urlsplit(callback.headers["location"]).query)
+    result_code = callback_query["oauth_result"][0]
+    assert callback_query["oauth_provider"] == ["google"]
+
+    completed = client.post("/api/v1/users/oauth/google/complete", json={"result_code": result_code})
+    assert completed.status_code == 200
+    assert completed.json()["user"]["auth_providers"][0]["provider"] == "google"
+
+    reused = client.post("/api/v1/users/oauth/google/complete", json={"result_code": result_code})
+    assert reused.status_code == 400
+
+
+def test_real_oauth_callback_rejects_expired_or_reused_state(monkeypatch: Any) -> None:
+    client, testing_session = make_client()
+    _configure_oauth_env(monkeypatch, "google")
+    expired_start = client.post("/api/v1/users/oauth/google/start", json={"action": "login"})
+    expired_state = _state_from_authorization_url(expired_start.json()["authorization_url"])
+    with testing_session() as db:
+        flow = db.execute(select(UserOAuthFlowRecord)).scalars().one()
+        flow.state_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+
+    expired_callback = client.get(
+        f"/api/v1/users/oauth/google/callback?code=oauth-code&state={expired_state}",
+        follow_redirects=False,
+    )
+    assert expired_callback.status_code == 400
+
+    fresh_start = client.post("/api/v1/users/oauth/google/start", json={"action": "login"})
+    fresh_state = _state_from_authorization_url(fresh_start.json()["authorization_url"])
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._provider_identity",
+        return_value=ProviderIdentity(
+            provider=AuthProvider.GOOGLE,
+            provider_user_id="google-sub-state",
+            provider_info={"email": "state@example.com", "email_verified": True},
+        ),
+    ):
+        first_callback = client.get(
+            f"/api/v1/users/oauth/google/callback?code=oauth-code&state={fresh_state}",
+            follow_redirects=False,
+        )
+    reused_callback = client.get(
+        f"/api/v1/users/oauth/google/callback?code=oauth-code&state={fresh_state}",
+        follow_redirects=False,
+    )
+
+    assert first_callback.status_code == 303
+    assert reused_callback.status_code == 400
+
+
+def test_google_oauth_verified_email_merges_existing_email_user(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    existing = register_email(client, email="merge@example.com")["user"]
+    _configure_oauth_env(monkeypatch, "google")
+    result_code = _complete_callback_with_identity(
+        client,
+        "google",
+        ProviderIdentity(
+            provider=AuthProvider.GOOGLE,
+            provider_user_id="google-sub-merge",
+            provider_info={"email": "merge@example.com", "email_verified": True, "name": "Merged User"},
+        ),
+    )
+
+    completed = client.post("/api/v1/users/oauth/google/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    assert completed.json()["user"]["user_id"] == existing["user_id"]
+    assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"email", "google"}
+
+
+def test_github_oauth_does_not_merge_existing_email_user(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    existing = register_email(client, email="github@example.com")["user"]
+    _configure_oauth_env(monkeypatch, "github")
+    result_code = _complete_callback_with_identity(
+        client,
+        "github",
+        ProviderIdentity(
+            provider=AuthProvider.GITHUB,
+            provider_user_id="123456",
+            provider_info={"email": "github@example.com", "login": "octocat", "avatar_url": "https://example.com/a.png"},
+        ),
+    )
+
+    completed = client.post("/api/v1/users/oauth/github/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    assert completed.json()["user"]["user_id"] != existing["user_id"]
+    assert completed.json()["user"]["email"] is None
+    assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"github"}
+
+
+def test_real_oauth_link_rejects_provider_identity_owned_by_another_user(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    first_token = register_email(client, email="first@example.com")["access_token"]
+    second_token = register_email(client, email="second@example.com")["access_token"]
+    _configure_oauth_env(monkeypatch, "github")
+    first_result = _complete_callback_with_identity(
+        client,
+        "github",
+        ProviderIdentity(
+            provider=AuthProvider.GITHUB,
+            provider_user_id="conflict-id",
+            provider_info={"login": "conflict-user"},
+        ),
+        action="link",
+        token=first_token,
+    )
+    assert client.post("/api/v1/users/oauth/github/complete", json={"result_code": first_result}).status_code == 200
+    second_result = _complete_callback_with_identity(
+        client,
+        "github",
+        ProviderIdentity(
+            provider=AuthProvider.GITHUB,
+            provider_user_id="conflict-id",
+            provider_info={"login": "conflict-user"},
+        ),
+        action="link",
+        token=second_token,
+    )
+
+    rejected = client.post("/api/v1/users/oauth/github/complete", json={"result_code": second_result})
+
+    assert rejected.status_code == 409
 
 
 def test_payment_methods_default_remove_and_sensitive_rejection() -> None:
@@ -377,12 +580,15 @@ def test_response_does_not_expose_secret_hashes() -> None:
 
 
 def test_dashboard_user_helpers_do_not_change_workflow_headers() -> None:
-    assert USER_AUTH_METHODS == ["Email", "Phone", "Simulated OAuth"]
+    assert USER_AUTH_METHODS == ["Email", "Phone", "Developer OAuth"]
+    assert USER_REAL_OAUTH_PROVIDERS == ["google", "github"]
+    assert "google" not in USER_OAUTH_PROVIDERS
+    assert "github" not in USER_OAUTH_PROVIDERS
     assert _headers("workflow-token") == {"Authorization": "Bearer workflow-token"}
     assert _user_headers("user-token") == {"Authorization": "Bearer user-token"}
-    assert _oauth_payload("google", "google-1", {"email": "a@example.com"}) == {
-        "provider": "google",
-        "provider_user_id": "google-1",
+    assert _oauth_payload("linkedin", "linkedin-1", {"email": "a@example.com"}) == {
+        "provider": "linkedin",
+        "provider_user_id": "linkedin-1",
         "provider_info": {"email": "a@example.com"},
     }
     assert _payment_method_payload("paypal", {"account": "masked@example.com"}, True) == {
@@ -398,8 +604,9 @@ def test_dashboard_user_errors_are_human_readable() -> None:
     )
     conflict_message = _friendly_user_error('409: {"detail":"Email already registered"}')
     session_message = _friendly_user_error('401: {"detail":"Invalid or expired user session"}')
+    oauth_message = _friendly_user_error('400: {"detail":"Google OAuth is not configured"}')
 
-    for message in [validation_message, conflict_message, session_message]:
+    for message in [validation_message, conflict_message, session_message, oauth_message]:
         assert "{" not in message
         assert "}" not in message
         assert "access_token" not in message
@@ -407,6 +614,7 @@ def test_dashboard_user_errors_are_human_readable() -> None:
     assert validation_message == "Password must be at least 8 characters."
     assert conflict_message == "This email is already registered. Try logging in instead."
     assert session_message == "Your session has expired. Please sign in again."
+    assert oauth_message == "This sign-in provider is not configured yet."
 
 
 def test_dashboard_auth_state_keeps_token_out_of_display_payload() -> None:
@@ -451,3 +659,46 @@ def test_dashboard_connected_accounts_expose_all_unlinkable_oauth_providers() ->
 
     assert [row["Provider"] for row in rows] == ["email", "phone", "linkedin", "google"]
     assert _linked_oauth_provider_names(profile) == ["linkedin", "google"]
+
+
+def _configure_oauth_env(monkeypatch: Any, provider: str) -> None:
+    prefix = provider.upper()
+    monkeypatch.setenv(f"{prefix}_OAUTH_CLIENT_ID", f"{provider}-client")
+    monkeypatch.setenv(f"{prefix}_OAUTH_CLIENT_SECRET", f"{provider}-secret")
+    monkeypatch.setenv(
+        f"{prefix}_OAUTH_REDIRECT_URI",
+        f"http://localhost:8000/api/v1/users/oauth/{provider}/callback",
+    )
+    monkeypatch.setenv("OAUTH_RETURN_URL", "http://localhost:8501")
+
+
+def _state_from_authorization_url(authorization_url: str) -> str:
+    query = parse_qs(urlsplit(authorization_url).query)
+    return query["state"][0]
+
+
+def _complete_callback_with_identity(
+    client: TestClient,
+    provider: str,
+    identity: ProviderIdentity,
+    *,
+    action: str = "login",
+    token: str = "",
+) -> str:
+    start = client.post(
+        f"/api/v1/users/oauth/{provider}/start",
+        headers=auth_header(token) if token else None,
+        json={"action": action},
+    )
+    assert start.status_code == 200
+    state = _state_from_authorization_url(start.json()["authorization_url"])
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._provider_identity",
+        return_value=identity,
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/{provider}/callback?code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    return parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]

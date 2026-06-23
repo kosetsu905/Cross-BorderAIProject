@@ -1,12 +1,14 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db_session
 from db_models import UserRecord
+from services.oauth_provider_service import OAuthProviderService
 from services.user_service import UserService, UserServiceError
 from user_models import (
     AddPaymentMethodRequest,
@@ -15,14 +17,18 @@ from user_models import (
     ChangePasswordRequest,
     EmailLoginRequest,
     EmailRegisterRequest,
+    OAuthCompleteRequest,
     OAuthLinkRequest,
     OAuthLoginRequest,
+    OAuthStartRequest,
+    OAuthStartResponse,
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     PasswordResetRequestResponse,
     PaymentMethodResponse,
     PhoneLoginRequest,
     PhoneRegisterRequest,
+    RealOAuthProvider,
     StatusResponse,
     SubscriptionRequest,
     UserResponse,
@@ -105,6 +111,65 @@ def create_user_router() -> APIRouter:
                 user=service.user_response(user),
                 access_token=session_token.token,
                 expires_at=session_token.expires_at,
+            )
+        except UserServiceError as exc:
+            _rollback_and_raise(db, exc)
+
+    @router.post("/oauth/{provider}/start", response_model=OAuthStartResponse)
+    async def start_real_oauth(
+        provider: RealOAuthProvider,
+        request: OAuthStartRequest,
+        db: DbDependency,
+        credentials: HTTPAuthorizationCredentials | None = Security(user_bearer_scheme),
+    ) -> OAuthStartResponse:
+        service = OAuthProviderService(db)
+        try:
+            user_id = None
+            if request.action.value == "link":
+                token = _bearer_token(credentials)
+                user_id = UserService(db).get_user_by_session_token(token).user_id
+            result = service.start_flow(provider, request.action, user_id=user_id)
+            _commit(db)
+            return OAuthStartResponse(
+                provider=result.provider,
+                action=result.action,
+                authorization_url=result.authorization_url,
+                expires_at=result.expires_at,
+            )
+        except UserServiceError as exc:
+            _rollback_and_raise(db, exc)
+
+    @router.get("/oauth/{provider}/callback", response_class=RedirectResponse)
+    async def complete_real_oauth_callback(
+        provider: RealOAuthProvider,
+        code: str,
+        state: str,
+        db: DbDependency,
+    ) -> RedirectResponse:
+        service = OAuthProviderService(db)
+        try:
+            result = service.handle_callback(provider, code, state)
+            _commit(db)
+            return RedirectResponse(result.redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+        except UserServiceError as exc:
+            _rollback_and_raise(db, exc)
+
+    @router.post("/oauth/{provider}/complete", response_model=AuthResponse)
+    async def complete_real_oauth(
+        provider: RealOAuthProvider,
+        request: OAuthCompleteRequest,
+        db: DbDependency,
+    ) -> AuthResponse:
+        oauth_service = OAuthProviderService(db)
+        user_service = UserService(db)
+        try:
+            result = oauth_service.complete_flow(provider, request.result_code)
+            user = user_service.get_user(result.user_id)
+            _commit(db)
+            return AuthResponse(
+                user=user_service.user_response(user),
+                access_token=result.session_token.token,
+                expires_at=result.session_token.expires_at,
             )
         except UserServiceError as exc:
             _rollback_and_raise(db, exc)

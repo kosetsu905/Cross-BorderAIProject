@@ -167,13 +167,12 @@ CONTENT_FORM_KEYS = [
 ]
 CONTENT_IMAGE_QUALITIES = ["auto", "low", "medium", "high"]
 CONTENT_IMAGE_SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"]
+USER_REAL_OAUTH_PROVIDERS = ["google", "github"]
 USER_OAUTH_PROVIDERS = [
-    "google",
     "facebook",
     "twitter",
     "linkedin",
     "apple",
-    "github",
     "microsoft",
     "wechat",
     "alipay",
@@ -195,7 +194,7 @@ USER_PAYMENT_METHOD_TYPES = [
     "crypto",
 ]
 USER_SUBSCRIPTION_PLANS = ["starter", "professional", "enterprise"]
-USER_AUTH_METHODS = ["Email", "Phone", "Simulated OAuth"]
+USER_AUTH_METHODS = ["Email", "Phone", "Developer OAuth"]
 
 CONTENT_STAGE_LABELS = {
     "workflow_submitted": "Workflow submitted",
@@ -292,6 +291,10 @@ def _oauth_payload(provider: str, provider_user_id: str, provider_info: str | di
         "provider_user_id": provider_user_id.strip(),
         "provider_info": _json_payload_from_text(provider_info),
     }
+
+
+def _oauth_start_payload(action: str) -> dict[str, str]:
+    return {"action": action}
 
 
 def _payment_method_payload(payment_type: str, payment_data: str | dict[str, Any], is_default: bool) -> dict[str, Any]:
@@ -1896,6 +1899,7 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
 
 def _render_user_center(api_base_url: str) -> None:
     st.subheader("Users")
+    _consume_oauth_result(api_base_url)
     _render_user_flash()
 
     user_token = _current_user_token()
@@ -1918,6 +1922,102 @@ def _render_user_center(api_base_url: str) -> None:
     _render_authenticated_user_center(api_base_url, profile)
 
 
+def _consume_oauth_result(api_base_url: str) -> None:
+    result_code = _query_param_value("oauth_result")
+    if not result_code:
+        return
+    provider = _query_param_value("oauth_provider")
+    _clear_oauth_query_params()
+    if provider not in USER_REAL_OAUTH_PROVIDERS:
+        _set_user_flash("error", "OAuth sign-in result is invalid. Please try again.")
+        st.rerun()
+    result, error = _request_json(
+        "POST",
+        api_base_url,
+        f"/api/v1/users/oauth/{provider}/complete",
+        "",
+        {"result_code": result_code},
+    )
+    state = _user_auth_state_from_response(result, error)
+    if not state["ok"]:
+        _set_user_flash("error", str(state["message"]))
+        st.rerun()
+    st.session_state.user_access_token = state["session_token"]
+    st.session_state.current_user_profile = state["profile"]
+    _clear_pending_oauth_urls()
+    _set_user_flash("success", f"{_provider_label(provider)} connected.")
+    st.rerun()
+
+
+def _query_param_value(key: str) -> str:
+    try:
+        value = st.query_params.get(key)
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        return str(value[0] if value else "")
+    return str(value or "")
+
+
+def _clear_oauth_query_params() -> None:
+    for key in ("oauth_provider", "oauth_result"):
+        try:
+            if key in st.query_params:
+                del st.query_params[key]
+        except Exception:
+            continue
+
+
+def _clear_pending_oauth_urls() -> None:
+    for action in ("login", "link"):
+        for provider in USER_REAL_OAUTH_PROVIDERS:
+            st.session_state.pop(f"user_{action}_{provider}_authorization_url", None)
+
+
+def _render_real_oauth_buttons(
+    api_base_url: str,
+    *,
+    action: str,
+    connected_providers: set[str] | None = None,
+) -> None:
+    connected = connected_providers or set()
+    oauth_cols = st.columns(len(USER_REAL_OAUTH_PROVIDERS))
+    for index, provider in enumerate(USER_REAL_OAUTH_PROVIDERS):
+        label = f"{'Connect' if action == 'link' else 'Continue with'} {_provider_label(provider)}"
+        if provider in connected:
+            oauth_cols[index].button(f"{_provider_label(provider)} connected", disabled=True, width="stretch")
+            continue
+        if oauth_cols[index].button(label, width="stretch", key=f"user_{action}_{provider}_start"):
+            _start_real_oauth(api_base_url, provider, action)
+
+    for provider in USER_REAL_OAUTH_PROVIDERS:
+        pending_url = st.session_state.get(f"user_{action}_{provider}_authorization_url")
+        if isinstance(pending_url, str) and pending_url:
+            st.link_button(f"Open {_provider_label(provider)} sign-in", pending_url, width="stretch")
+
+
+def _start_real_oauth(api_base_url: str, provider: str, action: str) -> None:
+    result, error = _request_json(
+        "POST",
+        api_base_url,
+        f"/api/v1/users/oauth/{provider}/start",
+        _current_user_token() if action == "link" else "",
+        _oauth_start_payload(action),
+    )
+    if error:
+        st.error(_friendly_user_error(error))
+        return
+    if isinstance(result, dict) and result.get("authorization_url"):
+        st.session_state[f"user_{action}_{provider}_authorization_url"] = str(result["authorization_url"])
+        st.info(f"Open {_provider_label(provider)} sign-in to continue.")
+        return
+    st.error("We could not start OAuth sign-in. Please try again.")
+
+
+def _provider_label(provider: str) -> str:
+    return {"google": "Google", "github": "GitHub"}.get(provider, provider.title())
+
+
 def _render_user_auth_gate(api_base_url: str) -> None:
     mode = st.session_state.get("user_auth_mode", "login")
     action_cols = st.columns(2)
@@ -1929,6 +2029,8 @@ def _render_user_auth_gate(api_base_url: str) -> None:
         st.rerun()
 
     mode = st.session_state.get("user_auth_mode", "login")
+    _render_real_oauth_buttons(api_base_url, action="login")
+    st.divider()
     method = st.radio("Method", USER_AUTH_METHODS, horizontal=True, key=f"user_{mode}_method")
 
     if method == "Email":
@@ -1986,6 +2088,7 @@ def _render_phone_auth_form(api_base_url: str, mode: str) -> None:
 
 
 def _render_simulated_oauth_form(api_base_url: str) -> None:
+    st.caption("Developer-only simulated providers. Google and GitHub use the real OAuth buttons above.")
     with st.form("user_simulated_oauth_form"):
         oauth_cols = st.columns(2)
         provider = oauth_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_login_oauth_provider")
@@ -2125,6 +2228,10 @@ def _render_connected_accounts(api_base_url: str, profile: dict[str, Any]) -> No
     else:
         st.info("No connected accounts yet.")
 
+    connected_providers = {row["Provider"] for row in connected_rows}
+    _render_real_oauth_buttons(api_base_url, action="link", connected_providers=connected_providers)
+    st.divider()
+    st.caption("Developer-only simulated providers remain available for providers that do not have real OAuth yet.")
     with st.form("user_link_oauth_form"):
         link_cols = st.columns(2)
         provider = link_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_link_oauth_provider")
@@ -2341,6 +2448,14 @@ def _friendly_user_error(error: str | None) -> str:
         return "Payment details must be masked or tokenized. Do not enter full card numbers or security codes."
     if "oauth provider identity" in lowered:
         return "That connected account is already linked to another user."
+    if "must use the real oauth flow" in lowered:
+        return "Use the Google or GitHub sign-in button for this provider."
+    if "oauth is not configured" in lowered:
+        return "This sign-in provider is not configured yet."
+    if "oauth state" in lowered or "oauth result" in lowered:
+        return "This sign-in attempt expired. Please try again."
+    if "oauth token exchange failed" in lowered or "profile lookup failed" in lowered:
+        return "We could not verify that sign-in provider. Please try again."
     if status_code == 422:
         return "Please check the fields and try again."
     if detail_text:

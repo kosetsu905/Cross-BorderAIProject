@@ -66,6 +66,7 @@ OAUTH_ONLY_PROVIDERS = {
     AuthProvider.DOUYIN,
     AuthProvider.QQ,
 }
+REAL_OAUTH_PROVIDERS = {AuthProvider.GOOGLE, AuthProvider.GITHUB}
 
 
 class UserServiceError(Exception):
@@ -169,6 +170,7 @@ class UserService:
 
     def login_with_oauth(self, request: OAuthLoginRequest) -> tuple[UserRecord, SessionToken]:
         self._ensure_oauth_provider(request.provider)
+        self._ensure_simulated_oauth_allowed(request.provider)
         provider_info = _sanitize_metadata(request.provider_info)
         existing_provider = self._provider_identity(request.provider, request.provider_user_id)
         if existing_provider is not None:
@@ -194,6 +196,50 @@ class UserService:
             self.db.flush()
 
         self._add_auth_provider(user.user_id, request.provider, request.provider_user_id, provider_info)
+        user.last_login = _utc_now()
+        user.updated_at = _utc_now()
+        return user, self.create_session(user.user_id)
+
+    def login_with_verified_oauth(
+        self,
+        provider: AuthProvider,
+        provider_user_id: str,
+        provider_info: dict[str, Any],
+        *,
+        merge_verified_email: bool = False,
+    ) -> tuple[UserRecord, SessionToken]:
+        self._ensure_oauth_provider(provider)
+        sanitized_info = _sanitize_metadata(provider_info)
+        existing_provider = self._provider_identity(provider, provider_user_id)
+        if existing_provider is not None:
+            user = self.get_user(existing_provider.user_id)
+            user.last_login = _utc_now()
+            user.updated_at = _utc_now()
+            return user, self.create_session(user.user_id)
+
+        email = _normalize_email_or_none(sanitized_info.get("email"))
+        existing_email_user = self._user_by_email(email) if email else None
+        user = existing_email_user if merge_verified_email and existing_email_user is not None else None
+        email_for_new_user = email if existing_email_user is None else None
+        if user is None:
+            user = UserRecord(
+                user_id=_new_id("user"),
+                email=email_for_new_user,
+                username=_string_or_none(sanitized_info.get("login"))
+                or _string_or_none(sanitized_info.get("username"))
+                or _string_or_none(sanitized_info.get("name")),
+                first_name=_string_or_none(sanitized_info.get("given_name")),
+                last_name=_string_or_none(sanitized_info.get("family_name")),
+                country=_string_or_none(sanitized_info.get("country")),
+                language=_string_or_none(sanitized_info.get("locale"))
+                or _string_or_none(sanitized_info.get("language"))
+                or "en",
+                is_email_verified=bool(sanitized_info.get("email_verified")) if email_for_new_user else False,
+            )
+            self.db.add(user)
+            self.db.flush()
+
+        self._link_oauth_identity(user, provider, provider_user_id, sanitized_info)
         user.last_login = _utc_now()
         user.updated_at = _utc_now()
         return user, self.create_session(user.user_id)
@@ -300,19 +346,44 @@ class UserService:
 
     def link_oauth_provider(self, user: UserRecord, request: OAuthLinkRequest | OAuthLoginRequest) -> UserRecord:
         self._ensure_oauth_provider(request.provider)
-        existing_identity = self._provider_identity(request.provider, request.provider_user_id)
+        self._ensure_simulated_oauth_allowed(request.provider)
+        return self._link_oauth_identity(
+            user,
+            request.provider,
+            request.provider_user_id,
+            _sanitize_metadata(request.provider_info),
+        )
+
+    def link_verified_oauth_provider(
+        self,
+        user: UserRecord,
+        provider: AuthProvider,
+        provider_user_id: str,
+        provider_info: dict[str, Any],
+    ) -> UserRecord:
+        self._ensure_oauth_provider(provider)
+        return self._link_oauth_identity(user, provider, provider_user_id, _sanitize_metadata(provider_info))
+
+    def _link_oauth_identity(
+        self,
+        user: UserRecord,
+        provider: AuthProvider,
+        provider_user_id: str,
+        provider_info: dict[str, Any],
+    ) -> UserRecord:
+        existing_identity = self._provider_identity(provider, provider_user_id)
         if existing_identity is not None and existing_identity.user_id != user.user_id:
             raise UserConflictError("OAuth provider identity is already linked to another user")
-        existing_for_user = self._provider_for_user(user.user_id, request.provider)
+        existing_for_user = self._provider_for_user(user.user_id, provider)
         if existing_for_user is not None:
-            if existing_for_user.provider_user_id == request.provider_user_id:
+            if existing_for_user.provider_user_id == provider_user_id:
                 return user
             raise UserConflictError("OAuth provider is already linked for this user")
         self._add_auth_provider(
             user.user_id,
-            request.provider,
-            request.provider_user_id,
-            _sanitize_metadata(request.provider_info),
+            provider,
+            provider_user_id,
+            provider_info,
         )
         user.updated_at = _utc_now()
         self.db.flush()
@@ -507,6 +578,11 @@ class UserService:
     def _ensure_oauth_provider(provider: AuthProvider) -> None:
         if provider not in OAUTH_ONLY_PROVIDERS:
             raise UserValidationError("Only OAuth-style providers are allowed for this endpoint")
+
+    @staticmethod
+    def _ensure_simulated_oauth_allowed(provider: AuthProvider) -> None:
+        if provider in REAL_OAUTH_PROVIDERS:
+            raise UserValidationError("Google and GitHub must use the real OAuth flow")
 
 
 def hash_password(password: str) -> str:

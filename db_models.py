@@ -119,6 +119,30 @@ class UserAuthProviderRecord(Base):
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class UserOAuthFlowRecord(Base):
+    __tablename__ = "user_oauth_flows"
+
+    flow_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id"), nullable=True, index=True)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    state_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    state_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    result_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    result_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    provider_info: Mapped[dict | None] = mapped_column(JSON_DICT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
 class UserSessionRecord(Base):
     __tablename__ = "user_sessions"
 

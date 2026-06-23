@@ -55,6 +55,7 @@ class ScenarioData:
     normalized_phone: str
     phone_password: str
     profile_update: dict[str, str]
+    real_oauth_providers: list[str]
     oauth_login: dict[str, Any]
     oauth_link_keep: dict[str, Any]
     oauth_link_then_unlink: dict[str, Any]
@@ -132,6 +133,7 @@ def scenario_data(manifest: dict[str, Any], scenario_id: str, run_id: str) -> Sc
         normalized_phone=_normalize_phone(phone, country_code),
         phone_password=_format_template(raw["phone_password_template"], suffix),
         profile_update=dict(raw["profile_update"]),
+        real_oauth_providers=[str(item) for item in raw.get("real_oauth_providers", [])],
         oauth_login=_format_nested(raw["oauth_login"], suffix),
         oauth_link_keep=_format_nested(raw["oauth_link_keep"], suffix),
         oauth_link_then_unlink=_format_nested(raw["oauth_link_then_unlink"], suffix),
@@ -205,7 +207,8 @@ def print_ui_scenario(
         print()
         print("1) Logged-out UI checks")
         print("  - Confirm only Login / Create account entry points are visible.")
-        print("  - Confirm Email, Phone, and Simulated OAuth are available under auth methods.")
+        print("  - Confirm Continue with Google / Continue with GitHub buttons are visible.")
+        print("  - Confirm Email, Phone, and Developer OAuth are available under auth methods.")
         print()
         print("2) Create account -> Email")
         print(f"  Email: {data.email}")
@@ -226,6 +229,8 @@ def print_ui_scenario(
         print("  The reset token must stay internal to the local demo UI and must not be displayed.")
         print()
         print("5) Connected accounts")
+        print("  If real OAuth env is configured, connect these real providers through the UI:")
+        print(json.dumps(data.real_oauth_providers, indent=4, ensure_ascii=False))
         print("  Link and keep:")
         print(json.dumps(data.oauth_link_keep, indent=4, ensure_ascii=False))
         print("  Link and then unlink:")
@@ -247,7 +252,7 @@ def print_ui_scenario(
         print(f"  Phone: {data.phone}")
         print(f"  Phone password: {data.phone_password}")
         print()
-        print("9) Simulated OAuth login")
+        print("9) Developer OAuth login")
         print(json.dumps(data.oauth_login, indent=2, ensure_ascii=False))
         print()
         print("Manual UI regression checks:")
@@ -395,6 +400,11 @@ def provider_names(user: dict[str, Any]) -> set[str]:
     return {str(item.get("provider")) for item in providers if isinstance(item, dict)}
 
 
+def real_oauth_configured(provider: str) -> bool:
+    prefix = provider.upper()
+    return bool(os.getenv(f"{prefix}_OAUTH_CLIENT_ID") and os.getenv(f"{prefix}_OAUTH_CLIENT_SECRET"))
+
+
 def payment_references(user: dict[str, Any]) -> dict[str, dict[str, Any]]:
     methods = user.get("payment_methods")
     if not isinstance(methods, list):
@@ -410,7 +420,13 @@ def payment_references(user: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return references
 
 
-def check_final_user_state(report: dict[str, Any], user: dict[str, Any], data: ScenarioData) -> None:
+def check_final_user_state(
+    report: dict[str, Any],
+    user: dict[str, Any],
+    data: ScenarioData,
+    *,
+    require_real_oauth: bool,
+) -> None:
     verify_user_response_has_no_secret_fields(report, user, "final /me")
     for key, expected in data.profile_update.items():
         if user.get(key) != expected:
@@ -423,6 +439,15 @@ def check_final_user_state(report: dict[str, Any], user: dict[str, Any], data: S
         add_issue(report, f"Expected kept OAuth provider {keep_provider!r} to be linked.")
     if removed_provider in providers:
         add_issue(report, f"Expected OAuth provider {removed_provider!r} to be unlinked.")
+    if require_real_oauth:
+        for provider in data.real_oauth_providers:
+            if not real_oauth_configured(provider):
+                add_issue(report, f"Real OAuth provider {provider!r} is not configured; live UI check skipped.", "warning")
+                continue
+            if provider not in providers:
+                add_issue(report, f"Expected real OAuth provider {provider!r} to be linked by the UI flow.")
+    elif data.real_oauth_providers:
+        add_issue(report, "API fallback does not exercise real OAuth providers.", "warning")
 
     references = payment_references(user)
     final_payment = references.get(data.expected_final_payment_reference)
@@ -459,7 +484,7 @@ def run_verify_ui(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
         report["checks"]["email_login_final_password"] = "passed"
         verify_user_response_has_no_secret_fields(report, email_user, "email login")
         user = current_user(client, email_token)
-        check_final_user_state(report, user, data)
+        check_final_user_state(report, user, data, require_real_oauth=True)
 
         phone_user, phone_token = login_phone(client, data)
         report["checks"]["phone_login"] = "passed"
@@ -469,10 +494,10 @@ def run_verify_ui(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
         logout(client, phone_token)
 
         oauth_user, oauth_token = oauth_login(client, data.oauth_login)
-        report["checks"]["simulated_oauth_repeat_login"] = "passed"
+        report["checks"]["developer_oauth_repeat_login"] = "passed"
         verify_user_response_has_no_secret_fields(report, oauth_user, "oauth login")
         if str(data.oauth_login["provider"]) not in provider_names(oauth_user):
-            add_issue(report, "Simulated OAuth user response is missing the OAuth provider.")
+            add_issue(report, "Developer OAuth user response is missing the OAuth provider.")
         logout(client, oauth_token)
         logout(client, email_token)
     except Exception as exc:
@@ -573,7 +598,7 @@ def run_api_fallback(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
         report["checks"]["subscription_cancel"] = "passed"
 
         final_user = current_user(client, token)
-        check_final_user_state(report, final_user, data)
+        check_final_user_state(report, final_user, data, require_real_oauth=False)
 
         _, phone_token = register_phone(client, data)
         report["checks"]["phone_register"] = "passed"
@@ -594,7 +619,7 @@ def run_api_fallback(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
 
         oauth_user, oauth_token = oauth_login(client, data.oauth_login)
         oauth_user_again, oauth_token_again = oauth_login(client, data.oauth_login)
-        report["checks"]["simulated_oauth_login"] = "passed"
+        report["checks"]["developer_oauth_login"] = "passed"
         if oauth_user.get("user_id") != oauth_user_again.get("user_id"):
             add_issue(report, "Repeated OAuth login did not return the same user.")
         verify_user_response_has_no_secret_fields(report, oauth_user_again, "oauth repeat login")

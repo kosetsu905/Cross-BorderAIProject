@@ -1,6 +1,6 @@
 ---
 name: user-2-live-e2e
-description: "Run the project's live User 2.0 regression workflow. Use when Codex needs to mimic the user's real Streamlit user-management behavior: register/login by email and phone, use simulated OAuth, manage profile/security/connected accounts/billing/subscription through the Users UI, and verify the resulting /api/v1/users state without exposing tokens or raw JSON in the UI."
+description: "Run the project's live User 2.0 regression workflow. Use when Codex needs to mimic the user's real Streamlit user-management behavior: register/login by email and phone, use real Google/GitHub OAuth when configured, use dev-only simulated OAuth for remaining providers, manage profile/security/connected accounts/billing/subscription through the Users UI, and verify the resulting /api/v1/users state without exposing tokens or raw JSON in the UI."
 ---
 
 # User 2.0 Live E2E
@@ -15,7 +15,7 @@ Keep the workflow live at the UI/API boundary. Do not mock `UserService`, user r
 
 - Do not ask for or store real passwords, OAuth credentials, payment card numbers, CVV/CVC values, bearer tokens, cookies, or reset tokens.
 - Do not use Codex's in-app browser for this regression. Follow the same style as `support-inbox-live-e2e`: prefer the user's local Chrome/dashboard session when it is available; otherwise print the exact UI steps and ask the user to complete them manually.
-- Use only generated demo credentials from `references/scenarios.json`.
+- Use only generated demo credentials from `references/scenarios.json`; never invent or paste real OAuth secrets into the UI.
 - Treat any visible `access_token`, `token_hash`, `reset_token`, password, raw JSON response, or stack trace in the Users UI as a regression failure.
 - Payment methods are simulated only. Use tokenized or masked metadata; never enter a full card number or real payment secret.
 
@@ -38,7 +38,7 @@ Keep the workflow live at the UI/API boundary. Do not mock `UserService`, user r
 
 4. In the dashboard:
    - Select `View` -> `Users`.
-   - Complete the printed email, phone, simulated OAuth, profile, security, connected account, billing, and subscription steps.
+   - Complete the printed email, phone, real Google/GitHub OAuth steps when configured, dev-only simulated OAuth for remaining providers, profile, security, connected account, billing, and subscription steps.
    - Confirm the UI never displays tokens, reset tokens, token hashes, raw JSON responses, or JSON-shaped error text.
 
 5. Verify the UI-created state:
@@ -58,6 +58,9 @@ Keep the workflow live at the UI/API boundary. Do not mock `UserService`, user r
 The script reads:
 
 - `API_BASE_URL`, default `http://localhost:8000`
+- `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`
+- `OAUTH_RETURN_URL`, default `http://localhost:8501`
 - Optional `.env` values when `python-dotenv` is installed
 
 The report is saved under `artifacts/user_2_e2e/<run_id>.json`.
@@ -65,7 +68,8 @@ The report is saved under `artifacts/user_2_e2e/<run_id>.json`.
 ## Acceptance Criteria
 
 - The default run is performed from the Streamlit `Users` UI unless `--run-api-fallback` was explicitly requested.
-- Email registration/login, phone registration/login, and simulated OAuth login are exercised with generated demo data.
+- Email registration/login, phone registration/login, and dev-only simulated OAuth login are exercised with generated demo data.
+- Google/GitHub OAuth are exercised only when their provider environment variables are configured; otherwise the verifier records an explicit skip warning and does not fake those providers.
 - Logged-out UI shows only login/register entry points; account tabs are available only after login.
 - Profile, password change, password reset, OAuth link/unlink, payment method add/default/remove, subscription, and cancellation are exercised.
 - User-facing UI does not reveal `access_token`, `token_hash`, `reset_token`, passwords, raw JSON responses, or JSON validation bodies.

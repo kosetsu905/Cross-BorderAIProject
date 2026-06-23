@@ -8,7 +8,7 @@
   },
   "scenarios": {
     "user_2_full": {
-      "description": "Full User 2.0 live Streamlit UI regression with email, phone, simulated OAuth, profile, security, connected accounts, billing, and subscription coverage.",
+      "description": "Full User 2.0 live Streamlit UI regression with email, phone, real Google/GitHub OAuth when configured, dev-only simulated OAuth for remaining providers, profile, security, connected accounts, billing, and subscription coverage.",
       "email_domain": "example.com",
       "phone_country_code": "+86",
       "phone_prefix": "139",
@@ -24,7 +24,7 @@
         "language": "en"
       },
       "oauth_login": {
-        "provider": "github",
+        "provider": "wechat",
         "provider_user_id": "cb-user2-oauth-{suffix}",
         "provider_info": {
           "username": "user2-oauth-{suffix}",
@@ -35,6 +35,10 @@
           "language": "en"
         }
       },
+      "real_oauth_providers": [
+        "google",
+        "github"
+      ],
       "oauth_link_keep": {
         "provider": "linkedin",
         "provider_user_id": "cb-user2-linkedin-{suffix}",
@@ -44,11 +48,10 @@
         }
       },
       "oauth_link_then_unlink": {
-        "provider": "google",
-        "provider_user_id": "cb-user2-google-{suffix}",
+        "provider": "twitter",
+        "provider_user_id": "cb-user2-twitter-{suffix}",
         "provider_info": {
-          "email": "cb-user2-google+{suffix}@example.com",
-          "email_verified": true
+          "username": "user2-twitter-{suffix}"
         }
       },
       "payment_methods": [

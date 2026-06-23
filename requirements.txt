@@ -4,6 +4,8 @@ fastapi
 uvicorn[standard]
 pydantic
 python-dotenv
+google-auth
+google-auth-oauthlib
 PyYAML
 redis
 celery
