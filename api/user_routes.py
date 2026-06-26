@@ -1,6 +1,8 @@
+import json
 from typing import Annotated
+from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Security, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.exc import IntegrityError
@@ -142,13 +144,32 @@ def create_user_router() -> APIRouter:
     @router.get("/oauth/{provider}/callback", response_class=RedirectResponse)
     async def complete_real_oauth_callback(
         provider: RealOAuthProvider,
-        code: str,
-        state: str,
         db: DbDependency,
+        code: str = "",
+        state: str = "",
+        auth_code: str = "",
     ) -> RedirectResponse:
         service = OAuthProviderService(db)
         try:
-            result = service.handle_callback(provider, code, state)
+            result = service.handle_callback(provider, code or auth_code, state)
+            _commit(db)
+            return RedirectResponse(result.redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+        except UserServiceError as exc:
+            _rollback_and_raise(db, exc)
+
+    @router.post("/oauth/{provider}/callback", response_class=RedirectResponse)
+    async def complete_real_oauth_form_post_callback(
+        provider: RealOAuthProvider,
+        request: Request,
+        db: DbDependency,
+    ) -> RedirectResponse:
+        form = _parse_urlencoded_body(await request.body())
+        code = form.get("code", "") or form.get("auth_code", "")
+        state = form.get("state", "")
+        callback_user = _parse_oauth_callback_user(form.get("user", ""))
+        service = OAuthProviderService(db)
+        try:
+            result = service.handle_callback(provider, code, state, callback_user)
             _commit(db)
             return RedirectResponse(result.redirect_url, status_code=status.HTTP_303_SEE_OTHER)
         except UserServiceError as exc:
@@ -399,3 +420,18 @@ def _commit(db: Session) -> None:
 def _rollback_and_raise(db: Session, exc: UserServiceError) -> None:
     db.rollback()
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def _parse_urlencoded_body(body: bytes) -> dict[str, str]:
+    parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    return {key: values[0] if values else "" for key, values in parsed.items()}
+
+
+def _parse_oauth_callback_user(raw_value: str) -> dict[str, object] | None:
+    if not raw_value:
+        return None
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None

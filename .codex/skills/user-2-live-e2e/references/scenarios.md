@@ -9,8 +9,8 @@ This is the default live regression suite. It mirrors the user's expected accoun
 - Open the Streamlit dashboard in the user's local Chrome session.
 - Select `View` -> `Users`.
 - Confirm the logged-out first screen presents `Login` and `Create account` entry points.
-- Confirm each auth entry point can switch between `Email`, `Phone`, and `Developer OAuth`.
-- Confirm `Continue with Google` and `Continue with GitHub` are visible. Use them only when the matching provider env vars are configured.
+- Confirm each auth entry point can switch between `Email` and `Phone`.
+- Confirm real OAuth provider buttons are visible. Use them only when the matching provider env vars are configured.
 
 ### UI Steps
 
@@ -26,14 +26,14 @@ Perform the printed steps in order:
 - Update Profile fields.
 - Change the email account password.
 - Request and confirm password reset from the Security tab. The UI must keep the demo reset token internal and not show it.
-- If real OAuth env is configured, connect Google and GitHub through the real OAuth buttons.
+- If real OAuth env is configured, connect the printed real providers through the real OAuth buttons.
 - Link the provider that should remain connected.
 - Link and then unlink the provider marked for unlink.
 - Add both payment methods, make the second one default, and remove the first one.
 - Subscribe to the printed plan and then cancel the subscription.
 - Sign out, then log in again with the final reset password.
 - Create and log in with the phone account.
-- Sign out, then use Developer OAuth login with the printed non-Google/non-GitHub provider identity.
+- Developer OAuth is skipped when no dev-only providers remain.
 
 ### Human-Visible Checks
 
@@ -51,7 +51,7 @@ The verifier checks final API state for the generated run id:
 - The old and intermediate email passwords fail.
 - Profile fields match the expected update.
 - The kept OAuth provider is connected and the unlinked provider is absent.
-- Configured real Google/GitHub providers are connected; unconfigured real providers are reported as skipped warnings rather than faked.
+- Configured real providers are connected; unconfigured real providers are reported as skipped warnings rather than faked.
 - The final active payment method is the expected default method.
 - The removed payment method is not active.
 - Subscription plan matches the printed plan and status is `cancelled`.

@@ -66,7 +66,20 @@ OAUTH_ONLY_PROVIDERS = {
     AuthProvider.DOUYIN,
     AuthProvider.QQ,
 }
-REAL_OAUTH_PROVIDERS = {AuthProvider.GOOGLE, AuthProvider.GITHUB}
+REAL_OAUTH_PROVIDERS = {
+    AuthProvider.GOOGLE,
+    AuthProvider.FACEBOOK,
+    AuthProvider.GITHUB,
+    AuthProvider.MICROSOFT,
+    AuthProvider.LINKEDIN,
+    AuthProvider.TWITTER,
+    AuthProvider.APPLE,
+    AuthProvider.WECHAT,
+    AuthProvider.ALIPAY,
+    AuthProvider.WEIBO,
+    AuthProvider.DOUYIN,
+    AuthProvider.QQ,
+}
 
 
 class UserServiceError(Exception):
@@ -582,7 +595,7 @@ class UserService:
     @staticmethod
     def _ensure_simulated_oauth_allowed(provider: AuthProvider) -> None:
         if provider in REAL_OAUTH_PROVIDERS:
-            raise UserValidationError("Google and GitHub must use the real OAuth flow")
+            raise UserValidationError("This provider must use the real OAuth flow")
 
 
 def hash_password(password: str) -> str:

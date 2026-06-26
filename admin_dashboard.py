@@ -167,19 +167,21 @@ CONTENT_FORM_KEYS = [
 ]
 CONTENT_IMAGE_QUALITIES = ["auto", "low", "medium", "high"]
 CONTENT_IMAGE_SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"]
-USER_REAL_OAUTH_PROVIDERS = ["google", "github"]
-USER_OAUTH_PROVIDERS = [
+USER_REAL_OAUTH_PROVIDERS = [
+    "google",
+    "github",
+    "microsoft",
+    "linkedin",
     "facebook",
     "twitter",
-    "linkedin",
     "apple",
-    "microsoft",
     "wechat",
     "alipay",
     "weibo",
     "douyin",
     "qq",
 ]
+USER_OAUTH_PROVIDERS: list[str] = []
 USER_PAYMENT_METHOD_TYPES = [
     "credit_card",
     "debit_card",
@@ -194,7 +196,7 @@ USER_PAYMENT_METHOD_TYPES = [
     "crypto",
 ]
 USER_SUBSCRIPTION_PLANS = ["starter", "professional", "enterprise"]
-USER_AUTH_METHODS = ["Email", "Phone", "Developer OAuth"]
+USER_AUTH_METHODS = ["Email", "Phone"] + (["Developer OAuth"] if USER_OAUTH_PROVIDERS else [])
 
 CONTENT_STAGE_LABELS = {
     "workflow_submitted": "Workflow submitted",
@@ -1981,14 +1983,16 @@ def _render_real_oauth_buttons(
     connected_providers: set[str] | None = None,
 ) -> None:
     connected = connected_providers or set()
-    oauth_cols = st.columns(len(USER_REAL_OAUTH_PROVIDERS))
-    for index, provider in enumerate(USER_REAL_OAUTH_PROVIDERS):
-        label = f"{'Connect' if action == 'link' else 'Continue with'} {_provider_label(provider)}"
-        if provider in connected:
-            oauth_cols[index].button(f"{_provider_label(provider)} connected", disabled=True, width="stretch")
-            continue
-        if oauth_cols[index].button(label, width="stretch", key=f"user_{action}_{provider}_start"):
-            _start_real_oauth(api_base_url, provider, action)
+    for row_start in range(0, len(USER_REAL_OAUTH_PROVIDERS), 2):
+        row_providers = USER_REAL_OAUTH_PROVIDERS[row_start : row_start + 2]
+        oauth_cols = st.columns(len(row_providers))
+        for index, provider in enumerate(row_providers):
+            label = f"{'Connect' if action == 'link' else 'Continue with'} {_provider_label(provider)}"
+            if provider in connected:
+                oauth_cols[index].button(f"{_provider_label(provider)} connected", disabled=True, width="stretch")
+                continue
+            if oauth_cols[index].button(label, width="stretch", key=f"user_{action}_{provider}_start"):
+                _start_real_oauth(api_base_url, provider, action)
 
     for provider in USER_REAL_OAUTH_PROVIDERS:
         pending_url = st.session_state.get(f"user_{action}_{provider}_authorization_url")
@@ -2015,7 +2019,20 @@ def _start_real_oauth(api_base_url: str, provider: str, action: str) -> None:
 
 
 def _provider_label(provider: str) -> str:
-    return {"google": "Google", "github": "GitHub"}.get(provider, provider.title())
+    return {
+        "google": "Google",
+        "github": "GitHub",
+        "microsoft": "Microsoft",
+        "linkedin": "LinkedIn",
+        "facebook": "Facebook",
+        "twitter": "X",
+        "apple": "Apple",
+        "wechat": "WeChat",
+        "alipay": "Alipay",
+        "weibo": "Weibo",
+        "douyin": "Douyin",
+        "qq": "QQ",
+    }.get(provider, provider.title())
 
 
 def _render_user_auth_gate(api_base_url: str) -> None:
@@ -2088,7 +2105,10 @@ def _render_phone_auth_form(api_base_url: str, mode: str) -> None:
 
 
 def _render_simulated_oauth_form(api_base_url: str) -> None:
-    st.caption("Developer-only simulated providers. Google and GitHub use the real OAuth buttons above.")
+    if not USER_OAUTH_PROVIDERS:
+        st.info("Developer OAuth is disabled because every configured provider uses a real OAuth flow.")
+        return
+    st.caption("Developer-only simulated providers. Listed real providers use the OAuth buttons above.")
     with st.form("user_simulated_oauth_form"):
         oauth_cols = st.columns(2)
         provider = oauth_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_login_oauth_provider")
@@ -2230,29 +2250,30 @@ def _render_connected_accounts(api_base_url: str, profile: dict[str, Any]) -> No
 
     connected_providers = {row["Provider"] for row in connected_rows}
     _render_real_oauth_buttons(api_base_url, action="link", connected_providers=connected_providers)
-    st.divider()
-    st.caption("Developer-only simulated providers remain available for providers that do not have real OAuth yet.")
-    with st.form("user_link_oauth_form"):
-        link_cols = st.columns(2)
-        provider = link_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_link_oauth_provider")
-        provider_user_id = link_cols[1].text_input("Provider user ID", key="user_link_provider_user_id")
-        profile_cols = st.columns(2)
-        provider_email = profile_cols[0].text_input("Account email", key="user_link_provider_email")
-        provider_name = profile_cols[1].text_input("Display name", key="user_link_provider_name")
-        submitted = st.form_submit_button("Connect account", width="stretch")
+    if USER_OAUTH_PROVIDERS:
+        st.divider()
+        st.caption("Developer-only simulated providers remain available for providers that do not have real OAuth yet.")
+        with st.form("user_link_oauth_form"):
+            link_cols = st.columns(2)
+            provider = link_cols[0].selectbox("Provider", USER_OAUTH_PROVIDERS, key="user_link_oauth_provider")
+            provider_user_id = link_cols[1].text_input("Provider user ID", key="user_link_provider_user_id")
+            profile_cols = st.columns(2)
+            provider_email = profile_cols[0].text_input("Account email", key="user_link_provider_email")
+            provider_name = profile_cols[1].text_input("Display name", key="user_link_provider_name")
+            submitted = st.form_submit_button("Connect account", width="stretch")
 
-    if submitted:
-        payload = _oauth_payload(
-            provider,
-            provider_user_id,
-            {
-                "email": provider_email.strip(),
-                "name": provider_name.strip(),
-                "email_verified": bool(provider_email.strip()),
-            },
-        )
-        result, error = _request_json("POST", api_base_url, "/api/v1/users/me/oauth", _current_user_token(), payload)
-        _apply_user_profile_response(result, error, "Account connected.")
+        if submitted:
+            payload = _oauth_payload(
+                provider,
+                provider_user_id,
+                {
+                    "email": provider_email.strip(),
+                    "name": provider_name.strip(),
+                    "email_verified": bool(provider_email.strip()),
+                },
+            )
+            result, error = _request_json("POST", api_base_url, "/api/v1/users/me/oauth", _current_user_token(), payload)
+            _apply_user_profile_response(result, error, "Account connected.")
 
     linked_providers = _linked_oauth_provider_names(profile)
     if linked_providers:
@@ -2449,13 +2470,15 @@ def _friendly_user_error(error: str | None) -> str:
     if "oauth provider identity" in lowered:
         return "That connected account is already linked to another user."
     if "must use the real oauth flow" in lowered:
-        return "Use the Google or GitHub sign-in button for this provider."
+        return "Use the real sign-in button for this provider."
     if "oauth is not configured" in lowered:
         return "This sign-in provider is not configured yet."
     if "oauth state" in lowered or "oauth result" in lowered:
         return "This sign-in attempt expired. Please try again."
     if "oauth token exchange failed" in lowered or "profile lookup failed" in lowered:
         return "We could not verify that sign-in provider. Please try again."
+    if "id token verification failed" in lowered or "oauth support is not installed" in lowered:
+        return "This sign-in provider could not be verified. Please check the server configuration."
     if status_code == 422:
         return "Please check the fields and try again."
     if detail_text:

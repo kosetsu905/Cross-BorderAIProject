@@ -1,8 +1,9 @@
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -261,48 +262,58 @@ def test_password_reset_token_is_hash_only_and_one_time_use() -> None:
     assert login.status_code == 200
 
 
-def test_oauth_login_reuses_existing_identity_and_sanitizes_provider_info() -> None:
+def test_real_oauth_login_reuses_existing_identity_and_sanitizes_provider_info(monkeypatch: Any) -> None:
     client, _ = make_client()
-    payload = {
-        "provider": "wechat",
-        "provider_user_id": "wechat_123",
-        "provider_info": {
-            "email": "wechat@example.com",
-            "name": "Wechat User",
+    _configure_oauth_env(monkeypatch, "github")
+    identity = ProviderIdentity(
+        provider=AuthProvider.GITHUB,
+        provider_user_id="github-reuse-1",
+        provider_info={
+            "login": "github-reuse",
+            "name": "GitHub Reuse",
             "access_token": "secret-token",
-            "email_verified": True,
         },
-    }
+    )
 
-    first = client.post("/api/v1/users/oauth/login", json=payload)
+    first_result = _complete_callback_with_identity(client, "github", identity)
+    first = client.post("/api/v1/users/oauth/github/complete", json={"result_code": first_result})
     assert first.status_code == 200
-    second = client.post("/api/v1/users/oauth/login", json=payload)
+    second_result = _complete_callback_with_identity(client, "github", identity)
+    second = client.post("/api/v1/users/oauth/github/complete", json={"result_code": second_result})
     assert second.status_code == 200
     assert second.json()["user"]["user_id"] == first.json()["user"]["user_id"]
     provider_info = second.json()["user"]["auth_providers"][0]["provider_info"]
     assert "access_token" not in provider_info
 
 
-def test_oauth_link_and_unlink() -> None:
+def test_real_oauth_link_and_unlink(monkeypatch: Any) -> None:
     client, _ = make_client()
     token = register_email(client)["access_token"]
+    _configure_oauth_env(monkeypatch, "github")
 
-    linked = client.post(
-        "/api/v1/users/me/oauth",
-        headers=auth_header(token),
-        json={"provider": "linkedin", "provider_user_id": "linkedin_john", "provider_info": {"profile_url": "https://example.com/john"}},
+    result_code = _complete_callback_with_identity(
+        client,
+        "github",
+        ProviderIdentity(
+            provider=AuthProvider.GITHUB,
+            provider_user_id="github-link-1",
+            provider_info={"login": "github-link", "profile_url": "https://example.com/john"},
+        ),
+        action="link",
+        token=token,
     )
+    linked = client.post("/api/v1/users/oauth/github/complete", json={"result_code": result_code})
     assert linked.status_code == 200
-    assert {provider["provider"] for provider in linked.json()["auth_providers"]} == {"email", "linkedin"}
+    assert {provider["provider"] for provider in linked.json()["user"]["auth_providers"]} == {"email", "github"}
 
-    unlinked = client.delete("/api/v1/users/me/oauth/linkedin", headers=auth_header(token))
+    unlinked = client.delete("/api/v1/users/me/oauth/github", headers=auth_header(linked.json()["access_token"]))
     assert unlinked.status_code == 200
 
-    profile = client.get("/api/v1/users/me", headers=auth_header(token))
+    profile = client.get("/api/v1/users/me", headers=auth_header(linked.json()["access_token"]))
     assert {provider["provider"] for provider in profile.json()["auth_providers"]} == {"email"}
 
 
-def test_simulated_google_and_github_oauth_are_rejected() -> None:
+def test_simulated_real_oauth_providers_are_rejected() -> None:
     client, _ = make_client()
     token = register_email(client)["access_token"]
 
@@ -315,11 +326,73 @@ def test_simulated_google_and_github_oauth_are_rejected() -> None:
         headers=auth_header(token),
         json={"provider": "github", "provider_user_id": "github-1", "provider_info": {}},
     )
+    microsoft_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "microsoft", "provider_user_id": "microsoft-1", "provider_info": {}},
+    )
+    linkedin_link = client.post(
+        "/api/v1/users/me/oauth",
+        headers=auth_header(token),
+        json={"provider": "linkedin", "provider_user_id": "linkedin-1", "provider_info": {}},
+    )
+    facebook_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "facebook", "provider_user_id": "facebook-1", "provider_info": {}},
+    )
+    twitter_link = client.post(
+        "/api/v1/users/me/oauth",
+        headers=auth_header(token),
+        json={"provider": "twitter", "provider_user_id": "twitter-1", "provider_info": {}},
+    )
+    apple_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "apple", "provider_user_id": "apple-1", "provider_info": {}},
+    )
+    wechat_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "wechat", "provider_user_id": "wechat-1", "provider_info": {}},
+    )
+    alipay_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "alipay", "provider_user_id": "alipay-1", "provider_info": {}},
+    )
+    weibo_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "weibo", "provider_user_id": "weibo-1", "provider_info": {}},
+    )
+    douyin_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "douyin", "provider_user_id": "douyin-1", "provider_info": {}},
+    )
+    qq_login = client.post(
+        "/api/v1/users/oauth/login",
+        json={"provider": "qq", "provider_user_id": "qq-1", "provider_info": {}},
+    )
 
     assert google_login.status_code == 400
     assert github_link.status_code == 400
+    assert microsoft_login.status_code == 400
+    assert linkedin_link.status_code == 400
+    assert facebook_login.status_code == 400
+    assert twitter_link.status_code == 400
+    assert apple_login.status_code == 400
+    assert wechat_login.status_code == 400
+    assert alipay_login.status_code == 400
+    assert weibo_login.status_code == 400
+    assert douyin_login.status_code == 400
+    assert qq_login.status_code == 400
     assert "real OAuth flow" in google_login.json()["detail"]
     assert "real OAuth flow" in github_link.json()["detail"]
+    assert "real OAuth flow" in microsoft_login.json()["detail"]
+    assert "real OAuth flow" in linkedin_link.json()["detail"]
+    assert "real OAuth flow" in facebook_login.json()["detail"]
+    assert "real OAuth flow" in twitter_link.json()["detail"]
+    assert "real OAuth flow" in apple_login.json()["detail"]
+    assert "real OAuth flow" in wechat_login.json()["detail"]
+    assert "real OAuth flow" in alipay_login.json()["detail"]
+    assert "real OAuth flow" in weibo_login.json()["detail"]
+    assert "real OAuth flow" in douyin_login.json()["detail"]
+    assert "real OAuth flow" in qq_login.json()["detail"]
 
 
 def test_real_oauth_start_requires_provider_configuration(monkeypatch: Any) -> None:
@@ -462,6 +535,372 @@ def test_github_oauth_does_not_merge_existing_email_user(monkeypatch: Any) -> No
     assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"github"}
 
 
+def test_facebook_oauth_does_not_merge_existing_email_user(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    existing = register_email(client, email="facebook@example.com")["user"]
+    _configure_oauth_env(monkeypatch, "facebook")
+    result_code = _complete_callback_with_identity(
+        client,
+        "facebook",
+        ProviderIdentity(
+            provider=AuthProvider.FACEBOOK,
+            provider_user_id="facebook-id-1",
+            provider_info={"email": "facebook@example.com", "name": "Facebook User", "picture": "https://example.com/f.png"},
+        ),
+    )
+
+    completed = client.post("/api/v1/users/oauth/facebook/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    assert completed.json()["user"]["user_id"] != existing["user_id"]
+    assert completed.json()["user"]["email"] is None
+    assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"facebook"}
+
+
+def test_twitter_oauth_uses_pkce_and_creates_verified_identity(monkeypatch: Any) -> None:
+    client, testing_session = make_client()
+    _configure_oauth_env(monkeypatch, "twitter")
+    start = client.post("/api/v1/users/oauth/twitter/start", json={"action": "login"})
+    assert start.status_code == 200
+    authorization_query = parse_qs(urlsplit(start.json()["authorization_url"]).query)
+    state = authorization_query["state"][0]
+    assert authorization_query["code_challenge_method"] == ["S256"]
+    assert authorization_query["code_challenge"][0]
+    with testing_session() as db:
+        flow = db.execute(select(UserOAuthFlowRecord)).scalars().one()
+        assert flow.pkce_code_verifier
+
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._provider_identity",
+        return_value=ProviderIdentity(
+            provider=AuthProvider.TWITTER,
+            provider_user_id="x-user-1",
+            provider_info={"username": "x_user", "name": "X User", "picture": "https://example.com/x.png"},
+        ),
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/twitter/callback?code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    result_code = parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]
+    completed = client.post("/api/v1/users/oauth/twitter/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"twitter"}
+    with testing_session() as db:
+        flow = db.execute(select(UserOAuthFlowRecord)).scalars().one()
+        assert flow.pkce_code_verifier is None
+
+
+def test_apple_oauth_supports_form_post_callback_and_verified_id_token(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    _configure_oauth_env(monkeypatch, "apple")
+    monkeypatch.setenv("APPLE_OAUTH_TEAM_ID", "team-id")
+    monkeypatch.setenv("APPLE_OAUTH_KEY_ID", "key-id")
+    monkeypatch.setenv("APPLE_OAUTH_PRIVATE_KEY", "fake-private-key")
+    start = client.post("/api/v1/users/oauth/apple/start", json={"action": "login"})
+    assert start.status_code == 200
+    authorization_query = parse_qs(urlsplit(start.json()["authorization_url"]).query)
+    state = authorization_query["state"][0]
+    assert authorization_query["response_mode"] == ["form_post"]
+    user_payload = json.dumps({"name": {"firstName": "Apple", "lastName": "User"}})
+
+    with patch("services.oauth_provider_service._apple_client_secret", return_value="apple-client-secret"), patch(
+        "services.oauth_provider_service._verify_apple_id_token",
+        return_value={
+            "sub": "apple-sub-1",
+            "email": "apple@example.com",
+            "email_verified": "true",
+            "is_private_email": "false",
+        },
+    ), patch(
+        "services.oauth_provider_service.OAuthProviderService._exchange_code",
+        return_value={"id_token": "apple-id-token"},
+    ):
+        callback = client.post(
+            "/api/v1/users/oauth/apple/callback",
+            content=urlencode({"code": "oauth-code", "state": state, "user": user_payload}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    result_code = parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]
+    completed = client.post("/api/v1/users/oauth/apple/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    user = completed.json()["user"]
+    assert user["first_name"] == "Apple"
+    assert user["last_name"] == "User"
+    assert {provider["provider"] for provider in user["auth_providers"]} == {"apple"}
+
+
+def test_wechat_oauth_uses_unionid_or_openid_identity(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    _configure_oauth_env(monkeypatch, "wechat")
+    monkeypatch.setenv("WECHAT_OAUTH_APP_ID", "wechat-app-id")
+    result_code = _complete_callback_with_identity(
+        client,
+        "wechat",
+        ProviderIdentity(
+            provider=AuthProvider.WECHAT,
+            provider_user_id="wechat-unionid-1",
+            provider_info={
+                "openid": "wechat-openid-1",
+                "unionid": "wechat-unionid-1",
+                "nickname": "Wechat User",
+                "name": "Wechat User",
+                "picture": "https://example.com/wechat.png",
+                "country": "CN",
+            },
+        ),
+    )
+
+    completed = client.post("/api/v1/users/oauth/wechat/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    user = completed.json()["user"]
+    assert user["username"] == "Wechat User"
+    assert {provider["provider"] for provider in user["auth_providers"]} == {"wechat"}
+    provider_info = user["auth_providers"][0]["provider_info"]
+    assert provider_info["unionid"] == "wechat-unionid-1"
+    assert "access_token" not in provider_info
+
+
+def test_alipay_oauth_uses_app_id_and_auth_code_callback(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    monkeypatch.delenv("ALIPAY_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ALIPAY_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("ALIPAY_OAUTH_APP_ID", "alipay-app-id")
+    monkeypatch.setenv("ALIPAY_OAUTH_PRIVATE_KEY", "fake-private-key")
+    monkeypatch.setenv(
+        "ALIPAY_OAUTH_REDIRECT_URI",
+        "http://localhost:8000/api/v1/users/oauth/alipay/callback",
+    )
+    monkeypatch.setenv("OAUTH_RETURN_URL", "http://localhost:8501")
+
+    start = client.post("/api/v1/users/oauth/alipay/start", json={"action": "login"})
+    assert start.status_code == 200
+    authorization_query = parse_qs(urlsplit(start.json()["authorization_url"]).query)
+    assert authorization_query["app_id"] == ["alipay-app-id"]
+    assert authorization_query["scope"] == ["auth_user"]
+    state = authorization_query["state"][0]
+
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._provider_identity",
+        return_value=ProviderIdentity(
+            provider=AuthProvider.ALIPAY,
+            provider_user_id="alipay-user-1",
+            provider_info={
+                "user_id": "alipay-user-1",
+                "nick_name": "Alipay User",
+                "avatar": "https://example.com/alipay.png",
+                "access_token": "should-not-be-stored",
+            },
+        ),
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/alipay/callback?auth_code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    result_code = parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]
+
+    completed = client.post("/api/v1/users/oauth/alipay/complete", json={"result_code": result_code})
+    assert completed.status_code == 200
+    user = completed.json()["user"]
+    assert user["username"] == "Alipay User"
+    assert {provider["provider"] for provider in user["auth_providers"]} == {"alipay"}
+    provider_info = user["auth_providers"][0]["provider_info"]
+    assert provider_info["user_id"] == "alipay-user-1"
+    assert "access_token" not in provider_info
+
+
+def test_weibo_oauth_uses_uid_profile_identity(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    _configure_oauth_env(monkeypatch, "weibo")
+    monkeypatch.setenv("WEIBO_OAUTH_SCOPE", "email")
+
+    start = client.post("/api/v1/users/oauth/weibo/start", json={"action": "login"})
+    assert start.status_code == 200
+    authorization_query = parse_qs(urlsplit(start.json()["authorization_url"]).query)
+    assert authorization_query["client_id"] == ["weibo-client"]
+    assert authorization_query["response_type"] == ["code"]
+    assert authorization_query["scope"] == ["email"]
+    state = authorization_query["state"][0]
+
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._exchange_code",
+        return_value={"access_token": "weibo-access-token", "uid": "weibo-uid-1"},
+    ), patch(
+        "services.oauth_provider_service.OAuthProviderService._get_json",
+        return_value={
+            "idstr": "weibo-uid-1",
+            "screen_name": "Weibo User",
+            "name": "Weibo User",
+            "avatar_large": "https://example.com/weibo-large.png",
+            "profile_image_url": "https://example.com/weibo-small.png",
+            "verified": True,
+        },
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/weibo/callback?code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    result_code = parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]
+
+    completed = client.post("/api/v1/users/oauth/weibo/complete", json={"result_code": result_code})
+    assert completed.status_code == 200
+    user = completed.json()["user"]
+    assert user["username"] == "Weibo User"
+    assert {provider["provider"] for provider in user["auth_providers"]} == {"weibo"}
+    provider_info = user["auth_providers"][0]["provider_info"]
+    assert provider_info["uid"] == "weibo-uid-1"
+    assert provider_info["picture"] == "https://example.com/weibo-large.png"
+    assert "access_token" not in provider_info
+
+
+def test_douyin_oauth_uses_client_key_and_open_id_identity(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    monkeypatch.delenv("DOUYIN_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.setenv("DOUYIN_OAUTH_CLIENT_KEY", "douyin-client-key")
+    monkeypatch.setenv("DOUYIN_OAUTH_CLIENT_SECRET", "douyin-secret")
+    monkeypatch.setenv(
+        "DOUYIN_OAUTH_REDIRECT_URI",
+        "http://localhost:8000/api/v1/users/oauth/douyin/callback",
+    )
+    monkeypatch.setenv("DOUYIN_OAUTH_SCOPE", "user_info")
+    monkeypatch.setenv("OAUTH_RETURN_URL", "http://localhost:8501")
+
+    start = client.post("/api/v1/users/oauth/douyin/start", json={"action": "login"})
+    assert start.status_code == 200
+    authorization_query = parse_qs(urlsplit(start.json()["authorization_url"]).query)
+    assert authorization_query["client_key"] == ["douyin-client-key"]
+    assert authorization_query["response_type"] == ["code"]
+    assert authorization_query["scope"] == ["user_info"]
+    state = authorization_query["state"][0]
+
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._douyin_post_form",
+        side_effect=[
+            {"access_token": "douyin-access-token", "open_id": "douyin-open-id-1", "union_id": "douyin-union-id-1"},
+            {
+                "open_id": "douyin-open-id-1",
+                "union_id": "douyin-union-id-1",
+                "nickname": "Douyin User",
+                "avatar": "https://example.com/douyin.png",
+                "country": "CN",
+            },
+        ],
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/douyin/callback?code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    result_code = parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]
+
+    completed = client.post("/api/v1/users/oauth/douyin/complete", json={"result_code": result_code})
+    assert completed.status_code == 200
+    user = completed.json()["user"]
+    assert user["username"] == "Douyin User"
+    assert {provider["provider"] for provider in user["auth_providers"]} == {"douyin"}
+    provider_info = user["auth_providers"][0]["provider_info"]
+    assert provider_info["open_id"] == "douyin-open-id-1"
+    assert provider_info["union_id"] == "douyin-union-id-1"
+    assert "access_token" not in provider_info
+
+
+def test_qq_oauth_uses_openid_and_profile_identity(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    _configure_oauth_env(monkeypatch, "qq")
+
+    start = client.post("/api/v1/users/oauth/qq/start", json={"action": "login"})
+    assert start.status_code == 200
+    authorization_query = parse_qs(urlsplit(start.json()["authorization_url"]).query)
+    assert authorization_query["client_id"] == ["qq-client"]
+    assert authorization_query["response_type"] == ["code"]
+    state = authorization_query["state"][0]
+
+    with patch(
+        "services.oauth_provider_service.OAuthProviderService._qq_token_response",
+        return_value={"access_token": "qq-access-token"},
+    ), patch(
+        "services.oauth_provider_service.OAuthProviderService._qq_jsonp_response",
+        return_value={"client_id": "qq-client", "openid": "qq-openid-1"},
+    ), patch(
+        "services.oauth_provider_service.OAuthProviderService._get_json",
+        return_value={
+            "ret": 0,
+            "nickname": "QQ User",
+            "figureurl_qq_2": "https://example.com/qq.png",
+            "gender": "unknown",
+        },
+    ):
+        callback = client.get(
+            f"/api/v1/users/oauth/qq/callback?code=oauth-code&state={state}",
+            follow_redirects=False,
+        )
+    assert callback.status_code == 303
+    result_code = parse_qs(urlsplit(callback.headers["location"]).query)["oauth_result"][0]
+
+    completed = client.post("/api/v1/users/oauth/qq/complete", json={"result_code": result_code})
+    assert completed.status_code == 200
+    user = completed.json()["user"]
+    assert user["username"] == "QQ User"
+    assert {provider["provider"] for provider in user["auth_providers"]} == {"qq"}
+    provider_info = user["auth_providers"][0]["provider_info"]
+    assert provider_info["openid"] == "qq-openid-1"
+    assert provider_info["picture"] == "https://example.com/qq.png"
+    assert "access_token" not in provider_info
+    assert "access_token" not in provider_info
+
+
+def test_microsoft_oauth_does_not_merge_existing_email_user(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    existing = register_email(client, email="microsoft@example.com")["user"]
+    _configure_oauth_env(monkeypatch, "microsoft")
+    result_code = _complete_callback_with_identity(
+        client,
+        "microsoft",
+        ProviderIdentity(
+            provider=AuthProvider.MICROSOFT,
+            provider_user_id="microsoft-sub-1",
+            provider_info={"email": "microsoft@example.com", "name": "Microsoft User"},
+        ),
+    )
+
+    completed = client.post("/api/v1/users/oauth/microsoft/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    assert completed.json()["user"]["user_id"] != existing["user_id"]
+    assert completed.json()["user"]["email"] is None
+    assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"microsoft"}
+
+
+def test_linkedin_oauth_does_not_merge_existing_email_user(monkeypatch: Any) -> None:
+    client, _ = make_client()
+    existing = register_email(client, email="linkedin@example.com")["user"]
+    _configure_oauth_env(monkeypatch, "linkedin")
+    result_code = _complete_callback_with_identity(
+        client,
+        "linkedin",
+        ProviderIdentity(
+            provider=AuthProvider.LINKEDIN,
+            provider_user_id="linkedin-sub-1",
+            provider_info={"email": "linkedin@example.com", "name": "LinkedIn User", "email_verified": True},
+        ),
+    )
+
+    completed = client.post("/api/v1/users/oauth/linkedin/complete", json={"result_code": result_code})
+
+    assert completed.status_code == 200
+    assert completed.json()["user"]["user_id"] != existing["user_id"]
+    assert completed.json()["user"]["email"] is None
+    assert {provider["provider"] for provider in completed.json()["user"]["auth_providers"]} == {"linkedin"}
+
+
 def test_real_oauth_link_rejects_provider_identity_owned_by_another_user(monkeypatch: Any) -> None:
     client, _ = make_client()
     first_token = register_email(client, email="first@example.com")["access_token"]
@@ -580,15 +1019,29 @@ def test_response_does_not_expose_secret_hashes() -> None:
 
 
 def test_dashboard_user_helpers_do_not_change_workflow_headers() -> None:
-    assert USER_AUTH_METHODS == ["Email", "Phone", "Developer OAuth"]
-    assert USER_REAL_OAUTH_PROVIDERS == ["google", "github"]
-    assert "google" not in USER_OAUTH_PROVIDERS
-    assert "github" not in USER_OAUTH_PROVIDERS
+    assert USER_AUTH_METHODS == ["Email", "Phone"]
+    assert USER_REAL_OAUTH_PROVIDERS == [
+        "google",
+        "github",
+        "microsoft",
+        "linkedin",
+        "facebook",
+        "twitter",
+        "apple",
+        "wechat",
+        "alipay",
+        "weibo",
+        "douyin",
+        "qq",
+    ]
+    assert USER_OAUTH_PROVIDERS == []
+    for provider in USER_REAL_OAUTH_PROVIDERS:
+        assert provider not in USER_OAUTH_PROVIDERS
     assert _headers("workflow-token") == {"Authorization": "Bearer workflow-token"}
     assert _user_headers("user-token") == {"Authorization": "Bearer user-token"}
-    assert _oauth_payload("linkedin", "linkedin-1", {"email": "a@example.com"}) == {
-        "provider": "linkedin",
-        "provider_user_id": "linkedin-1",
+    assert _oauth_payload("qq", "qq-1", {"email": "a@example.com"}) == {
+        "provider": "qq",
+        "provider_user_id": "qq-1",
         "provider_info": {"email": "a@example.com"},
     }
     assert _payment_method_payload("paypal", {"account": "masked@example.com"}, True) == {

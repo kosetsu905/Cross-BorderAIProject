@@ -1,6 +1,6 @@
 ---
 name: user-2-live-e2e
-description: "Run the project's live User 2.0 regression workflow. Use when Codex needs to mimic the user's real Streamlit user-management behavior: register/login by email and phone, use real Google/GitHub OAuth when configured, use dev-only simulated OAuth for remaining providers, manage profile/security/connected accounts/billing/subscription through the Users UI, and verify the resulting /api/v1/users state without exposing tokens or raw JSON in the UI."
+description: "Run the project's live User 2.0 regression workflow. Use when Codex needs to mimic the user's real Streamlit user-management behavior: register/login by email and phone, use real Google/GitHub/Microsoft/LinkedIn/Facebook/X/Apple/WeChat/Alipay/Weibo/Douyin/QQ OAuth when configured, manage profile/security/connected accounts/billing/subscription through the Users UI, and verify the resulting /api/v1/users state without exposing tokens or raw JSON in the UI."
 ---
 
 # User 2.0 Live E2E
@@ -38,7 +38,7 @@ Keep the workflow live at the UI/API boundary. Do not mock `UserService`, user r
 
 4. In the dashboard:
    - Select `View` -> `Users`.
-   - Complete the printed email, phone, real Google/GitHub OAuth steps when configured, dev-only simulated OAuth for remaining providers, profile, security, connected account, billing, and subscription steps.
+   - Complete the printed email, phone, real OAuth steps when configured, profile, security, connected account, billing, and subscription steps.
    - Confirm the UI never displays tokens, reset tokens, token hashes, raw JSON responses, or JSON-shaped error text.
 
 5. Verify the UI-created state:
@@ -60,6 +60,20 @@ The script reads:
 - `API_BASE_URL`, default `http://localhost:8000`
 - `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`
+- `MICROSOFT_OAUTH_CLIENT_ID` / `MICROSOFT_OAUTH_CLIENT_SECRET`
+- `LINKEDIN_OAUTH_CLIENT_ID` / `LINKEDIN_OAUTH_CLIENT_SECRET`
+- `FACEBOOK_OAUTH_CLIENT_ID` / `FACEBOOK_OAUTH_CLIENT_SECRET`
+- `TWITTER_OAUTH_CLIENT_ID` / `TWITTER_OAUTH_CLIENT_SECRET`
+- `APPLE_OAUTH_CLIENT_ID` / `APPLE_OAUTH_TEAM_ID` / `APPLE_OAUTH_KEY_ID`
+- `APPLE_OAUTH_PRIVATE_KEY` or `APPLE_OAUTH_PRIVATE_KEY_PATH`
+- `WECHAT_OAUTH_APP_ID` or `WECHAT_OAUTH_CLIENT_ID`
+- `WECHAT_OAUTH_CLIENT_SECRET`
+- `ALIPAY_OAUTH_APP_ID` or `ALIPAY_OAUTH_CLIENT_ID`
+- `ALIPAY_OAUTH_PRIVATE_KEY` or `ALIPAY_OAUTH_PRIVATE_KEY_PATH`
+- `WEIBO_OAUTH_CLIENT_ID` / `WEIBO_OAUTH_CLIENT_SECRET`
+- `DOUYIN_OAUTH_CLIENT_KEY` or `DOUYIN_OAUTH_CLIENT_ID`
+- `DOUYIN_OAUTH_CLIENT_SECRET`
+- `QQ_OAUTH_CLIENT_ID` / `QQ_OAUTH_CLIENT_SECRET`
 - `OAUTH_RETURN_URL`, default `http://localhost:8501`
 - Optional `.env` values when `python-dotenv` is installed
 
@@ -68,8 +82,8 @@ The report is saved under `artifacts/user_2_e2e/<run_id>.json`.
 ## Acceptance Criteria
 
 - The default run is performed from the Streamlit `Users` UI unless `--run-api-fallback` was explicitly requested.
-- Email registration/login, phone registration/login, and dev-only simulated OAuth login are exercised with generated demo data.
-- Google/GitHub OAuth are exercised only when their provider environment variables are configured; otherwise the verifier records an explicit skip warning and does not fake those providers.
+- Email registration/login and phone registration/login are exercised with generated demo data.
+- Real OAuth providers are exercised only when their provider environment variables are configured; otherwise the verifier records an explicit skip warning and does not fake those providers.
 - Logged-out UI shows only login/register entry points; account tabs are available only after login.
 - Profile, password change, password reset, OAuth link/unlink, payment method add/default/remove, subscription, and cancellation are exercised.
 - User-facing UI does not reveal `access_token`, `token_hash`, `reset_token`, passwords, raw JSON responses, or JSON validation bodies.

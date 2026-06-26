@@ -129,6 +129,7 @@ class UserOAuthFlowRecord(Base):
     state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     state_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     state_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pkce_code_verifier: Mapped[str | None] = mapped_column(String(128), nullable=True)
     result_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     result_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     result_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -56,9 +56,9 @@ class ScenarioData:
     phone_password: str
     profile_update: dict[str, str]
     real_oauth_providers: list[str]
-    oauth_login: dict[str, Any]
-    oauth_link_keep: dict[str, Any]
-    oauth_link_then_unlink: dict[str, Any]
+    oauth_login: dict[str, Any] | None
+    oauth_link_keep: dict[str, Any] | None
+    oauth_link_then_unlink: dict[str, Any] | None
     payment_methods: list[dict[str, Any]]
     expected_final_payment_reference: str
     removed_payment_reference: str
@@ -134,9 +134,9 @@ def scenario_data(manifest: dict[str, Any], scenario_id: str, run_id: str) -> Sc
         phone_password=_format_template(raw["phone_password_template"], suffix),
         profile_update=dict(raw["profile_update"]),
         real_oauth_providers=[str(item) for item in raw.get("real_oauth_providers", [])],
-        oauth_login=_format_nested(raw["oauth_login"], suffix),
-        oauth_link_keep=_format_nested(raw["oauth_link_keep"], suffix),
-        oauth_link_then_unlink=_format_nested(raw["oauth_link_then_unlink"], suffix),
+        oauth_login=_format_nested(raw.get("oauth_login"), suffix),
+        oauth_link_keep=_format_nested(raw.get("oauth_link_keep"), suffix),
+        oauth_link_then_unlink=_format_nested(raw.get("oauth_link_then_unlink"), suffix),
         payment_methods=[_format_nested(item, suffix) for item in raw["payment_methods"]],
         expected_final_payment_reference=_format_template(raw["expected_final_payment_reference"], suffix),
         removed_payment_reference=_format_template(raw["removed_payment_reference"], suffix),
@@ -207,8 +207,8 @@ def print_ui_scenario(
         print()
         print("1) Logged-out UI checks")
         print("  - Confirm only Login / Create account entry points are visible.")
-        print("  - Confirm Continue with Google / Continue with GitHub buttons are visible.")
-        print("  - Confirm Email, Phone, and Developer OAuth are available under auth methods.")
+        print("  - Confirm real OAuth provider buttons are visible.")
+        print("  - Confirm Email and Phone are available under auth methods.")
         print()
         print("2) Create account -> Email")
         print(f"  Email: {data.email}")
@@ -231,10 +231,12 @@ def print_ui_scenario(
         print("5) Connected accounts")
         print("  If real OAuth env is configured, connect these real providers through the UI:")
         print(json.dumps(data.real_oauth_providers, indent=4, ensure_ascii=False))
-        print("  Link and keep:")
-        print(json.dumps(data.oauth_link_keep, indent=4, ensure_ascii=False))
-        print("  Link and then unlink:")
-        print(json.dumps(data.oauth_link_then_unlink, indent=4, ensure_ascii=False))
+        if has_oauth_payload(data.oauth_link_keep):
+            print("  Link and keep:")
+            print(json.dumps(data.oauth_link_keep, indent=4, ensure_ascii=False))
+        if has_oauth_payload(data.oauth_link_then_unlink):
+            print("  Link and then unlink:")
+            print(json.dumps(data.oauth_link_then_unlink, indent=4, ensure_ascii=False))
         print()
         print("6) Billing")
         for index, method in enumerate(data.payment_methods, start=1):
@@ -252,8 +254,12 @@ def print_ui_scenario(
         print(f"  Phone: {data.phone}")
         print(f"  Phone password: {data.phone_password}")
         print()
-        print("9) Developer OAuth login")
-        print(json.dumps(data.oauth_login, indent=2, ensure_ascii=False))
+        if has_oauth_payload(data.oauth_login):
+            print("9) Developer OAuth login")
+            print(json.dumps(data.oauth_login, indent=2, ensure_ascii=False))
+        else:
+            print("9) Developer OAuth login")
+            print("  - Skipped: all configured providers use real OAuth.")
         print()
         print("Manual UI regression checks:")
         print("  - No access_token, token_hash, reset_token, password_hash, raw JSON, or JSON error body is visible.")
@@ -365,6 +371,14 @@ def oauth_login(client: ApiClient, request_payload: dict[str, Any]) -> tuple[dic
     return auth_user(client.request_json("POST", "/api/v1/users/oauth/login", _oauth_payload(request_payload)))
 
 
+def has_oauth_payload(value: dict[str, Any] | None) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and value.get("provider")
+        and value.get("provider_user_id")
+    )
+
+
 def _oauth_payload(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": value["provider"],
@@ -402,6 +416,30 @@ def provider_names(user: dict[str, Any]) -> set[str]:
 
 def real_oauth_configured(provider: str) -> bool:
     prefix = provider.upper()
+    if provider == "apple":
+        return bool(
+            os.getenv("APPLE_OAUTH_CLIENT_ID")
+            and os.getenv("APPLE_OAUTH_TEAM_ID")
+            and os.getenv("APPLE_OAUTH_KEY_ID")
+            and (os.getenv("APPLE_OAUTH_PRIVATE_KEY") or os.getenv("APPLE_OAUTH_PRIVATE_KEY_PATH"))
+        )
+    if provider == "wechat":
+        return bool(
+            (os.getenv("WECHAT_OAUTH_APP_ID") or os.getenv("WECHAT_OAUTH_CLIENT_ID"))
+            and os.getenv("WECHAT_OAUTH_CLIENT_SECRET")
+        )
+    if provider == "alipay":
+        return bool(
+            (os.getenv("ALIPAY_OAUTH_APP_ID") or os.getenv("ALIPAY_OAUTH_CLIENT_ID"))
+            and (os.getenv("ALIPAY_OAUTH_PRIVATE_KEY") or os.getenv("ALIPAY_OAUTH_PRIVATE_KEY_PATH"))
+        )
+    if provider == "douyin":
+        return bool(
+            (os.getenv("DOUYIN_OAUTH_CLIENT_KEY") or os.getenv("DOUYIN_OAUTH_CLIENT_ID"))
+            and os.getenv("DOUYIN_OAUTH_CLIENT_SECRET")
+        )
+    if provider == "qq":
+        return bool(os.getenv("QQ_OAUTH_CLIENT_ID") and os.getenv("QQ_OAUTH_CLIENT_SECRET"))
     return bool(os.getenv(f"{prefix}_OAUTH_CLIENT_ID") and os.getenv(f"{prefix}_OAUTH_CLIENT_SECRET"))
 
 
@@ -433,12 +471,14 @@ def check_final_user_state(
             add_issue(report, f"Profile field {key!r} expected {expected!r}, got {user.get(key)!r}.")
 
     providers = provider_names(user)
-    keep_provider = str(data.oauth_link_keep["provider"])
-    removed_provider = str(data.oauth_link_then_unlink["provider"])
-    if keep_provider not in providers:
-        add_issue(report, f"Expected kept OAuth provider {keep_provider!r} to be linked.")
-    if removed_provider in providers:
-        add_issue(report, f"Expected OAuth provider {removed_provider!r} to be unlinked.")
+    if has_oauth_payload(data.oauth_link_keep):
+        keep_provider = str(data.oauth_link_keep["provider"])
+        if keep_provider not in providers:
+            add_issue(report, f"Expected kept OAuth provider {keep_provider!r} to be linked.")
+    if has_oauth_payload(data.oauth_link_then_unlink):
+        removed_provider = str(data.oauth_link_then_unlink["provider"])
+        if removed_provider in providers:
+            add_issue(report, f"Expected OAuth provider {removed_provider!r} to be unlinked.")
     if require_real_oauth:
         for provider in data.real_oauth_providers:
             if not real_oauth_configured(provider):
@@ -493,12 +533,15 @@ def run_verify_ui(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
             add_issue(report, f"Expected phone {data.normalized_phone!r}, got {phone_user.get('phone')!r}.")
         logout(client, phone_token)
 
-        oauth_user, oauth_token = oauth_login(client, data.oauth_login)
-        report["checks"]["developer_oauth_repeat_login"] = "passed"
-        verify_user_response_has_no_secret_fields(report, oauth_user, "oauth login")
-        if str(data.oauth_login["provider"]) not in provider_names(oauth_user):
-            add_issue(report, "Developer OAuth user response is missing the OAuth provider.")
-        logout(client, oauth_token)
+        if has_oauth_payload(data.oauth_login):
+            oauth_user, oauth_token = oauth_login(client, data.oauth_login)
+            report["checks"]["developer_oauth_repeat_login"] = "passed"
+            verify_user_response_has_no_secret_fields(report, oauth_user, "oauth login")
+            if str(data.oauth_login["provider"]) not in provider_names(oauth_user):
+                add_issue(report, "Developer OAuth user response is missing the OAuth provider.")
+            logout(client, oauth_token)
+        else:
+            report["checks"]["developer_oauth_repeat_login"] = "skipped"
         logout(client, email_token)
     except Exception as exc:
         add_issue(report, str(exc))
@@ -553,16 +596,27 @@ def run_api_fallback(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
         expect_login_failure(report, client, data.email, data.changed_password, "changed_email_password_after_reset")
         _, token = login_email(client, data.email, data.reset_password)
 
-        link_keep = client.request_json("POST", "/api/v1/users/me/oauth", _oauth_payload(data.oauth_link_keep), user_token=token)
-        report["checks"]["oauth_link_keep"] = "passed"
-        verify_user_response_has_no_secret_fields(report, link_keep, "oauth link keep")
-        client.request_json("POST", "/api/v1/users/me/oauth", _oauth_payload(data.oauth_link_then_unlink), user_token=token)
-        client.request_json(
-            "DELETE",
-            f"/api/v1/users/me/oauth/{data.oauth_link_then_unlink['provider']}",
-            user_token=token,
-        )
-        report["checks"]["oauth_link_then_unlink"] = "passed"
+        if has_oauth_payload(data.oauth_link_keep):
+            link_keep = client.request_json(
+                "POST",
+                "/api/v1/users/me/oauth",
+                _oauth_payload(data.oauth_link_keep),
+                user_token=token,
+            )
+            report["checks"]["oauth_link_keep"] = "passed"
+            verify_user_response_has_no_secret_fields(report, link_keep, "oauth link keep")
+        else:
+            add_issue(report, "No dev-only OAuth provider is configured for link-and-keep coverage.", "warning")
+        if has_oauth_payload(data.oauth_link_then_unlink):
+            client.request_json("POST", "/api/v1/users/me/oauth", _oauth_payload(data.oauth_link_then_unlink), user_token=token)
+            client.request_json(
+                "DELETE",
+                f"/api/v1/users/me/oauth/{data.oauth_link_then_unlink['provider']}",
+                user_token=token,
+            )
+            report["checks"]["oauth_link_then_unlink"] = "passed"
+        else:
+            add_issue(report, "No extra dev-only OAuth provider is configured for link-then-unlink coverage.", "warning")
 
         payment_ids: list[str] = []
         for payment in data.payment_methods:
@@ -617,13 +671,16 @@ def run_api_fallback(client: ApiClient, data: ScenarioData) -> dict[str, Any]:
         if phone_user.get("phone") != data.normalized_phone:
             add_issue(report, f"Expected phone {data.normalized_phone!r}, got {phone_user.get('phone')!r}.")
 
-        oauth_user, oauth_token = oauth_login(client, data.oauth_login)
-        oauth_user_again, oauth_token_again = oauth_login(client, data.oauth_login)
-        report["checks"]["developer_oauth_login"] = "passed"
-        if oauth_user.get("user_id") != oauth_user_again.get("user_id"):
-            add_issue(report, "Repeated OAuth login did not return the same user.")
-        verify_user_response_has_no_secret_fields(report, oauth_user_again, "oauth repeat login")
-        logout(client, oauth_token_again)
+        if has_oauth_payload(data.oauth_login):
+            oauth_user, oauth_token = oauth_login(client, data.oauth_login)
+            oauth_user_again, oauth_token_again = oauth_login(client, data.oauth_login)
+            report["checks"]["developer_oauth_login"] = "passed"
+            if oauth_user.get("user_id") != oauth_user_again.get("user_id"):
+                add_issue(report, "Repeated OAuth login did not return the same user.")
+            verify_user_response_has_no_secret_fields(report, oauth_user_again, "oauth repeat login")
+            logout(client, oauth_token_again)
+        else:
+            report["checks"]["developer_oauth_login"] = "skipped"
     except Exception as exc:
         add_issue(report, str(exc))
     finally:
@@ -657,7 +714,7 @@ def base_scenario_report(data: ScenarioData, mode: str) -> dict[str, Any]:
         "mode": mode,
         "email": data.email,
         "phone": data.normalized_phone,
-        "oauth_provider": data.oauth_login["provider"],
+        "oauth_provider": data.oauth_login["provider"] if has_oauth_payload(data.oauth_login) else None,
         "subscription_plan": data.subscription_plan,
         "errors": [],
         "warnings": [],

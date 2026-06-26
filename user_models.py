@@ -34,6 +34,16 @@ class AuthProvider(str, Enum):
 class RealOAuthProvider(str, Enum):
     GOOGLE = "google"
     GITHUB = "github"
+    MICROSOFT = "microsoft"
+    LINKEDIN = "linkedin"
+    FACEBOOK = "facebook"
+    TWITTER = "twitter"
+    APPLE = "apple"
+    WECHAT = "wechat"
+    ALIPAY = "alipay"
+    WEIBO = "weibo"
+    DOUYIN = "douyin"
+    QQ = "qq"
 
 
 class OAuthAction(str, Enum):

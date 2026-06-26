@@ -6,6 +6,7 @@ pydantic
 python-dotenv
 google-auth
 google-auth-oauthlib
+PyJWT[crypto]
 PyYAML
 redis
 celery
