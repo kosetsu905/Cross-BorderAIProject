@@ -1,0 +1,4 @@
+fastapi
+guardrails-ai
+pydantic
+uvicorn[standard]

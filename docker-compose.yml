@@ -22,6 +22,34 @@ services:
     networks:
       - cross-border-net
 
+  guardrails-toxic:
+    build:
+      context: ./docker/guardrails-toxic
+      secrets:
+        - guardrails_token
+    ports:
+      - "127.0.0.1:8011:8011"
+    environment:
+      HF_HOME: /models/huggingface
+      HF_HUB_CACHE: /models/huggingface/hub
+      NLTK_DATA: /models/nltk
+    volumes:
+      - guardrails_toxic_huggingface:/models/huggingface
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/health', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - cross-border-net
+
   fastapi:
     build: .
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -41,9 +69,12 @@ services:
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-cross-border-ai}
+      WORKFLOW_GUARDRAILS_TOXIC_URL: http://guardrails-toxic:8011/validate
+      WORKFLOW_GUARDRAILS_TOXIC_TIMEOUT_SECONDS: ${WORKFLOW_GUARDRAILS_TOXIC_TIMEOUT_SECONDS:-15}
     depends_on:
       - postgres
       - redis
+      - guardrails-toxic
     volumes:
       - .:/app
     networks:
@@ -65,9 +96,12 @@ services:
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-cross-border-ai}
+      WORKFLOW_GUARDRAILS_TOXIC_URL: http://guardrails-toxic:8011/validate
+      WORKFLOW_GUARDRAILS_TOXIC_TIMEOUT_SECONDS: ${WORKFLOW_GUARDRAILS_TOXIC_TIMEOUT_SECONDS:-15}
     depends_on:
       - postgres
       - redis
+      - guardrails-toxic
     volumes:
       - .:/app
     networks:
@@ -87,6 +121,11 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  guardrails_toxic_huggingface:
+
+secrets:
+  guardrails_token:
+    environment: GUARDRAILS_TOKEN
 
 networks:
   cross-border-net:

@@ -1,5 +1,5 @@
 mode: monitor
-config_version: 1
+config_version: 2
 evidence_storage: masked_only
 human_override_requires_reason: true
 
@@ -13,50 +13,73 @@ guards:
       validators:
         - id: secrets_present
           hub: hub://guardrails/secrets_present
-          on_fail: noop
+          class_name: SecretsPresent
           policy: block
           severity: critical
         - id: detect_pii
           hub: hub://guardrails/detect_pii
+          class_name: DetectPII
           entities:
             - EMAIL_ADDRESS
             - PHONE_NUMBER
-          on_fail: noop
           policy: mask
           severity: medium
         - id: prompt_injection
-          builtin: prompt_injection
-          policy: monitor
+          hub: hub://sainatha/prompt_injection_detector
+          class_name: PromptInjectionDetector
+          args:
+            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            threshold: 0.8
+          policy: block
+          severity: high
+        - id: forbidden_terms
+          hub: hub://guardrails/regex_match
+          class_name: RegexMatch
+          args:
+            regex: "(?is)^(?!.*(?:internal discount code|guaranteed refund without approval)).*$"
+            match_type: fullmatch
+          policy: block
           severity: high
     output:
       validators:
         - id: secrets_present
           hub: hub://guardrails/secrets_present
-          on_fail: noop
+          class_name: SecretsPresent
           policy: block
           severity: critical
         - id: detect_pii
           hub: hub://guardrails/detect_pii
+          class_name: DetectPII
           entities:
             - EMAIL_ADDRESS
             - PHONE_NUMBER
-          on_fail: noop
           policy: mask
           severity: medium
         - id: toxic_language
           hub: hub://guardrails/toxic_language
-          enable_ai_runtime: false
-          threshold: 0.5
-          validation_method: sentence
-          on_fail: noop
+          class_name: ToxicLanguage
+          remote_url_env: WORKFLOW_GUARDRAILS_TOXIC_URL
+          args:
+            threshold: 0.5
+            validation_method: sentence
           policy: block
+          severity: high
+        - id: forbidden_terms
+          hub: hub://guardrails/regex_match
+          class_name: RegexMatch
+          args:
+            regex: "(?is)^(?!.*(?:internal discount code|guaranteed refund without approval)).*$"
+            match_type: fullmatch
+          policy: review_required
           severity: high
         - id: provenance_llm
           hub: hub://guardrails/provenance_llm
+          class_name: ProvenanceLLM
           enabled_when: grounding_context_available
-          validation_method: sentence
-          top_k: 3
-          on_fail: noop
+          args:
+            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            validation_method: sentence
+            top_k: 3
           policy: review_required
           severity: high
     action:
@@ -72,34 +95,57 @@ guards:
       validators:
         - id: secrets_present
           hub: hub://guardrails/secrets_present
-          on_fail: noop
+          class_name: SecretsPresent
           policy: block
           severity: critical
         - id: prompt_injection
-          builtin: prompt_injection
-          policy: monitor
+          hub: hub://sainatha/prompt_injection_detector
+          class_name: PromptInjectionDetector
+          args:
+            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            threshold: 0.8
+          policy: block
+          severity: high
+        - id: forbidden_terms
+          hub: hub://guardrails/regex_match
+          class_name: RegexMatch
+          args:
+            regex: "(?is)^(?!.*(?:unverified medical cure|guaranteed income)).*$"
+            match_type: fullmatch
+          policy: block
           severity: high
     output:
       validators:
         - id: secrets_present
           hub: hub://guardrails/secrets_present
-          on_fail: noop
+          class_name: SecretsPresent
           policy: block
           severity: critical
         - id: toxic_language
           hub: hub://guardrails/toxic_language
-          enable_ai_runtime: false
-          threshold: 0.5
-          validation_method: sentence
-          on_fail: noop
+          class_name: ToxicLanguage
+          remote_url_env: WORKFLOW_GUARDRAILS_TOXIC_URL
+          args:
+            threshold: 0.5
+            validation_method: sentence
           policy: block
+          severity: high
+        - id: forbidden_terms
+          hub: hub://guardrails/regex_match
+          class_name: RegexMatch
+          args:
+            regex: "(?is)^(?!.*(?:unverified medical cure|guaranteed income)).*$"
+            match_type: fullmatch
+          policy: review_required
           severity: high
         - id: provenance_llm
           hub: hub://guardrails/provenance_llm
+          class_name: ProvenanceLLM
           enabled_when: grounding_context_available
-          validation_method: sentence
-          top_k: 3
-          on_fail: noop
+          args:
+            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            validation_method: sentence
+            top_k: 3
           policy: review_required
           severity: high
     action:
