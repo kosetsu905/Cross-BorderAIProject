@@ -168,6 +168,7 @@ OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false
 OBSERVABILITY_ENVIRONMENT=local
 
 OTEL_ENABLED=true
+FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED=false
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://phoenix:6006/v1/traces
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 PHOENIX_PROJECT_NAME=cross-border-ai-dev
@@ -400,6 +401,7 @@ OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false
 OBSERVABILITY_ENVIRONMENT=local
 
 OTEL_ENABLED=true
+FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED=false
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://phoenix:6006/v1/traces
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 PHOENIX_PROJECT_NAME=cross-border-ai-dev
@@ -412,7 +414,7 @@ MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_EXPERIMENT_NAME=cross-border-ai
 ```
 
-Keep `OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false` unless you have reviewed privacy implications. The observability layer redacts secret-like keys, emails, phone numbers, and raw customer handles before attaching metadata.
+Keep `OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false` unless you have reviewed privacy implications. Keep `FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED=false` for local development unless you have verified the installed FastAPI/Starlette/OpenTelemetry versions are route-instrumentation compatible; workflow, agent, and guardrail spans still export when `OTEL_ENABLED=true`. The observability layer redacts secret-like keys, emails, phone numbers, and raw customer handles before attaching metadata.
 
 ## Workflow Guardrails
 

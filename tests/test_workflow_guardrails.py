@@ -85,7 +85,7 @@ def patched_guardrails(failures: dict[str, str]) -> Iterator[type[FakeGuard]]:
             "id": validator_config.get("id"),
         }
 
-    with patch("guardrails.Guard", FakeGuard), patch.object(
+    with patch("guardrails.Guard", FakeGuard, create=True), patch.object(
         WorkflowGuardrailService,
         "_build_hub_validator",
         build_validator,
@@ -269,8 +269,9 @@ guards:
             encoding="utf-8",
         )
 
-        with pytest.raises(GuardrailConfigurationError, match="not installed|does not expose"):
-            WorkflowGuardrailService(config_path).evaluate_input(WorkflowType.SUPPORT, {"inquiry": "hello"})
+        with patch("guardrails.Guard", FakeGuard, create=True):
+            with pytest.raises(GuardrailConfigurationError, match="not installed|does not expose"):
+                WorkflowGuardrailService(config_path).evaluate_input(WorkflowType.SUPPORT, {"inquiry": "hello"})
     finally:
         config_path.unlink(missing_ok=True)
 

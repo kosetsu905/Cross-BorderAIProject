@@ -11,6 +11,12 @@ from fastapi.testclient import TestClient
 from api.routes import create_router
 from database import get_db_session
 from services.support_auto_dispatch import process_completed_support_job
+from services.workflow_guardrails import (
+    GuardrailAction,
+    GuardrailDecision,
+    GuardrailSeverity,
+    GuardrailStage,
+)
 from support_inbox import SupportInboxStore
 from utils.support_drafts import customer_facing_draft_text
 
@@ -55,6 +61,17 @@ def _structured_pre_sales_job_result(conversation_id: str = "conv-1") -> dict[st
         "compliance_flags": [],
         "recommended_follow_up": "Follow up if the customer replies.",
     }
+
+
+def _allow_action_decision() -> GuardrailDecision:
+    return GuardrailDecision(
+        workflow_type="support",
+        stage=GuardrailStage.ACTION,
+        action=GuardrailAction.ALLOW,
+        severity=GuardrailSeverity.NONE,
+        findings=[],
+        sanitized_payload={},
+    )
 
 
 def _gmail_conversation(**overrides: object) -> SimpleNamespace:
@@ -335,7 +352,10 @@ class SupportDraftTests(unittest.TestCase):
         app.include_router(create_router(FakeOrchestrator()))
         app.dependency_overrides[get_db_session] = lambda: fake_db
 
-        with patch("api.routes.SupportInboxStore", return_value=fake_store):
+        with patch("api.routes.SupportInboxStore", return_value=fake_store), patch(
+            "api.routes.WorkflowGuardrailService"
+        ) as guardrails:
+            guardrails.return_value.evaluate_action.return_value = _allow_action_decision()
             response = TestClient(app).post(
                 "/api/v1/support/conversations/conv-1/approve-send",
                 json={"message": FENCED_SUPPORT_JSON},
@@ -391,7 +411,10 @@ class SupportDraftTests(unittest.TestCase):
         app.include_router(create_router(FakeOrchestrator()))
         app.dependency_overrides[get_db_session] = lambda: fake_db
 
-        with patch("api.routes.SupportInboxStore", return_value=fake_store):
+        with patch("api.routes.SupportInboxStore", return_value=fake_store), patch(
+            "api.routes.WorkflowGuardrailService"
+        ) as guardrails:
+            guardrails.return_value.evaluate_action.return_value = _allow_action_decision()
             response = TestClient(app).post(
                 "/api/v1/support/conversations/conv-1/approve-send",
                 json={"message": "Plain edited draft"},
@@ -447,10 +470,12 @@ class SupportDraftTests(unittest.TestCase):
         app.include_router(create_router(FakeOrchestrator()))
         app.dependency_overrides[get_db_session] = lambda: fake_db
 
-        response = TestClient(app).post(
-            "/api/v1/support/conversations/conv-1/approve-send",
-            json={"message": fenced_payload},
-        )
+        with patch("api.routes.WorkflowGuardrailService") as guardrails:
+            guardrails.return_value.evaluate_action.return_value = _allow_action_decision()
+            response = TestClient(app).post(
+                "/api/v1/support/conversations/conv-1/approve-send",
+                json={"message": fenced_payload},
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(send_gmail.call_args.kwargs["body"], fixture_payload["final_response"])
@@ -483,18 +508,20 @@ class SupportDraftTests(unittest.TestCase):
         session_local.return_value = FakeSessionContext(fake_db)
         fixture_payload = _wireless_headset_pre_sales_fixture()
 
-        result = asyncio.run(
-            process_completed_support_job(
-                job_id="job-1",
-                inputs={"session_id": "conv-1"},
-                result=_structured_pre_sales_job_result("conv-1"),
-                config_context={
-                    "gmail_send_enabled": True,
-                    "gmail_access_token": "token",
-                    "gmail_sender_email": "support@example.com",
-                },
+        with patch("services.support_auto_dispatch.WorkflowGuardrailService") as guardrails:
+            guardrails.return_value.evaluate_action.return_value = _allow_action_decision()
+            result = asyncio.run(
+                process_completed_support_job(
+                    job_id="job-1",
+                    inputs={"session_id": "conv-1"},
+                    result=_structured_pre_sales_job_result("conv-1"),
+                    config_context={
+                        "gmail_send_enabled": True,
+                        "gmail_access_token": "token",
+                        "gmail_sender_email": "support@example.com",
+                    },
+                )
             )
-        )
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(send_gmail.call_args.kwargs["body"], fixture_payload["final_response"])

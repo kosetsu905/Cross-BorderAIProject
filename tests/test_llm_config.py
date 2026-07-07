@@ -149,6 +149,7 @@ class LLMConfigTests(unittest.TestCase):
             "OBSERVABILITY_CAPTURE_INPUT_OUTPUT": "false",
             "OBSERVABILITY_ENVIRONMENT": "local",
             "OTEL_ENABLED": "true",
+            "FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED": "true",
             "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://phoenix:6006/v1/traces",
             "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
             "PHOENIX_PROJECT_NAME": "cross-border-ai-dev",
@@ -163,6 +164,7 @@ class LLMConfigTests(unittest.TestCase):
         self.assertFalse(config.observability_capture_input_output)
         self.assertEqual(config.observability_environment, "local")
         self.assertTrue(config.otel_enabled)
+        self.assertTrue(config.fastapi_otel_auto_instrumentation_enabled)
         self.assertEqual(config.otel_exporter_otlp_traces_endpoint, "http://phoenix:6006/v1/traces")
         self.assertEqual(config.otel_exporter_otlp_protocol, "http/protobuf")
         self.assertEqual(config.phoenix_project_name, "cross-border-ai-dev")

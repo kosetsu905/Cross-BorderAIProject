@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cross-Border E-Commerce AI Suite", version="0.1.0")
 runtime_config = load_runtime_config()
-init_observability("cross-border-fastapi", app=app, config_context=runtime_config.as_context())
 init_db()
 job_store = PostgresJobStore(SessionLocal)
 
@@ -57,6 +56,7 @@ app.add_middleware(
 
 app.include_router(create_router(orchestrator))
 app.include_router(create_user_router())
+init_observability("cross-border-fastapi", app=app, config_context=runtime_config.as_context())
 
 
 if __name__ == "__main__":

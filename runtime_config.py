@@ -119,6 +119,7 @@ RUNTIME_CONFIG_KEYS = {
     "observability_capture_input_output",
     "observability_environment",
     "otel_enabled",
+    "fastapi_otel_auto_instrumentation_enabled",
     "otel_exporter_otlp_traces_endpoint",
     "otel_exporter_otlp_protocol",
     "phoenix_project_name",
@@ -275,6 +276,7 @@ class RuntimeConfig:
     observability_capture_input_output: bool = False
     observability_environment: str = "local"
     otel_enabled: bool = True
+    fastapi_otel_auto_instrumentation_enabled: bool = False
     otel_exporter_otlp_traces_endpoint: str | None = None
     otel_exporter_otlp_protocol: str = "http/protobuf"
     phoenix_project_name: str = "cross-border-ai-dev"
@@ -580,6 +582,7 @@ def load_runtime_config() -> RuntimeConfig:
         observability_capture_input_output=_bool_env("OBSERVABILITY_CAPTURE_INPUT_OUTPUT", False),
         observability_environment=os.getenv("OBSERVABILITY_ENVIRONMENT", "local"),
         otel_enabled=_bool_env("OTEL_ENABLED", True),
+        fastapi_otel_auto_instrumentation_enabled=_bool_env("FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED", False),
         otel_exporter_otlp_traces_endpoint=_env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"),
         otel_exporter_otlp_protocol=os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
         phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "cross-border-ai-dev"),

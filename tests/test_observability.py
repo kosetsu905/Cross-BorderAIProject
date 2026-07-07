@@ -145,6 +145,55 @@ class ObservabilityTests(unittest.TestCase):
                 )
             )
 
+    @patch("utils.observability._instrument_fastapi")
+    @patch("utils.observability._init_langfuse")
+    @patch("utils.observability._init_openinference")
+    @patch("utils.observability._init_otel")
+    def test_otel_enabled_does_not_auto_instrument_fastapi_routes_by_default(
+        self,
+        init_otel,
+        init_openinference,
+        init_langfuse,
+        instrument_fastapi,
+    ) -> None:
+        observability.init_observability(
+            "cross-border-fastapi",
+            app=object(),
+            config_context={"observability_enabled": True, "otel_enabled": True},
+        )
+
+        init_otel.assert_called_once()
+        init_openinference.assert_called_once()
+        init_langfuse.assert_called_once()
+        instrument_fastapi.assert_not_called()
+
+    @patch("utils.observability._instrument_fastapi")
+    @patch("utils.observability._init_langfuse")
+    @patch("utils.observability._init_openinference")
+    @patch("utils.observability._init_otel")
+    def test_fastapi_route_auto_instrumentation_requires_explicit_opt_in(
+        self,
+        init_otel,
+        init_openinference,
+        init_langfuse,
+        instrument_fastapi,
+    ) -> None:
+        app = object()
+        observability.init_observability(
+            "cross-border-fastapi",
+            app=app,
+            config_context={
+                "observability_enabled": True,
+                "otel_enabled": True,
+                "fastapi_otel_auto_instrumentation_enabled": True,
+            },
+        )
+
+        init_otel.assert_called_once()
+        init_openinference.assert_called_once()
+        init_langfuse.assert_called_once()
+        instrument_fastapi.assert_called_once_with(app)
+
     def test_langfuse_client_reuses_project_otel_provider_when_enabled(self) -> None:
         provider = object()
         observability._OTEL_PROVIDER = provider

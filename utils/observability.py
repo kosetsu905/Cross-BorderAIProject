@@ -149,7 +149,12 @@ def init_observability(
             _init_langfuse(config_context)
             _INITIALIZED_SERVICES.add(service_name)
 
-        if otel_enabled and app is not None and id(app) not in _INSTRUMENTED_FASTAPI_APP_IDS:
+        if (
+            otel_enabled
+            and _fastapi_otel_auto_instrumentation_enabled(config_context)
+            and app is not None
+            and id(app) not in _INSTRUMENTED_FASTAPI_APP_IDS
+        ):
             _instrument_fastapi(app)
             _INSTRUMENTED_FASTAPI_APP_IDS.add(id(app))
 
@@ -830,6 +835,18 @@ def _build_otlp_exporter(endpoint: str, protocol: str) -> Any | None:
 
 
 def _instrument_fastapi(app: FastAPI) -> None:
+    unsafe_routes = [
+        type(route).__name__
+        for route in getattr(app, "routes", [])
+        if hasattr(route, "matches") and not hasattr(route, "path")
+    ]
+    if unsafe_routes:
+        logger.warning(
+            "Skipping FastAPI OpenTelemetry route instrumentation because the app contains route objects "
+            "without a path attribute: %s",
+            ", ".join(sorted(set(unsafe_routes))),
+        )
+        return
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
@@ -1020,6 +1037,10 @@ def _observability_enabled(config_context: dict[str, Any] | None = None) -> bool
 
 def _otel_enabled(config_context: dict[str, Any] | None = None) -> bool:
     return _bool_config(config_context, "otel_enabled", _observability_enabled(config_context))
+
+
+def _fastapi_otel_auto_instrumentation_enabled(config_context: dict[str, Any] | None = None) -> bool:
+    return _bool_config(config_context, "fastapi_otel_auto_instrumentation_enabled", False)
 
 
 def _langfuse_enabled(config_context: dict[str, Any] | None = None) -> bool:
