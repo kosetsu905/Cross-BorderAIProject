@@ -21,6 +21,12 @@ from models import (
     WorkflowType,
 )
 from runtime_config import load_runtime_config
+from services.workflow_guardrails import (
+    GuardrailAction,
+    WorkflowGuardrailService,
+    decision_result_payload,
+    guardrail_requires_override,
+)
 from services.whatsapp_provider import get_whatsapp_provider
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
 from support_inbox import SupportInboxStore
@@ -503,6 +509,63 @@ def create_router(orchestrator: object) -> APIRouter:
         if conversation.channel not in {"whatsapp", "gmail"}:
             raise HTTPException(status_code=400, detail=f"Approval send is not implemented for channel '{conversation.channel}'")
 
+        action_decision = WorkflowGuardrailService().evaluate_action(
+            WorkflowType.SUPPORT,
+            f"{conversation.channel}.send",
+            {
+                "conversation_id": conversation_id,
+                "channel": conversation.channel,
+                "draft_text": str(draft_text),
+                "draft_payload": conversation.draft_payload or {},
+            },
+        )
+        guardrail_payload = decision_result_payload(action_decision)
+        existing_guardrail_requires_override = guardrail_requires_override(conversation.draft_payload)
+        action_requires_override = action_decision.action in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK}
+        if action_decision.action == GuardrailAction.BLOCK:
+            raise HTTPException(
+                status_code=409,
+                detail="Support message is blocked by guardrail and cannot be sent from approval API",
+            )
+        if existing_guardrail_requires_override or action_requires_override:
+            reviewer = str(payload.get("reviewer") or "").strip()
+            override_reason = str(payload.get("override_reason") or "").strip()
+            if not reviewer or not override_reason:
+                raise HTTPException(
+                    status_code=409,
+                    detail="reviewer and override_reason are required to approve a high-risk guardrail finding",
+                )
+        else:
+            reviewer = str(payload.get("reviewer") or "").strip() or None
+            override_reason = str(payload.get("override_reason") or "").strip() or None
+        approval_guardrail = {
+            "decision": str(payload.get("decision") or "approve"),
+            "reviewer": reviewer,
+            "override_reason": override_reason,
+            "guardrail_decision_id": payload.get("guardrail_decision_id") or action_decision.decision_id,
+            "guardrail_decision": guardrail_payload,
+        }
+        log_job_event = getattr(orchestrator, "log_job_event", None)
+        if latest_job_id and callable(log_job_event):
+            log_job_event(
+                str(latest_job_id),
+                "guardrail_action_evaluated",
+                "Approval send action guardrail evaluated.",
+                {"guardrail_decision": guardrail_payload},
+            )
+            if reviewer or override_reason:
+                log_job_event(
+                    str(latest_job_id),
+                    "guardrail_human_override",
+                    "Human approval or override recorded for guardrail decision.",
+                    {
+                        "decision": approval_guardrail["decision"],
+                        "reviewer": reviewer,
+                        "override_reason": override_reason,
+                        "guardrail_decision_id": approval_guardrail["guardrail_decision_id"],
+                    },
+                )
+
         config = load_runtime_config()
         if conversation.channel == "gmail":
             if not config.gmail_send_enabled:
@@ -537,7 +600,11 @@ def create_router(orchestrator: object) -> APIRouter:
                 text=str(draft_text),
                 channel_message_id=delivery.get("message_id"),
                 delivery_status=str(delivery.get("status") or "failed"),
-                raw_payload={"delivery": delivery, "draft_payload": draft_payload},
+                raw_payload={
+                    "delivery": delivery,
+                    "draft_payload": draft_payload,
+                    "guardrail_approval": approval_guardrail,
+                },
             )
             return {
                 "status": delivery.get("status"),
@@ -581,7 +648,7 @@ def create_router(orchestrator: object) -> APIRouter:
             text=str(draft_text),
             channel_message_id=delivery.get("message_id"),
             delivery_status=str(delivery.get("status") or "failed"),
-            raw_payload=raw_payload,
+            raw_payload={**raw_payload, "guardrail_approval": approval_guardrail},
         )
         return {
             "status": delivery.get("status"),

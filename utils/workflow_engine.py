@@ -9,6 +9,11 @@ from typing import Any
 from job_store import JobStore
 from models import JobStatus, WORKFLOW_INPUT_MODELS, WorkflowType
 from runtime_config import RuntimeConfig, resolve_workflow_runtime_context
+from services.workflow_guardrails import (
+    GuardrailAction,
+    WorkflowGuardrailService,
+    decision_event_payload,
+)
 from utils.result_cache import build_workflow_cache_key, cache_enabled, cache_ttl_seconds
 
 
@@ -27,6 +32,8 @@ class PreparedWorkflowJob:
     job_id: str
     config_context: dict[str, Any]
     cache_hit: bool = False
+    inputs: dict[str, Any] | None = None
+    skip_execution: bool = False
 
 
 class WorkflowRegistry:
@@ -101,6 +108,32 @@ class WorkflowExecutionEngine:
             workflow_type,
             provider_credentials,
         )
+        job_id = str(uuid.uuid4())
+        guardrail = WorkflowGuardrailService()
+        config_context["guardrails_config_version"] = guardrail.config.get("config_version")
+        input_decision = guardrail.evaluate_input(
+            workflow_type,
+            inputs,
+            context={**config_context, "metadata": metadata or {}},
+        )
+        sanitized_inputs = input_decision.sanitized_payload if isinstance(input_decision.sanitized_payload, dict) else inputs
+        if input_decision.action == GuardrailAction.BLOCK:
+            self._job_store.create_job(job_id, workflow_type, sanitized_inputs)
+            self._job_store.update_job(
+                job_id,
+                status=JobStatus.FAILED,
+                result=None,
+                error="Input blocked by workflow guardrail.",
+            )
+            self._job_store.log_event(
+                job_id,
+                "guardrail_input_evaluated",
+                "Input guardrail blocked workflow submission.",
+                decision_event_payload(input_decision),
+            )
+            return PreparedWorkflowJob(job_id, config_context, inputs=sanitized_inputs, skip_execution=True)
+
+        inputs = sanitized_inputs
         cached_job_id = create_cached_workflow_job(
             self._job_store,
             workflow_type,
@@ -110,18 +143,23 @@ class WorkflowExecutionEngine:
             backend,
         )
         if cached_job_id:
-            return PreparedWorkflowJob(cached_job_id, config_context, cache_hit=True)
+            return PreparedWorkflowJob(cached_job_id, config_context, cache_hit=True, inputs=inputs)
 
-        job_id = str(uuid.uuid4())
         cache_key = build_workflow_cache_key(workflow_type, inputs, config_context)
         self._job_store.create_job(job_id, workflow_type, inputs, cache_key=cache_key)
+        self._job_store.log_event(
+            job_id,
+            "guardrail_input_evaluated",
+            "Input guardrail evaluated.",
+            decision_event_payload(input_decision),
+        )
         payload = {
             "workflow_type": workflow_type.value,
             "backend": backend,
             **(queued_payload or {}),
         }
         self._job_store.log_event(job_id, "queued", queued_message, payload)
-        return PreparedWorkflowJob(job_id, config_context, cache_hit=False)
+        return PreparedWorkflowJob(job_id, config_context, cache_hit=False, inputs=inputs)
 
 
 def cache_hit_usage_summary(source_job: dict[str, Any]) -> dict[str, Any]:

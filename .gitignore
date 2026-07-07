@@ -38,6 +38,7 @@ temp/
 *.sqlite
 *.sqlite3
 .cache/
+.guardrails/
 
 # CrewAI / app generated output
 memory/

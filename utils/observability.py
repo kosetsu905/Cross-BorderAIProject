@@ -509,6 +509,8 @@ def _workflow_result_summary(result: dict[str, Any]) -> dict[str, Any]:
         summary_fields["customer_tier"] = customer_context.get("tier")
         summary_fields["customer_language"] = customer_context.get("language")
         summary_fields["customer_channel"] = customer_context.get("channel")
+    guardrail_summary = _guardrail_decision_summary(result.get("guardrail_decision"))
+    summary_fields.update(guardrail_summary)
     return {key: value for key, value in summary_fields.items() if value not in (None, "", [])}
 
 
@@ -555,7 +557,43 @@ def _workflow_result_scores(result: dict[str, Any]) -> list[dict[str, Any]]:
                     "comment": "Pre-sales specialist confidence level from structured output.",
                 }
             )
+    guardrail = _guardrail_decision_summary(result.get("guardrail_decision"))
+    if guardrail:
+        scores.extend(
+            [
+                {
+                    "name": "guardrail_review_required",
+                    "value": guardrail.get("guardrail_action") == "review_required",
+                    "data_type": "BOOLEAN",
+                    "comment": "Whether workflow guardrails require human review.",
+                },
+                {
+                    "name": "guardrail_blocked",
+                    "value": guardrail.get("guardrail_action") == "block",
+                    "data_type": "BOOLEAN",
+                    "comment": "Whether workflow guardrails blocked this workflow result.",
+                },
+                {
+                    "name": "guardrail_finding_count",
+                    "value": int(guardrail.get("guardrail_finding_count") or 0),
+                    "data_type": "NUMERIC",
+                    "comment": "Number of masked workflow guardrail findings.",
+                },
+            ]
+        )
     return scores
+
+
+def _guardrail_decision_summary(decision: Any) -> dict[str, Any]:
+    if not isinstance(decision, dict):
+        return {}
+    findings = decision.get("findings")
+    return {
+        "guardrail_action": decision.get("action"),
+        "guardrail_severity": decision.get("severity"),
+        "guardrail_stage": decision.get("stage"),
+        "guardrail_finding_count": len(findings) if isinstance(findings, list) else decision.get("finding_count"),
+    }
 
 
 def _record_langfuse_scores(scores: list[dict[str, Any]], config_context: dict[str, Any] | None) -> None:

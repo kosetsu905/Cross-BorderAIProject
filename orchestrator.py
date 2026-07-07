@@ -9,6 +9,11 @@ from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowGroupRequest, WorkflowRoutePlan, WorkflowRouteRequest, WorkflowType, WORKFLOW_ROUTE_TYPE
 from runtime_config import RuntimeConfig, apply_runtime_environment, resolve_workflow_runtime_context
+from services.workflow_guardrails import (
+    WorkflowGuardrailService,
+    apply_output_guardrail_result,
+    decision_event_payload,
+)
 from services.workflow_router import WorkflowRouterAgent
 from utils.observability import (
     group_span,
@@ -88,6 +93,31 @@ def _ensure_submittable_route_plan(plan: WorkflowRoutePlan) -> None:
         )
 
 
+def _workflow_grounding_context(result: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        if len(candidates) >= 20:
+            return
+        lowered = key.lower()
+        if isinstance(value, str):
+            if lowered in {"source", "sources", "evidence", "data_source", "knowledge_data_source", "content"}:
+                stripped = value.strip()
+                if stripped:
+                    candidates.append(stripped[:2000])
+            return
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, key)
+
+    visit(result)
+    return candidates
+
+
 class MasterOrchestrator:
     """Central router for local CrewAI execution with persistent job state."""
 
@@ -132,10 +162,17 @@ class MasterOrchestrator:
             "local",
             "Local background execution scheduled.",
         )
-        if prepared.cache_hit:
+        if prepared.cache_hit or prepared.skip_execution:
             return prepared.job_id
 
-        asyncio.create_task(self._run_job(prepared.job_id, workflow_type, inputs, prepared.config_context))
+        asyncio.create_task(
+            self._run_job(
+                prepared.job_id,
+                workflow_type,
+                prepared.inputs if prepared.inputs is not None else inputs,
+                prepared.config_context,
+            )
+        )
         logger.info("Submitted job %s for workflow %s", prepared.job_id, workflow_type.value)
         return prepared.job_id
 
@@ -369,6 +406,26 @@ class MasterOrchestrator:
                     config_context,
                 )
                 normalized_result = clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)}
+                guardrail = WorkflowGuardrailService()
+                output_decision = guardrail.evaluate_output(
+                    workflow_type,
+                    normalized_result,
+                    grounding_context=_workflow_grounding_context(normalized_result),
+                )
+                normalized_result = apply_output_guardrail_result(workflow_type, normalized_result, output_decision)
+                self._job_store.log_event(
+                    job_id,
+                    "guardrail_output_evaluated",
+                    "Output guardrail evaluated.",
+                    decision_event_payload(output_decision),
+                )
+                if output_decision.action.value in {"review_required", "block"}:
+                    self._job_store.log_event(
+                        job_id,
+                        "guardrail_review_required",
+                        "Output guardrail requires review before high-risk action.",
+                        decision_event_payload(output_decision),
+                    )
                 record_workflow_result_observability(
                     normalized_result,
                     {**config_context, "workflow_type": workflow_type.value},
@@ -393,14 +450,14 @@ class MasterOrchestrator:
                         "duration_seconds": usage_summary.get("duration_seconds"),
                     },
                 )
-                if workflow_type == WorkflowType.SUPPORT and isinstance(clean_result, dict):
+                if workflow_type == WorkflowType.SUPPORT and isinstance(normalized_result, dict):
                     try:
                         from services.support_auto_dispatch import process_completed_support_job
 
                         dispatch_result = await process_completed_support_job(
                             job_id=job_id,
                             inputs=inputs,
-                            result=clean_result,
+                            result=normalized_result,
                             config_context=config_context,
                         )
                         self._job_store.log_event(
@@ -409,6 +466,13 @@ class MasterOrchestrator:
                             "Support auto-dispatch evaluated.",
                             dispatch_result,
                         )
+                        if isinstance(dispatch_result, dict) and dispatch_result.get("guardrail_decision"):
+                            self._job_store.log_event(
+                                job_id,
+                                "guardrail_action_evaluated",
+                                "Support auto-dispatch action guardrail evaluated.",
+                                {"guardrail_decision": dispatch_result.get("guardrail_decision")},
+                            )
                     except Exception as dispatch_exc:
                         logger.exception("Support auto-dispatch failed for job %s", job_id)
                         self._job_store.log_event(
@@ -548,6 +612,15 @@ class MasterOrchestrator:
     def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
         return self._job_store.get_job_events(job_id)
 
+    def log_job_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self._job_store.log_event(job_id, event_type, message, payload)
+
 
 class CeleryOrchestrator:
     """Celery-backed workflow router for Redis/message-broker deployments."""
@@ -597,12 +670,12 @@ class CeleryOrchestrator:
             "Celery task queued.",
             {"task_name": task_name},
         )
-        if prepared.cache_hit:
+        if prepared.cache_hit or prepared.skip_execution:
             return prepared.job_id
 
         task = celery_app.send_task(
             task_name,
-            args=[inputs],
+            args=[prepared.inputs if prepared.inputs is not None else inputs],
             kwargs={"config_context": prepared.config_context},
             task_id=prepared.job_id,
         )
@@ -804,6 +877,15 @@ class CeleryOrchestrator:
 
     def get_job_events(self, job_id: str) -> list[dict[str, Any]]:
         return self._job_store.get_job_events(job_id)
+
+    def log_job_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self._job_store.log_event(job_id, event_type, message, payload)
 
     def get_job_status(self, job_id: str) -> dict[str, Any]:
         result = AsyncResult(job_id, app=celery_app)

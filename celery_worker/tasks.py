@@ -16,6 +16,12 @@ from database import SessionLocal
 from job_store import PostgresJobStore
 from models import JobStatus, WorkflowRoutePlan, WorkflowType
 from runtime_config import apply_runtime_environment, load_runtime_config, resolve_workflow_runtime_context
+from services.workflow_guardrails import (
+    GuardrailAction,
+    WorkflowGuardrailService,
+    apply_output_guardrail_result,
+    decision_event_payload,
+)
 from utils.observability import (
     add_span_event,
     flush_observability,
@@ -64,6 +70,31 @@ TASK_MAP: dict[WorkflowType, str] = {
 }
 
 
+def _workflow_grounding_context(result: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        if len(candidates) >= 20:
+            return
+        lowered = key.lower()
+        if isinstance(value, str):
+            if lowered in {"source", "sources", "evidence", "data_source", "knowledge_data_source", "content"}:
+                stripped = value.strip()
+                if stripped:
+                    candidates.append(stripped[:2000])
+            return
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, key)
+
+    visit(result)
+    return candidates
+
+
 @worker_process_init.connect
 def worker_process_init_handler(*args: object, **kwargs: object) -> None:
     init_observability("cross-border-celery-worker")
@@ -83,17 +114,46 @@ def _submit_route_child_job(
         node.workflow_type,
         provider_credentials,
     )
-    cache_key = build_workflow_cache_key(node.workflow_type, node.inputs, config_context)
     child_metadata = route_child_metadata(
         parent_job_id,
         node,
         metadata,
         route_wave_index(plan, node.name),
     )
+    guardrail = WorkflowGuardrailService()
+    config_context["guardrails_config_version"] = guardrail.config.get("config_version")
+    input_decision = guardrail.evaluate_input(
+        node.workflow_type,
+        node.inputs,
+        context={**config_context, "metadata": child_metadata},
+    )
+    sanitized_inputs = input_decision.sanitized_payload if isinstance(input_decision.sanitized_payload, dict) else node.inputs
+    if input_decision.action == GuardrailAction.BLOCK:
+        job_id = str(uuid.uuid4())
+        job_store.create_job(job_id, node.workflow_type, sanitized_inputs)
+        job_store.update_job(
+            job_id,
+            status=JobStatus.FAILED,
+            result=None,
+            error="Input blocked by workflow guardrail.",
+        )
+        job_store.log_event(
+            job_id,
+            "guardrail_input_evaluated",
+            "Input guardrail blocked workflow submission.",
+            decision_event_payload(input_decision),
+        )
+        return {
+            "name": node.name,
+            "workflow_type": node.workflow_type.value,
+            "job_id": job_id,
+            "depends_on": list(node.depends_on),
+        }
+    cache_key = build_workflow_cache_key(node.workflow_type, sanitized_inputs, config_context)
     cached_job_id = create_cached_workflow_job(
         job_store,
         node.workflow_type,
-        node.inputs,
+        sanitized_inputs,
         config_context,
         child_metadata,
         "celery",
@@ -107,7 +167,13 @@ def _submit_route_child_job(
         }
 
     job_id = str(uuid.uuid4())
-    job_store.create_job(job_id, node.workflow_type, node.inputs, cache_key=cache_key)
+    job_store.create_job(job_id, node.workflow_type, sanitized_inputs, cache_key=cache_key)
+    job_store.log_event(
+        job_id,
+        "guardrail_input_evaluated",
+        "Input guardrail evaluated.",
+        decision_event_payload(input_decision),
+    )
     job_store.log_event(
         job_id,
         "queued",
@@ -116,7 +182,7 @@ def _submit_route_child_job(
     )
     celery_app.send_task(
         task_name,
-        args=[node.inputs],
+        args=[sanitized_inputs],
         kwargs={"config_context": config_context},
         task_id=job_id,
     )
@@ -172,6 +238,26 @@ def _run_with_job_state(
                 monotonic_time() - started_at,
                 config_context,
             )
+            guardrail = WorkflowGuardrailService()
+            output_decision = guardrail.evaluate_output(
+                workflow_type,
+                normalized_result,
+                grounding_context=_workflow_grounding_context(normalized_result),
+            )
+            normalized_result = apply_output_guardrail_result(workflow_type, normalized_result, output_decision)
+            job_store.log_event(
+                job_id,
+                "guardrail_output_evaluated",
+                "Output guardrail evaluated.",
+                decision_event_payload(output_decision),
+            )
+            if output_decision.action.value in {"review_required", "block"}:
+                job_store.log_event(
+                    job_id,
+                    "guardrail_review_required",
+                    "Output guardrail requires review before high-risk action.",
+                    decision_event_payload(output_decision),
+                )
             record_workflow_result_observability(
                 normalized_result,
                 {**config_context, "workflow_type": workflow_type},
@@ -214,6 +300,13 @@ def _run_with_job_state(
                         "Support auto-dispatch evaluated.",
                         dispatch_result,
                     )
+                    if isinstance(dispatch_result, dict) and dispatch_result.get("guardrail_decision"):
+                        job_store.log_event(
+                            job_id,
+                            "guardrail_action_evaluated",
+                            "Support auto-dispatch action guardrail evaluated.",
+                            {"guardrail_decision": dispatch_result.get("guardrail_decision")},
+                        )
                 except Exception as dispatch_exc:
                     job_store.log_event(
                         job_id,

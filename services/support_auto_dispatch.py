@@ -15,9 +15,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from database import SessionLocal
 from db_models import SupportConversationRecord, SupportMessageRecord
+from models import WorkflowType
 from runtime_config import RuntimeConfig, load_runtime_config
 from services.whatsapp_provider import get_whatsapp_provider
 from services.whatsapp_tmpl_mgr import WhatsAppTemplateManager
+from services.workflow_guardrails import (
+    GuardrailAction,
+    WorkflowGuardrailService,
+    decision_result_payload,
+)
 from support_inbox import SupportInboxStore
 from tools.custom.gmail_tools import resolve_gmail_access_token, send_gmail_reply_message
 from utils.support_drafts import customer_facing_draft_text, is_unsafe_customer_draft, parse_json_like_object
@@ -74,6 +80,30 @@ async def process_completed_support_job(
             return {"status": "skipped", "reason": "unsafe_draft_response"}
         if _contains_unsafe_rma_auto_dispatch_claim(str(draft_text), conversation.draft_payload):
             return {"status": "skipped", "reason": "unsafe_rma_claim"}
+
+        action_decision = WorkflowGuardrailService().evaluate_action(
+            WorkflowType.SUPPORT,
+            f"{conversation.channel}.send",
+            {
+                "conversation_id": conversation_id,
+                "channel": conversation.channel,
+                "draft_text": str(draft_text),
+                "draft_payload": conversation.draft_payload or {},
+            },
+        )
+        if action_decision.action in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK}:
+            conversation.requires_approval = True
+            draft_payload = conversation.draft_payload if isinstance(conversation.draft_payload, dict) else {}
+            conversation.draft_payload = {
+                **draft_payload,
+                "guardrail_decision": decision_result_payload(action_decision),
+            }
+            db.commit()
+            return {
+                "status": "skipped",
+                "reason": "guardrail_review_required",
+                "guardrail_decision": decision_result_payload(action_decision),
+            }
 
         config = _config_object(config_context)
         if conversation.channel == "gmail":
