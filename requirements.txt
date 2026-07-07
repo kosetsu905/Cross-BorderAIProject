@@ -1,5 +1,5 @@
-crewai
-crewai-tools
+crewai==1.14.4
+crewai-tools==1.14.4
 fastapi
 uvicorn[standard]
 pydantic
@@ -8,7 +8,7 @@ google-auth
 google-auth-oauthlib
 PyJWT[crypto]
 PyYAML
-guardrails-ai
+guardrails-ai>=0.10,<0.11
 redis
 celery
 httpx

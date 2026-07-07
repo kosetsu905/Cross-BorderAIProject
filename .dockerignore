@@ -1,0 +1,15 @@
+.git/
+.guardrails/
+.venv/
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+artifacts/
+logs/
+*.pyc
+*.pyo
+.env
+.env.*
+!.env.example

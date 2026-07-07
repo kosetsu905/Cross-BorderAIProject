@@ -12,9 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 import yaml
 
 from models import WorkflowType
@@ -26,8 +24,6 @@ DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "guardrails.yaml"
 MODEL_CACHE_DIR = BASE_DIR / ".cache"
 GUARDRAIL_REVIEW_FLAG = "GUARDRAIL_REVIEW_REQUIRED"
 GUARDRAIL_HIGH_RISK_FLAG = "GUARDRAIL_HIGH_RISK"
-TOXIC_LANGUAGE_VALIDATOR_ID = "toxic_language"
-TOXIC_LANGUAGE_HUB_URI = "hub://guardrails/toxic_language"
 
 SECRET_REDACTION_RE_LIST: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
@@ -255,6 +251,7 @@ class WorkflowGuardrailService:
         self.config_path = Path(config_path)
         self.config = self._load_config(self.config_path)
         self._embed_model: Any | None = None
+        self._validator_cache: dict[str, Any] = {}
         self._validate_config()
 
     def evaluate_input(
@@ -372,13 +369,10 @@ class WorkflowGuardrailService:
         guardrails_validators = [item for item in validators if item.get("hub")]
         if not guardrails_validators:
             return _PayloadEvaluation(findings=[], skipped_validators=[])
-        uses_local_guard = any(not self._uses_remote_toxic_validator(item) for item in guardrails_validators)
-        Guard: Any | None = None
-        if uses_local_guard:
-            try:
-                from guardrails import Guard
-            except Exception as exc:
-                raise GuardrailConfigurationError("guardrails-ai is required for workflow guardrails") from exc
+        try:
+            from guardrails import Guard
+        except Exception as exc:
+            raise GuardrailConfigurationError("guardrails-ai is required for workflow guardrails") from exc
 
         findings: list[GuardrailFinding] = []
         skipped_validators: list[dict[str, Any]] = []
@@ -395,21 +389,8 @@ class WorkflowGuardrailService:
                     }
                 )
                 continue
-            if self._uses_remote_toxic_validator(validator_config):
-                findings.extend(
-                    self._remote_toxic_findings(
-                        workflow_type,
-                        stage,
-                        text,
-                        validator_config,
-                        validator_id,
-                    )
-                )
-                continue
             validator = self._build_hub_validator(validator_config)
             try:
-                if Guard is None:
-                    raise GuardrailConfigurationError("guardrails-ai is required for workflow guardrails")
                 guard = Guard()
                 guard.configure(allow_metrics_collection=False)
                 outcome = guard.use(validator).validate(
@@ -447,113 +428,6 @@ class WorkflowGuardrailService:
                 )
         return _PayloadEvaluation(findings=_dedupe_findings(findings), skipped_validators=skipped_validators)
 
-    def _uses_remote_toxic_validator(self, validator_config: dict[str, Any]) -> bool:
-        validator_id = str(validator_config.get("id") or "")
-        hub_uri = str(validator_config.get("hub") or "")
-        if validator_id != TOXIC_LANGUAGE_VALIDATOR_ID and hub_uri != TOXIC_LANGUAGE_HUB_URI:
-            return False
-        return bool(self._toxic_remote_url(validator_config))
-
-    def _toxic_remote_url(self, validator_config: dict[str, Any]) -> str:
-        remote_url_env = str(validator_config.get("remote_url_env") or "WORKFLOW_GUARDRAILS_TOXIC_URL")
-        env_value = os.getenv(remote_url_env, "").strip()
-        if env_value:
-            return env_value
-        configured = _resolve_config_value(validator_config.get("remote_url") or "")
-        return str(configured or "").strip()
-
-    def _toxic_timeout_seconds(self) -> float:
-        raw_value = os.getenv("WORKFLOW_GUARDRAILS_TOXIC_TIMEOUT_SECONDS", "15")
-        try:
-            return max(1.0, float(raw_value))
-        except ValueError:
-            return 15.0
-
-    def _remote_toxic_findings(
-        self,
-        workflow_type: str,
-        stage: GuardrailStage,
-        text: str,
-        validator_config: dict[str, Any],
-        validator_id: str,
-    ) -> list[GuardrailFinding]:
-        url = self._toxic_remote_url(validator_config)
-        kwargs = self._validator_kwargs(validator_config)
-        payload = {
-            "text": text,
-            "threshold": float(kwargs.get("threshold", 0.5)),
-            "validation_method": str(kwargs.get("validation_method", "sentence")),
-        }
-        try:
-            result = self._post_toxic_validation(url, payload, self._toxic_timeout_seconds())
-        except Exception as exc:
-            return [
-                self._finding(
-                    workflow_type,
-                    stage,
-                    validator_config,
-                    validator_id,
-                    f"Guardrails toxic_language sidecar failed: {type(exc).__name__}",
-                    f"{type(exc).__name__}: toxic_language sidecar unavailable",
-                    metadata={
-                        "hub": validator_config.get("hub"),
-                        "remote": True,
-                        "runtime_error": True,
-                        "source": "guardrails_ai_docker",
-                    },
-                )
-            ]
-        if bool(result.get("validation_passed", False)):
-            return []
-        failure_reason = "\n".join(_remote_toxic_failure_reasons(result))
-        return [
-            self._finding(
-                workflow_type,
-                stage,
-                validator_config,
-                validator_id,
-                failure_reason,
-                failure_reason,
-                metadata={
-                    "hub": validator_config.get("hub"),
-                    "remote": True,
-                    "source": str(result.get("source") or "guardrails_ai_docker"),
-                },
-            )
-        ]
-
-    @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
-        retry=retry_if_exception_type(httpx.HTTPError),
-        reraise=True,
-    )
-    def _post_toxic_validation(self, url: str, payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
-        with httpx.Client(timeout=timeout_seconds) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            result = response.json()
-        if not isinstance(result, dict):
-            raise ValueError("toxic_language sidecar returned a non-object response")
-        return result
-
-    def _smoke_remote_toxic_validator(self, validator_config: dict[str, Any]) -> None:
-        url = self._toxic_remote_url(validator_config)
-        if not url:
-            raise GuardrailConfigurationError("WORKFLOW_GUARDRAILS_TOXIC_URL is required for remote toxic_language")
-        kwargs = self._validator_kwargs(validator_config)
-        result = self._post_toxic_validation(
-            url,
-            {
-                "text": "Please keep the reply professional and respectful.",
-                "threshold": float(kwargs.get("threshold", 0.5)),
-                "validation_method": str(kwargs.get("validation_method", "sentence")),
-            },
-            self._toxic_timeout_seconds(),
-        )
-        if "validation_passed" not in result:
-            raise GuardrailConfigurationError("toxic_language sidecar did not return validation_passed")
-
     def _build_hub_validator(self, validator_config: dict[str, Any]) -> Any:
         try:
             import guardrails.hub as hub
@@ -564,14 +438,20 @@ class WorkflowGuardrailService:
         class_names = _class_names_for_validator(validator_config)
         if not class_names:
             raise GuardrailConfigurationError(f"Guardrails Hub validator class is not configured for '{hub_uri}'")
-        klass = self._import_hub_validator(hub, hub_uri, class_names)
         kwargs = self._validator_kwargs(validator_config)
+        cache_key = _validator_cache_key(validator_config, kwargs)
+        cached = self._validator_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        klass = self._import_hub_validator(hub, hub_uri, class_names)
         try:
-            return klass(**kwargs)
+            validator = klass(**kwargs)
         except TypeError as exc:
             raise GuardrailConfigurationError(
                 f"Guardrails Hub validator '{hub_uri}' could not be constructed with configured args"
             ) from exc
+        self._validator_cache[cache_key] = validator
+        return validator
 
     def _import_hub_validator(self, hub: Any, validator_id: str, class_names: tuple[str, ...]) -> Any:
         for name in class_names:
@@ -669,11 +549,8 @@ class WorkflowGuardrailService:
         validators = self._validators_for(workflow_type, stage)
         policy_by_id = {str(item.get("id") or item.get("builtin") or ""): item for item in validators}
         for finding in findings:
-            if finding.validator == TOXIC_LANGUAGE_VALIDATOR_ID and finding.metadata.get("runtime_error"):
-                configured = GuardrailAction.REVIEW_REQUIRED
-            else:
-                validator_config = policy_by_id.get(finding.validator)
-                configured = _action_from_text(str((validator_config or {}).get("policy") or "monitor"))
+            validator_config = policy_by_id.get(finding.validator)
+            configured = _action_from_text(str((validator_config or {}).get("policy") or "monitor"))
             action = _max_action(action, configured)
         return action
 
@@ -767,10 +644,6 @@ class WorkflowGuardrailService:
         except Exception as exc:
             raise GuardrailConfigurationError("guardrails-ai is required for workflow guardrails") from exc
         for validator_config in self._configured_validator_configs():
-            if self._uses_remote_toxic_validator(validator_config):
-                if smoke_toxic:
-                    self._smoke_remote_toxic_validator(validator_config)
-                continue
             validator = self._build_hub_validator(validator_config)
             if smoke_toxic and validator_config.get("id") == "toxic_language":
                 try:
@@ -920,7 +793,20 @@ def _module_names_for_validator(validator_id: str) -> tuple[str, ...]:
     parts = validator_id.removeprefix("hub://").split("/")
     owner = parts[-2].replace("-", "_") if len(parts) >= 2 else "guardrails"
     package_name = parts[-1].replace("-", "_")
-    return (f"{owner}_grhub_{package_name}", f"guardrails_grhub_{package_name}")
+    module_names = (f"{owner}_grhub_{package_name}", f"guardrails_grhub_{package_name}")
+    if validator_id == "hub://guardrails/toxic_language":
+        return (*module_names, "validator")
+    return module_names
+
+
+def _validator_cache_key(validator_config: dict[str, Any], kwargs: dict[str, Any]) -> str:
+    payload = {
+        "class_name": validator_config.get("class_name"),
+        "hub": validator_config.get("hub"),
+        "id": validator_config.get("id"),
+        "kwargs": _json_safe(kwargs),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 
 
 def _negative_regex_from_terms(terms: list[Any]) -> str:
@@ -962,14 +848,3 @@ def _validation_failure_reasons(outcome: Any) -> list[str]:
     if error:
         return [str(error)]
     return ["Guardrails validation failed."]
-
-
-def _remote_toxic_failure_reasons(result: dict[str, Any]) -> list[str]:
-    raw_reasons = result.get("failure_reasons") or result.get("failure_reason") or result.get("error")
-    if isinstance(raw_reasons, list):
-        reasons = [str(reason) for reason in raw_reasons if str(reason)]
-    elif raw_reasons:
-        reasons = [str(raw_reasons)]
-    else:
-        reasons = []
-    return reasons or ["Guardrails toxic_language validation failed."]

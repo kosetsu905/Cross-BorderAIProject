@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -183,18 +182,7 @@ def test_support_output_guardrail_skips_provenance_without_grounding_context() -
     } in decision.metadata["skipped_validators"]
 
 
-def test_toxic_language_output_uses_remote_sidecar_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WORKFLOW_GUARDRAILS_TOXIC_URL", "http://guardrails-toxic:8011/validate")
-    response = httpx.Response(
-        200,
-        json={
-            "validation_passed": False,
-            "failure_reasons": ["Toxic language detected."],
-            "validator": "hub://guardrails/toxic_language",
-            "source": "guardrails_ai_docker",
-        },
-        request=httpx.Request("POST", "http://guardrails-toxic:8011/validate"),
-    )
+def test_toxic_language_output_uses_local_hub_validator() -> None:
     result = {
         "session_id": "conv-1",
         "final_response": "You are a stupid idiot.",
@@ -202,41 +190,32 @@ def test_toxic_language_output_uses_remote_sidecar_when_configured(monkeypatch: 
         "compliance_flags": [],
     }
 
-    with (
-        patched_guardrails({}) as guard,
-        patch("services.workflow_guardrails.httpx.Client.post", return_value=response) as post,
-    ):
+    with patched_guardrails({"toxic_language": "Toxic language detected."}) as guard:
         decision = WorkflowGuardrailService().evaluate_output(WorkflowType.SUPPORT, result, grounding_context=[])
 
-    post.assert_called_once()
-    assert post.call_args.args[0] == "http://guardrails-toxic:8011/validate"
-    assert post.call_args.kwargs["json"]["threshold"] == 0.5
-    assert post.call_args.kwargs["json"]["validation_method"] == "sentence"
     assert decision.action == GuardrailAction.BLOCK
     assert "toxic_language" in {finding.validator for finding in decision.findings}
-    assert "toxic_language" not in {str(call["validator"]) for call in guard.calls}
+    assert "toxic_language" in {str(call["validator"]) for call in guard.calls}
 
 
-def test_toxic_language_sidecar_unavailable_requires_review(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WORKFLOW_GUARDRAILS_TOXIC_URL", "http://guardrails-toxic:8011/validate")
-    result = {
-        "session_id": "conv-1",
-        "final_response": "A normal support response.",
-        "qa_status": "APPROVED",
-        "compliance_flags": [],
+def test_hub_validator_instances_are_cached() -> None:
+    class FakeRegexMatch:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    service = WorkflowGuardrailService()
+    config = {
+        "id": "forbidden_terms",
+        "hub": "hub://guardrails/regex_match",
+        "class_name": "RegexMatch",
+        "args": {"regex": ".*", "match_type": "fullmatch"},
     }
+    with patch.object(service, "_import_hub_validator", return_value=FakeRegexMatch) as importer:
+        first = service._build_hub_validator(config)
+        second = service._build_hub_validator(config)
 
-    with (
-        patched_guardrails({}),
-        patch("services.workflow_guardrails.httpx.Client.post", side_effect=httpx.ConnectError("offline")) as post,
-    ):
-        decision = WorkflowGuardrailService().evaluate_output(WorkflowType.SUPPORT, result, grounding_context=[])
-
-    assert post.call_count == 2
-    assert decision.action == GuardrailAction.REVIEW_REQUIRED
-    finding = next(finding for finding in decision.findings if finding.validator == "toxic_language")
-    assert finding.metadata["runtime_error"] is True
-    assert finding.metadata["source"] == "guardrails_ai_docker"
+    assert first is second
+    importer.assert_called_once()
 
 
 def test_support_output_guardrail_sets_review_required_for_provenance_failure_with_context() -> None:

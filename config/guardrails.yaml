@@ -22,6 +22,8 @@ guards:
           entities:
             - EMAIL_ADDRESS
             - PHONE_NUMBER
+          args:
+            use_local: true
           policy: mask
           severity: medium
         - id: prompt_injection
@@ -53,15 +55,17 @@ guards:
           entities:
             - EMAIL_ADDRESS
             - PHONE_NUMBER
+          args:
+            use_local: true
           policy: mask
           severity: medium
         - id: toxic_language
           hub: hub://guardrails/toxic_language
           class_name: ToxicLanguage
-          remote_url_env: WORKFLOW_GUARDRAILS_TOXIC_URL
           args:
             threshold: 0.5
             validation_method: sentence
+            use_local: true
           policy: block
           severity: high
         - id: forbidden_terms
@@ -124,10 +128,10 @@ guards:
         - id: toxic_language
           hub: hub://guardrails/toxic_language
           class_name: ToxicLanguage
-          remote_url_env: WORKFLOW_GUARDRAILS_TOXIC_URL
           args:
             threshold: 0.5
             validation_method: sentence
+            use_local: true
           policy: block
           severity: high
         - id: forbidden_terms

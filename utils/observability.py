@@ -6,6 +6,7 @@ import os
 import re
 import time
 from contextlib import ExitStack, contextmanager
+from importlib.util import find_spec
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -31,7 +32,9 @@ _INIT_LOCK = Lock()
 _INITIALIZED_SERVICES: set[str] = set()
 _INSTRUMENTED_FASTAPI_APP_IDS: set[int] = set()
 _INSTRUMENTED_GLOBALS = False
+_OPENINFERENCE_CONFIGURED = False
 _OTEL_CONFIGURED = False
+_OTEL_PROVIDER: Any | None = None
 _LANGFUSE_CLIENT: Any | None = None
 
 
@@ -153,6 +156,13 @@ def init_observability(
 
 def flush_observability() -> None:
     """Flush buffered telemetry clients after short-lived Celery task execution."""
+    provider = _OTEL_PROVIDER
+    if provider is not None and hasattr(provider, "force_flush"):
+        try:
+            provider.force_flush()
+        except Exception:
+            logger.debug("OpenTelemetry flush failed", exc_info=True)
+
     client = _LANGFUSE_CLIENT
     if client is not None and hasattr(client, "flush"):
         try:
@@ -599,7 +609,7 @@ def _guardrail_decision_summary(decision: Any) -> dict[str, Any]:
 def _record_langfuse_scores(scores: list[dict[str, Any]], config_context: dict[str, Any] | None) -> None:
     if not scores or not _langfuse_enabled(config_context):
         return
-    client = _langfuse_client()
+    client = _langfuse_client(config_context)
     if client is None or not hasattr(client, "score_current_trace"):
         return
     for score in scores:
@@ -638,7 +648,7 @@ def _update_current_langfuse_span(
 ) -> None:
     if not attributes or not _langfuse_enabled(config_context):
         return
-    client = _langfuse_client()
+    client = _langfuse_client(config_context)
     if client is None or not hasattr(client, "update_current_span"):
         return
     try:
@@ -701,7 +711,7 @@ def _langfuse_observation(
     if not _langfuse_enabled(config_context):
         yield
         return
-    client = _langfuse_client()
+    client = _langfuse_client(config_context)
     if client is None or not hasattr(client, "start_as_current_observation"):
         yield
         return
@@ -728,7 +738,7 @@ def _start_langfuse_observation(
 ) -> tuple[Any | None, Any | None]:
     if not _langfuse_enabled(config_context):
         return None, None
-    client = _langfuse_client()
+    client = _langfuse_client(config_context)
     if client is None or not hasattr(client, "start_as_current_observation"):
         return None, None
     try:
@@ -746,7 +756,7 @@ def _start_langfuse_observation(
 
 
 def _init_otel(service_name: str, config_context: dict[str, Any] | None) -> None:
-    global _INSTRUMENTED_GLOBALS, _OTEL_CONFIGURED
+    global _INSTRUMENTED_GLOBALS, _OTEL_CONFIGURED, _OTEL_PROVIDER
 
     if not _otel_enabled(config_context):
         return
@@ -771,19 +781,27 @@ def _init_otel(service_name: str, config_context: dict[str, Any] | None) -> None
             "deployment.environment": _string_config(config_context, "observability_environment", "local"),
         }
     )
-    provider = TracerProvider(resource=resource)
+    current_provider = trace.get_tracer_provider()
+    try:
+        is_proxy_provider = isinstance(current_provider, trace.ProxyTracerProvider)
+    except TypeError:
+        is_proxy_provider = False
+
+    provider = TracerProvider(resource=resource) if is_proxy_provider else current_provider
 
     if endpoint:
         exporter = _build_otlp_exporter(endpoint, protocol)
-        if exporter is not None:
+        if exporter is not None and hasattr(provider, "add_span_processor"):
             provider.add_span_processor(BatchSpanProcessor(exporter))
 
-    try:
-        trace.set_tracer_provider(provider)
-        _OTEL_CONFIGURED = True
-    except Exception:
-        logger.debug("OpenTelemetry tracer provider was already configured", exc_info=True)
-        _OTEL_CONFIGURED = True
+    if is_proxy_provider:
+        try:
+            trace.set_tracer_provider(provider)
+        except Exception:
+            logger.debug("OpenTelemetry tracer provider was already configured", exc_info=True)
+
+    _OTEL_PROVIDER = provider
+    _OTEL_CONFIGURED = True
 
     if not _INSTRUMENTED_GLOBALS:
         _instrument_global_libraries()
@@ -849,27 +867,41 @@ def _instrument_global_libraries() -> None:
 
 
 def _init_openinference() -> None:
+    global _OPENINFERENCE_CONFIGURED
+
+    if _OPENINFERENCE_CONFIGURED:
+        return
+
     instrumentors = [
-        ("openinference.instrumentation.crewai", "CrewAIInstrumentor", {"skip_dep_check": True}),
-        ("openinference.instrumentation.litellm", "LiteLLMInstrumentor", {}),
+        ("openinference.instrumentation.crewai", "CrewAIInstrumentor", {"skip_dep_check": True}, "crewai"),
+        ("openinference.instrumentation.litellm", "LiteLLMInstrumentor", {}, "litellm"),
     ]
-    for module_name, class_name, kwargs in instrumentors:
+    for module_name, class_name, kwargs, dependency_name in instrumentors:
         try:
+            if find_spec(dependency_name) is None:
+                logger.debug("%s dependency %s is not installed", class_name, dependency_name)
+                continue
             module = __import__(module_name, fromlist=[class_name])
-            getattr(module, class_name)().instrument(**kwargs)
+            instrumentor_kwargs = dict(kwargs)
+            if _OTEL_PROVIDER is not None:
+                instrumentor_kwargs.setdefault("tracer_provider", _OTEL_PROVIDER)
+            getattr(module, class_name)().instrument(**instrumentor_kwargs)
         except ImportError:
             logger.debug("%s is not installed", module_name)
         except Exception:
             logger.debug("%s instrumentation failed", class_name, exc_info=True)
+    _OPENINFERENCE_CONFIGURED = True
 
 
 def _init_langfuse(config_context: dict[str, Any] | None) -> None:
     if not _langfuse_enabled(config_context):
         return
-    _langfuse_client()
+    _langfuse_client(config_context)
 
 
 def _apply_observability_environment(config_context: dict[str, Any] | None) -> None:
+    os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+    os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
     if not config_context:
         return
     env_map = {
@@ -885,7 +917,7 @@ def _apply_observability_environment(config_context: dict[str, Any] | None) -> N
             os.environ[env_name] = str(value)
 
 
-def _langfuse_client() -> Any | None:
+def _langfuse_client(config_context: dict[str, Any] | None = None) -> Any | None:
     global _LANGFUSE_CLIENT
 
     if _LANGFUSE_CLIENT is not None:
@@ -893,6 +925,12 @@ def _langfuse_client() -> Any | None:
     if os.getenv("LANGFUSE_HOST") and not os.getenv("LANGFUSE_BASE_URL"):
         os.environ["LANGFUSE_BASE_URL"] = os.getenv("LANGFUSE_HOST", "")
     try:
+        if _OTEL_PROVIDER is not None and _otel_enabled(config_context):
+            from langfuse import Langfuse
+
+            _LANGFUSE_CLIENT = Langfuse(tracer_provider=_OTEL_PROVIDER)
+            return _LANGFUSE_CLIENT
+
         from langfuse import get_client
 
         _LANGFUSE_CLIENT = get_client()

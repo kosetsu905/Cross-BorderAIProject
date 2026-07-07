@@ -182,6 +182,13 @@ MLFLOW_EXPERIMENT_NAME=cross-border-ai
 
 ### 3. Start Docker services
 
+Guardrails Hub validators are installed into the FastAPI/Celery Docker image during build. Set a local Hub token before the first build:
+
+```powershell
+$env:GUARDRAILS_TOKEN = "<your_guardrails_hub_token>"
+docker compose build fastapi celery_worker
+```
+
 First app build:
 
 ```powershell
@@ -406,6 +413,29 @@ MLFLOW_EXPERIMENT_NAME=cross-border-ai
 ```
 
 Keep `OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false` unless you have reviewed privacy implications. The observability layer redacts secret-like keys, emails, phone numbers, and raw customer handles before attaching metadata.
+
+## Workflow Guardrails
+
+Project-level guardrails run inside the same Docker image as FastAPI and Celery. The runtime installs these Guardrails Hub validators during image build:
+
+- `hub://guardrails/secrets_present`
+- `hub://guardrails/detect_pii`
+- `hub://guardrails/regex_match`
+- `hub://sainatha/prompt_injection_detector`
+- `hub://guardrails/provenance_llm`
+- `hub://guardrails/toxic_language`
+
+There is no separate `guardrails-toxic` service. Streamlit submits workflows to FastAPI, FastAPI/Celery load `config/guardrails.yaml`, and all validator results are converted into the project's `GuardrailDecision` policy layer.
+
+Validate the Docker runtime:
+
+```powershell
+docker compose exec fastapi guardrails hub list
+docker compose exec celery_worker guardrails hub list
+docker compose exec fastapi python -c "from services.workflow_guardrails import WorkflowGuardrailService; WorkflowGuardrailService().validate_runtime(smoke_toxic=True)"
+```
+
+Custom blocked terms live in `config/guardrails.yaml` under the `forbidden_terms` `regex_match` validators. Update the negative regex and rebuild/recreate FastAPI/Celery before testing through Streamlit.
 
 ### Langfuse Local Bootstrap
 

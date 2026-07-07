@@ -78,7 +78,9 @@ class ObservabilityTests(unittest.TestCase):
         observability._INITIALIZED_SERVICES.clear()
         observability._INSTRUMENTED_FASTAPI_APP_IDS.clear()
         observability._OTEL_CONFIGURED = False
+        observability._OTEL_PROVIDER = None
         observability._INSTRUMENTED_GLOBALS = False
+        observability._OPENINFERENCE_CONFIGURED = False
         observability._LANGFUSE_CLIENT = None
 
     def test_workflow_span_is_noop_when_disabled(self) -> None:
@@ -142,6 +144,39 @@ class ObservabilityTests(unittest.TestCase):
                     {"observability_enabled": True, "otel_enabled": False}
                 )
             )
+
+    def test_langfuse_client_reuses_project_otel_provider_when_enabled(self) -> None:
+        provider = object()
+        observability._OTEL_PROVIDER = provider
+        with patch.dict(
+            os.environ,
+            {
+                "LANGFUSE_PUBLIC_KEY": "public",
+                "LANGFUSE_SECRET_KEY": "secret",
+            },
+            clear=True,
+        ), patch("langfuse.Langfuse") as langfuse:
+            client = observability._langfuse_client(
+                {"observability_enabled": True, "otel_enabled": True}
+            )
+
+        self.assertEqual(client, langfuse.return_value)
+        langfuse.assert_called_once_with(tracer_provider=provider)
+
+    def test_flush_observability_flushes_otel_provider(self) -> None:
+        class FakeProvider:
+            def __init__(self) -> None:
+                self.flushed = False
+
+            def force_flush(self) -> None:
+                self.flushed = True
+
+        provider = FakeProvider()
+        observability._OTEL_PROVIDER = provider
+
+        observability.flush_observability()
+
+        self.assertTrue(provider.flushed)
 
     @patch("utils.observability._get_tracer")
     def test_start_agent_span_creates_langfuse_agent_when_otel_disabled(self, get_tracer) -> None:
