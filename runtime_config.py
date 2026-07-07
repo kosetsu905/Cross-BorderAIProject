@@ -119,7 +119,14 @@ RUNTIME_CONFIG_KEYS = {
     "observability_capture_input_output",
     "observability_environment",
     "otel_enabled",
+    "otel_global_auto_instrumentation_enabled",
+    "otel_httpx_instrumentation_enabled",
+    "otel_redis_instrumentation_enabled",
+    "otel_sqlalchemy_instrumentation_enabled",
+    "otel_celery_instrumentation_enabled",
     "fastapi_otel_auto_instrumentation_enabled",
+    "openinference_crewai_enabled",
+    "openinference_litellm_enabled",
     "otel_exporter_otlp_traces_endpoint",
     "otel_exporter_otlp_protocol",
     "phoenix_project_name",
@@ -276,7 +283,14 @@ class RuntimeConfig:
     observability_capture_input_output: bool = False
     observability_environment: str = "local"
     otel_enabled: bool = True
+    otel_global_auto_instrumentation_enabled: bool = False
+    otel_httpx_instrumentation_enabled: bool = False
+    otel_redis_instrumentation_enabled: bool = False
+    otel_sqlalchemy_instrumentation_enabled: bool = False
+    otel_celery_instrumentation_enabled: bool = False
     fastapi_otel_auto_instrumentation_enabled: bool = False
+    openinference_crewai_enabled: bool = False
+    openinference_litellm_enabled: bool = True
     otel_exporter_otlp_traces_endpoint: str | None = None
     otel_exporter_otlp_protocol: str = "http/protobuf"
     phoenix_project_name: str = "cross-border-ai-dev"
@@ -582,7 +596,14 @@ def load_runtime_config() -> RuntimeConfig:
         observability_capture_input_output=_bool_env("OBSERVABILITY_CAPTURE_INPUT_OUTPUT", False),
         observability_environment=os.getenv("OBSERVABILITY_ENVIRONMENT", "local"),
         otel_enabled=_bool_env("OTEL_ENABLED", True),
+        otel_global_auto_instrumentation_enabled=_bool_env("OTEL_GLOBAL_AUTO_INSTRUMENTATION_ENABLED", False),
+        otel_httpx_instrumentation_enabled=_bool_env("OTEL_HTTPX_INSTRUMENTATION_ENABLED", False),
+        otel_redis_instrumentation_enabled=_bool_env("OTEL_REDIS_INSTRUMENTATION_ENABLED", False),
+        otel_sqlalchemy_instrumentation_enabled=_bool_env("OTEL_SQLALCHEMY_INSTRUMENTATION_ENABLED", False),
+        otel_celery_instrumentation_enabled=_bool_env("OTEL_CELERY_INSTRUMENTATION_ENABLED", False),
         fastapi_otel_auto_instrumentation_enabled=_bool_env("FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED", False),
+        openinference_crewai_enabled=_bool_env("OPENINFERENCE_CREWAI_ENABLED", False),
+        openinference_litellm_enabled=_bool_env("OPENINFERENCE_LITELLM_ENABLED", True),
         otel_exporter_otlp_traces_endpoint=_env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"),
         otel_exporter_otlp_protocol=os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
         phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "cross-border-ai-dev"),

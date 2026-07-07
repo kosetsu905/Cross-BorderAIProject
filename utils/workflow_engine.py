@@ -114,7 +114,7 @@ class WorkflowExecutionEngine:
         input_decision = guardrail.evaluate_input(
             workflow_type,
             inputs,
-            context={**config_context, "metadata": metadata or {}},
+            context={**config_context, "job_id": job_id, "metadata": metadata or {}},
         )
         sanitized_inputs = input_decision.sanitized_payload if isinstance(input_decision.sanitized_payload, dict) else inputs
         if input_decision.action == GuardrailAction.BLOCK:

@@ -509,6 +509,7 @@ def create_router(orchestrator: object) -> APIRouter:
         if conversation.channel not in {"whatsapp", "gmail"}:
             raise HTTPException(status_code=400, detail=f"Approval send is not implemented for channel '{conversation.channel}'")
 
+        config = load_runtime_config()
         action_decision = WorkflowGuardrailService().evaluate_action(
             WorkflowType.SUPPORT,
             f"{conversation.channel}.send",
@@ -517,6 +518,10 @@ def create_router(orchestrator: object) -> APIRouter:
                 "channel": conversation.channel,
                 "draft_text": str(draft_text),
                 "draft_payload": conversation.draft_payload or {},
+            },
+            config_context={
+                **(config.as_context() if hasattr(config, "as_context") else {}),
+                "job_id": str(latest_job_id) if latest_job_id else None,
             },
         )
         guardrail_payload = decision_result_payload(action_decision)
@@ -566,7 +571,6 @@ def create_router(orchestrator: object) -> APIRouter:
                     },
                 )
 
-        config = load_runtime_config()
         if conversation.channel == "gmail":
             if not config.gmail_send_enabled:
                 return {

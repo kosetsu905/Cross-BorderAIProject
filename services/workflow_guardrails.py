@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import yaml
 
 from models import WorkflowType
+from utils.observability import guardrail_span, set_span_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -261,22 +262,33 @@ class WorkflowGuardrailService:
         context: dict[str, Any] | None = None,
     ) -> GuardrailDecision:
         workflow_value = _workflow_value(workflow_type)
-        evaluation = self._evaluate_payload(
-            workflow_value,
-            GuardrailStage.INPUT,
-            inputs,
-            context=context,
-        )
-        action = self._policy_action(workflow_value, GuardrailStage.INPUT, evaluation.findings)
-        sanitized = sanitize_payload(inputs)
-        return self._decision(
-            workflow_value,
-            GuardrailStage.INPUT,
-            action,
-            evaluation.findings,
-            sanitized_payload=sanitized,
-            metadata={"skipped_validators": evaluation.skipped_validators},
-        )
+        config_context = context or {}
+        with guardrail_span(
+            "guardrail_input_evaluated",
+            workflow_type=workflow_value,
+            stage=GuardrailStage.INPUT.value,
+            job_id=_safe_trace_identifier((context or {}).get("job_id")),
+            conversation_id=_conversation_trace_id(inputs, context),
+            config_context=config_context,
+        ):
+            evaluation = self._evaluate_payload(
+                workflow_value,
+                GuardrailStage.INPUT,
+                inputs,
+                context=context,
+            )
+            action = self._policy_action(workflow_value, GuardrailStage.INPUT, evaluation.findings)
+            sanitized = sanitize_payload(inputs)
+            decision = self._decision(
+                workflow_value,
+                GuardrailStage.INPUT,
+                action,
+                evaluation.findings,
+                sanitized_payload=sanitized,
+                metadata={"skipped_validators": evaluation.skipped_validators},
+            )
+            _record_guardrail_observability(decision, config_context, _conversation_trace_id(inputs, context))
+            return decision
 
     def evaluate_output(
         self,
@@ -285,63 +297,88 @@ class WorkflowGuardrailService:
         grounding_context: list[str] | None = None,
         query_function: Any | None = None,
         embed_function: Any | None = None,
+        config_context: dict[str, Any] | None = None,
     ) -> GuardrailDecision:
         workflow_value = _workflow_value(workflow_type)
         context = {
+            **(config_context or {}),
             "embed_function": embed_function,
             "grounding_context": grounding_context or [],
             "query_function": query_function,
         }
-        evaluation = self._evaluate_payload(
-            workflow_value,
-            GuardrailStage.OUTPUT,
-            result,
-            context=context,
-        )
-        action = self._policy_action(workflow_value, GuardrailStage.OUTPUT, evaluation.findings)
-        return self._decision(
-            workflow_value,
-            GuardrailStage.OUTPUT,
-            action,
-            evaluation.findings,
-            sanitized_payload=sanitize_payload(result),
-            metadata={
-                "grounding_context_available": bool(grounding_context),
-                "skipped_validators": evaluation.skipped_validators,
-            },
-        )
+        with guardrail_span(
+            "guardrail_output_evaluated",
+            workflow_type=workflow_value,
+            stage=GuardrailStage.OUTPUT.value,
+            job_id=_safe_trace_identifier(context.get("job_id")),
+            conversation_id=_conversation_trace_id(result, context),
+            config_context=context,
+        ):
+            evaluation = self._evaluate_payload(
+                workflow_value,
+                GuardrailStage.OUTPUT,
+                result,
+                context=context,
+            )
+            action = self._policy_action(workflow_value, GuardrailStage.OUTPUT, evaluation.findings)
+            decision = self._decision(
+                workflow_value,
+                GuardrailStage.OUTPUT,
+                action,
+                evaluation.findings,
+                sanitized_payload=sanitize_payload(result),
+                metadata={
+                    "grounding_context_available": bool(grounding_context),
+                    "skipped_validators": evaluation.skipped_validators,
+                },
+            )
+            _record_guardrail_observability(decision, context, _conversation_trace_id(result, context))
+            return decision
 
     def evaluate_action(
         self,
         workflow_type: WorkflowType | str,
         action_type: str,
         payload: dict[str, Any],
+        config_context: dict[str, Any] | None = None,
     ) -> GuardrailDecision:
         workflow_value = _workflow_value(workflow_type)
-        evaluation = self._evaluate_payload(
-            workflow_value,
-            GuardrailStage.ACTION,
-            payload,
-            action_type=action_type,
-            context={"action_type": action_type},
-        )
-        action = self._policy_action(
-            workflow_value,
-            GuardrailStage.ACTION,
-            evaluation.findings,
-            action_type=action_type,
-        )
-        return self._decision(
-            workflow_value,
-            GuardrailStage.ACTION,
-            action,
-            evaluation.findings,
-            sanitized_payload=sanitize_payload(payload),
-            metadata={
-                "action_type": action_type,
-                "skipped_validators": evaluation.skipped_validators,
-            },
-        )
+        context = {**(config_context or {}), "action_type": action_type}
+        with guardrail_span(
+            "guardrail_action_evaluated",
+            workflow_type=workflow_value,
+            stage=GuardrailStage.ACTION.value,
+            job_id=_safe_trace_identifier(context.get("job_id")),
+            conversation_id=_conversation_trace_id(payload, context),
+            config_context=context,
+            attributes={"action_type": action_type},
+        ):
+            evaluation = self._evaluate_payload(
+                workflow_value,
+                GuardrailStage.ACTION,
+                payload,
+                action_type=action_type,
+                context=context,
+            )
+            action = self._policy_action(
+                workflow_value,
+                GuardrailStage.ACTION,
+                evaluation.findings,
+                action_type=action_type,
+            )
+            decision = self._decision(
+                workflow_value,
+                GuardrailStage.ACTION,
+                action,
+                evaluation.findings,
+                sanitized_payload=sanitize_payload(payload),
+                metadata={
+                    "action_type": action_type,
+                    "skipped_validators": evaluation.skipped_validators,
+                },
+            )
+            _record_guardrail_observability(decision, context, _conversation_trace_id(payload, context))
+            return decision
 
     def _evaluate_payload(
         self,
@@ -721,6 +758,45 @@ def _guardrail_payload_from_result(payload: Any) -> dict[str, Any] | None:
 
 def _workflow_value(workflow_type: WorkflowType | str) -> str:
     return workflow_type.value if isinstance(workflow_type, WorkflowType) else str(workflow_type)
+
+
+def _record_guardrail_observability(
+    decision: GuardrailDecision,
+    config_context: dict[str, Any] | None,
+    conversation_id: str | None,
+) -> None:
+    set_span_attributes(
+        {
+            "conversation_id": conversation_id,
+            "guardrail_action": decision.action.value,
+            "guardrail_severity": decision.severity.value,
+            "guardrail_stage": decision.stage.value,
+            "guardrail_finding_count": len(decision.findings),
+        },
+        config_context=config_context,
+    )
+
+
+def _conversation_trace_id(payload: Any, context: dict[str, Any] | None = None) -> str | None:
+    for source in (payload, context, (context or {}).get("metadata")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("conversation_id", "session_id", "ticket_id"):
+            trace_id = _safe_trace_identifier(source.get(key))
+            if trace_id:
+                return trace_id
+    return None
+
+
+def _safe_trace_identifier(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value)
+    if EMAIL_ADDRESS_REDACTOR.search(text) or PHONE_NUMBER_REDACTOR.search(text):
+        return None
+    if not re.fullmatch(r"[\w:.-]{1,128}", text):
+        return None
+    return text
 
 
 def _is_sensitive_key(key: str) -> bool:

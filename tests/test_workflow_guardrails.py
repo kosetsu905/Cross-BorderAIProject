@@ -332,6 +332,7 @@ class FakeGuardrailService:
         workflow_type: WorkflowType | str,
         action_type: str,
         payload: dict[str, object],
+        config_context: dict[str, object] | None = None,
     ) -> GuardrailDecision:
         return GuardrailDecision(
             workflow_type=WorkflowType.SUPPORT.value,

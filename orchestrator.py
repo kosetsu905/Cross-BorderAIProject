@@ -411,6 +411,7 @@ class MasterOrchestrator:
                     workflow_type,
                     normalized_result,
                     grounding_context=_workflow_grounding_context(normalized_result),
+                    config_context={**config_context, "job_id": job_id},
                 )
                 normalized_result = apply_output_guardrail_result(workflow_type, normalized_result, output_decision)
                 self._job_store.log_event(

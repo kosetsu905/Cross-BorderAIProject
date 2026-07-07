@@ -145,7 +145,7 @@ def init_observability(
         if service_name not in _INITIALIZED_SERVICES:
             if otel_enabled:
                 _init_otel(service_name, config_context)
-                _init_openinference()
+                _init_openinference(config_context)
             _init_langfuse(config_context)
             _INITIALIZED_SERVICES.add(service_name)
 
@@ -354,6 +354,36 @@ def evaluation_span(
         yield span
 
 
+@contextmanager
+def guardrail_span(
+    name: str,
+    *,
+    workflow_type: str,
+    stage: str,
+    job_id: str | None = None,
+    conversation_id: str | None = None,
+    config_context: dict[str, Any] | None = None,
+    attributes: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    span_attributes = _safe_guardrail_attributes(
+        {
+            "job_id": job_id,
+            "workflow_type": workflow_type,
+            "stage": stage,
+            "guardrail_stage": stage,
+            "conversation_id": conversation_id,
+            **(attributes or {}),
+        }
+    )
+    with _observation_span(
+        name,
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="span",
+    ) as span:
+        yield span
+
+
 def start_agent_span(
     *,
     job_id: str,
@@ -510,6 +540,11 @@ def redact_observability_payload(value: Any, *, capture_raw: bool | None = None)
 
 def _workflow_result_summary(result: dict[str, Any]) -> dict[str, Any]:
     summary_fields = {
+        "conversation_id": _safe_identifier(
+            result.get("conversation_id")
+            or result.get("session_id")
+            or result.get("ticket_id")
+        ),
         "detected_intent": result.get("detected_intent"),
         "routing_confidence": result.get("routing_confidence"),
         "qa_status": result.get("qa_status"),
@@ -609,6 +644,17 @@ def _guardrail_decision_summary(decision: Any) -> dict[str, Any]:
         "guardrail_stage": decision.get("stage"),
         "guardrail_finding_count": len(findings) if isinstance(findings, list) else decision.get("finding_count"),
     }
+
+
+def _safe_identifier(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value)
+    if EMAIL_RE.search(text) or PHONE_RE.search(text):
+        return None
+    if not re.fullmatch(r"[\w:.-]{1,128}", text):
+        return None
+    return text
 
 
 def _record_langfuse_scores(scores: list[dict[str, Any]], config_context: dict[str, Any] | None) -> None:
@@ -809,7 +855,7 @@ def _init_otel(service_name: str, config_context: dict[str, Any] | None) -> None
     _OTEL_CONFIGURED = True
 
     if not _INSTRUMENTED_GLOBALS:
-        _instrument_global_libraries()
+        _instrument_global_libraries(config_context)
         _INSTRUMENTED_GLOBALS = True
 
 
@@ -857,13 +903,15 @@ def _instrument_fastapi(app: FastAPI) -> None:
         logger.debug("FastAPI instrumentation failed", exc_info=True)
 
 
-def _instrument_global_libraries() -> None:
+def _instrument_global_libraries(config_context: dict[str, Any] | None) -> None:
     instrumentors = [
-        ("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
-        ("opentelemetry.instrumentation.redis", "RedisInstrumentor"),
-        ("opentelemetry.instrumentation.celery", "CeleryInstrumentor"),
+        ("otel_httpx_instrumentation_enabled", "opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
+        ("otel_redis_instrumentation_enabled", "opentelemetry.instrumentation.redis", "RedisInstrumentor"),
+        ("otel_celery_instrumentation_enabled", "opentelemetry.instrumentation.celery", "CeleryInstrumentor"),
     ]
-    for module_name, class_name in instrumentors:
+    for flag_name, module_name, class_name in instrumentors:
+        if not _library_auto_instrumentation_enabled(config_context, flag_name):
+            continue
         try:
             module = __import__(module_name, fromlist=[class_name])
             getattr(module, class_name)().instrument()
@@ -872,28 +920,43 @@ def _instrument_global_libraries() -> None:
         except Exception:
             logger.debug("%s instrumentation failed", class_name, exc_info=True)
 
-    try:
-        from database import engine
-        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+    if _library_auto_instrumentation_enabled(config_context, "otel_sqlalchemy_instrumentation_enabled"):
+        try:
+            from database import engine
+            from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
-        SQLAlchemyInstrumentor().instrument(engine=engine)
-    except ImportError:
-        logger.debug("SQLAlchemy OpenTelemetry instrumentation is not installed")
-    except Exception:
-        logger.debug("SQLAlchemy instrumentation failed", exc_info=True)
+            SQLAlchemyInstrumentor().instrument(engine=engine)
+        except ImportError:
+            logger.debug("SQLAlchemy OpenTelemetry instrumentation is not installed")
+        except Exception:
+            logger.debug("SQLAlchemy instrumentation failed", exc_info=True)
 
 
-def _init_openinference() -> None:
+def _init_openinference(config_context: dict[str, Any] | None) -> None:
     global _OPENINFERENCE_CONFIGURED
 
     if _OPENINFERENCE_CONFIGURED:
         return
 
     instrumentors = [
-        ("openinference.instrumentation.crewai", "CrewAIInstrumentor", {"skip_dep_check": True}, "crewai"),
-        ("openinference.instrumentation.litellm", "LiteLLMInstrumentor", {}, "litellm"),
+        (
+            "openinference_crewai_enabled",
+            "openinference.instrumentation.crewai",
+            "CrewAIInstrumentor",
+            {"skip_dep_check": True},
+            "crewai",
+        ),
+        (
+            "openinference_litellm_enabled",
+            "openinference.instrumentation.litellm",
+            "LiteLLMInstrumentor",
+            {},
+            "litellm",
+        ),
     ]
-    for module_name, class_name, kwargs, dependency_name in instrumentors:
+    for flag_name, module_name, class_name, kwargs, dependency_name in instrumentors:
+        if not _bool_config(config_context, flag_name, flag_name == "openinference_litellm_enabled"):
+            continue
         try:
             if find_spec(dependency_name) is None:
                 logger.debug("%s dependency %s is not installed", class_name, dependency_name)
@@ -1007,8 +1070,14 @@ def _safe_stage_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
     allowed_keys = {
         "agent_role",
         "asset_count",
+        "action_type",
         "backend",
+        "conversation_id",
         "duration_ms",
+        "guardrail_action",
+        "guardrail_finding_count",
+        "guardrail_severity",
+        "guardrail_stage",
         "job_id",
         "language",
         "score_count",
@@ -1023,6 +1092,10 @@ def _safe_stage_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
         for key, value in attributes.items()
         if key in allowed_keys and value not in (None, "", [])
     }
+
+
+def _safe_guardrail_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    return _safe_stage_attributes(attributes)
 
 
 def _truncate_attribute(value: str | int | float | bool) -> str | int | float | bool:
@@ -1041,6 +1114,14 @@ def _otel_enabled(config_context: dict[str, Any] | None = None) -> bool:
 
 def _fastapi_otel_auto_instrumentation_enabled(config_context: dict[str, Any] | None = None) -> bool:
     return _bool_config(config_context, "fastapi_otel_auto_instrumentation_enabled", False)
+
+
+def _library_auto_instrumentation_enabled(config_context: dict[str, Any] | None, key: str) -> bool:
+    return _bool_config(
+        config_context,
+        key,
+        _bool_config(config_context, "otel_global_auto_instrumentation_enabled", False),
+    )
 
 
 def _langfuse_enabled(config_context: dict[str, Any] | None = None) -> bool:

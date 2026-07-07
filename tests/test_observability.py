@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -194,6 +195,59 @@ class ObservabilityTests(unittest.TestCase):
         init_langfuse.assert_called_once()
         instrument_fastapi.assert_called_once_with(app)
 
+    @patch("builtins.__import__")
+    def test_global_auto_instrumentation_is_disabled_by_default(self, import_module) -> None:
+        observability._instrument_global_libraries(
+            {"observability_enabled": True, "otel_enabled": True}
+        )
+
+        import_module.assert_not_called()
+
+    @patch("builtins.__import__")
+    def test_low_level_instrumentation_requires_per_library_opt_in(self, import_module) -> None:
+        instrumented: list[str] = []
+
+        def fake_import(module_name: str, *args: object, **kwargs: object) -> object:
+            class FakeInstrumentor:
+                def instrument(self) -> None:
+                    instrumented.append(module_name)
+
+            return SimpleNamespace(HTTPXClientInstrumentor=FakeInstrumentor)
+
+        import_module.side_effect = fake_import
+
+        observability._instrument_global_libraries(
+            {
+                "observability_enabled": True,
+                "otel_enabled": True,
+                "otel_httpx_instrumentation_enabled": True,
+            }
+        )
+
+        self.assertEqual(instrumented, ["opentelemetry.instrumentation.httpx"])
+
+    @patch("utils.observability.find_spec", return_value=object())
+    @patch("builtins.__import__")
+    def test_openinference_defaults_to_litellm_only(self, import_module, find_spec) -> None:
+        instrumented: list[str] = []
+
+        def fake_import(module_name: str, *args: object, **kwargs: object) -> object:
+            class FakeInstrumentor:
+                def instrument(self, **_: object) -> None:
+                    instrumented.append(module_name)
+
+            return SimpleNamespace(
+                CrewAIInstrumentor=FakeInstrumentor,
+                LiteLLMInstrumentor=FakeInstrumentor,
+            )
+
+        import_module.side_effect = fake_import
+
+        observability._init_openinference({"observability_enabled": True, "otel_enabled": True})
+
+        self.assertEqual(instrumented, ["openinference.instrumentation.litellm"])
+        self.assertEqual(find_spec.call_args_list[-1].args[0], "litellm")
+
     def test_langfuse_client_reuses_project_otel_provider_when_enabled(self) -> None:
         provider = object()
         observability._OTEL_PROVIDER = provider
@@ -309,6 +363,7 @@ class ObservabilityTests(unittest.TestCase):
         ), patch("utils.observability._langfuse_client", return_value=client):
             record_workflow_result_observability(
                 {
+                    "session_id": "conv-1",
                     "detected_intent": "pre_sales",
                     "routing_confidence": 0.95,
                     "qa_status": "APPROVED",
@@ -318,6 +373,7 @@ class ObservabilityTests(unittest.TestCase):
                 {"observability_enabled": True, "otel_enabled": False, "workflow_type": "support"},
             )
 
+        self.assertEqual(client.current_span_updates[0]["conversation_id"], "conv-1")
         self.assertEqual(client.current_span_updates[0]["detected_intent"], "pre_sales")
         self.assertEqual(client.current_span_updates[0]["qa_status"], "APPROVED")
         score_names = {score["name"] for score in client.scores}

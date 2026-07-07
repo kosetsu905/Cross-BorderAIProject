@@ -90,6 +90,7 @@ async def process_completed_support_job(
                 "draft_text": str(draft_text),
                 "draft_payload": conversation.draft_payload or {},
             },
+            config_context={**_config_context_dict(config_context), "job_id": job_id},
         )
         if action_decision.action in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK}:
             conversation.requires_approval = True
@@ -159,6 +160,14 @@ def _config_object(config_context: dict[str, Any] | RuntimeConfig | None) -> obj
         }
     )
     return SimpleNamespace(**base)
+
+
+def _config_context_dict(config_context: dict[str, Any] | RuntimeConfig | None) -> dict[str, Any]:
+    if config_context is None:
+        return load_runtime_config().as_context()
+    if isinstance(config_context, RuntimeConfig):
+        return config_context.as_context()
+    return dict(config_context)
 
 
 def _auto_dispatch_already_recorded(db: Any, conversation_id: str, job_id: str) -> bool:
