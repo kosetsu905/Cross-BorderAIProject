@@ -30,7 +30,7 @@ guards:
           hub: hub://sainatha/prompt_injection_detector
           class_name: PromptInjectionDetector
           args:
-            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
             threshold: 0.8
           policy: block
           severity: high
@@ -81,7 +81,7 @@ guards:
           class_name: ProvenanceLLM
           enabled_when: grounding_context_available
           args:
-            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
             validation_method: sentence
             top_k: 3
           policy: review_required
@@ -106,7 +106,7 @@ guards:
           hub: hub://sainatha/prompt_injection_detector
           class_name: PromptInjectionDetector
           args:
-            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
             threshold: 0.8
           policy: block
           severity: high
@@ -147,7 +147,7 @@ guards:
           class_name: ProvenanceLLM
           enabled_when: grounding_context_available
           args:
-            llm_callable: ${WORKFLOW_GUARDRAILS_LLM_CALLABLE:gpt-4o-mini}
+            llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
             validation_method: sentence
             top_k: 3
           policy: review_required

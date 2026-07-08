@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import yaml
 
 from models import WorkflowType
+from runtime_config import LLMProfileConfig, load_runtime_config
 from utils.observability import guardrail_span, set_span_attributes
 
 logger = logging.getLogger(__name__)
@@ -426,7 +427,7 @@ class WorkflowGuardrailService:
                     }
                 )
                 continue
-            validator = self._build_hub_validator(validator_config)
+            validator = self._build_hub_validator(validator_config, context)
             try:
                 guard = Guard()
                 guard.configure(allow_metrics_collection=False)
@@ -465,21 +466,21 @@ class WorkflowGuardrailService:
                 )
         return _PayloadEvaluation(findings=_dedupe_findings(findings), skipped_validators=skipped_validators)
 
-    def _build_hub_validator(self, validator_config: dict[str, Any]) -> Any:
-        try:
-            import guardrails.hub as hub
-        except Exception as exc:
-            raise GuardrailConfigurationError("guardrails.hub is required for workflow guardrails") from exc
+    def _build_hub_validator(self, validator_config: dict[str, Any], context: dict[str, Any] | None = None) -> Any:
         validator_id = str(validator_config.get("id") or validator_config.get("hub") or "")
         hub_uri = str(validator_config.get("hub") or validator_id)
         class_names = _class_names_for_validator(validator_config)
         if not class_names:
             raise GuardrailConfigurationError(f"Guardrails Hub validator class is not configured for '{hub_uri}'")
-        kwargs = self._validator_kwargs(validator_config)
+        kwargs = self._validator_kwargs(validator_config, context or {})
         cache_key = _validator_cache_key(validator_config, kwargs)
         cached = self._validator_cache.get(cache_key)
         if cached is not None:
             return cached
+        try:
+            import guardrails.hub as hub
+        except Exception as exc:
+            raise GuardrailConfigurationError("guardrails.hub is required for workflow guardrails") from exc
         klass = self._import_hub_validator(hub, hub_uri, class_names)
         try:
             validator = klass(**kwargs)
@@ -518,7 +519,7 @@ class WorkflowGuardrailService:
             f"Run: {install_hint}"
         )
 
-    def _validator_kwargs(self, validator_config: dict[str, Any]) -> dict[str, Any]:
+    def _validator_kwargs(self, validator_config: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
         defaults = self.config.get("defaults") if isinstance(self.config.get("defaults"), dict) else {}
         validator_id = str(validator_config.get("id") or "")
         kwargs = dict(validator_config.get("args") or {})
@@ -531,7 +532,10 @@ class WorkflowGuardrailService:
             kwargs.setdefault("regex", _negative_regex_from_terms(list(validator_config.get("forbidden_terms") or [])))
             kwargs.setdefault("match_type", "fullmatch")
         kwargs.setdefault("on_fail", str(validator_config.get("on_fail") or defaults.get("on_fail") or "noop"))
-        return _resolve_config_value(kwargs)
+        kwargs = _resolve_config_value(kwargs)
+        if "llm_callable" in kwargs:
+            kwargs["llm_callable"] = _resolve_guardrails_llm_callable(str(kwargs["llm_callable"]), context or {})
+        return kwargs
 
     def _metadata_for_validator(self, validator_config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if validator_config.get("id") == "provenance_llm":
@@ -890,6 +894,64 @@ def _negative_regex_from_terms(terms: list[Any]) -> str:
     if not escaped_terms:
         raise GuardrailConfigurationError("forbidden_terms must contain at least one non-empty term")
     return rf"(?is)^(?!.*(?:{'|'.join(escaped_terms)})).*$"
+
+
+def _resolve_guardrails_llm_callable(profile_name: str, context: dict[str, Any]) -> str:
+    runtime_context = _guardrails_runtime_context(context)
+    selected_profile = str(runtime_context.get("workflow_guardrails_model") or profile_name).strip()
+    profiles = runtime_context.get("llm_profiles") if isinstance(runtime_context.get("llm_profiles"), dict) else {}
+    if selected_profile not in profiles:
+        available = ", ".join(sorted(str(name) for name in profiles)) or "none"
+        raise GuardrailConfigurationError(
+            f"WORKFLOW_GUARDRAILS_MODEL references unknown LLM profile '{selected_profile}'. "
+            f"Available profiles: {available}."
+        )
+    profile = _guardrails_profile_from_mapping(selected_profile, profiles[selected_profile])
+    _configure_litellm_profile_env(selected_profile, profile)
+    model_name = profile.llm_model_name
+    if profile.llm_provider == "openrouter" and not model_name.startswith("openrouter/"):
+        return f"openrouter/{model_name}"
+    return model_name
+
+
+def _guardrails_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(context.get("llm_profiles"), dict) and context.get("llm_profiles"):
+        return context
+    try:
+        runtime_context = load_runtime_config().as_context()
+    except Exception as exc:
+        raise GuardrailConfigurationError("Unable to load LLM profiles for workflow guardrails") from exc
+    return {**runtime_context, **context}
+
+
+def _guardrails_profile_from_mapping(profile_name: str, value: Any) -> LLMProfileConfig:
+    try:
+        if isinstance(value, LLMProfileConfig):
+            return value
+        if isinstance(value, dict):
+            return LLMProfileConfig.model_validate(value)
+    except Exception as exc:
+        raise GuardrailConfigurationError(
+            f"WORKFLOW_GUARDRAILS_MODEL profile '{profile_name}' has invalid LLM profile configuration"
+        ) from exc
+    raise GuardrailConfigurationError(
+        f"WORKFLOW_GUARDRAILS_MODEL profile '{profile_name}' has invalid LLM profile configuration"
+    )
+
+
+def _configure_litellm_profile_env(profile_name: str, profile: LLMProfileConfig) -> None:
+    if not profile.llm_api_key_env:
+        return
+    api_key = os.getenv(profile.llm_api_key_env)
+    if not api_key:
+        raise GuardrailConfigurationError(
+            f"WORKFLOW_GUARDRAILS_MODEL profile '{profile_name}' references missing or empty environment variable "
+            f"'{profile.llm_api_key_env}'."
+        )
+    if profile.llm_provider == "openai":
+        os.environ["OPENAI_API_KEY"] = api_key
+    elif profile.llm_provider == "openrouter":
+        os.environ["OPENROUTER_API_KEY"] = api_key
 
 
 def _resolve_config_value(value: Any) -> Any:

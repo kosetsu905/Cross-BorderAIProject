@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -79,7 +80,11 @@ def patched_guardrails(failures: dict[str, str]) -> Iterator[type[FakeGuard]]:
     FakeGuard.calls = []
     FakeGuard.failures = failures
 
-    def build_validator(_: WorkflowGuardrailService, validator_config: dict[str, object]) -> dict[str, object]:
+    def build_validator(
+        _: WorkflowGuardrailService,
+        validator_config: dict[str, object],
+        context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         return {
             "hub": validator_config.get("hub"),
             "id": validator_config.get("id"),
@@ -216,6 +221,118 @@ def test_hub_validator_instances_are_cached() -> None:
 
     assert first is second
     importer.assert_called_once()
+
+
+def test_guardrails_model_profile_resolves_openai_llm_callable() -> None:
+    class FakePromptInjectionDetector:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    service = WorkflowGuardrailService()
+    config = {
+        "id": "prompt_injection",
+        "hub": "hub://sainatha/prompt_injection_detector",
+        "class_name": "PromptInjectionDetector",
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}", "threshold": 0.8},
+    }
+    context = {
+        "workflow_guardrails_model": "openai_gpt4o_mini",
+        "llm_profiles": {
+            "openai_gpt4o_mini": {
+                "llm_provider": "openai",
+                "llm_model_name": "gpt-4o-mini",
+                "llm_api_key_env": "OPENAI_API_KEY",
+            }
+        },
+    }
+    with (
+        patch.dict(os.environ, {"OPENAI_API_KEY": "openai-key"}, clear=True),
+        patch.object(service, "_import_hub_validator", return_value=FakePromptInjectionDetector),
+    ):
+        validator = service._build_hub_validator(config, context)
+        assert os.environ["OPENAI_API_KEY"] == "openai-key"
+
+    assert validator.kwargs["llm_callable"] == "gpt-4o-mini"
+
+
+def test_guardrails_model_profile_resolves_openrouter_llm_callable() -> None:
+    class FakePromptInjectionDetector:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    service = WorkflowGuardrailService()
+    config = {
+        "id": "prompt_injection",
+        "hub": "hub://sainatha/prompt_injection_detector",
+        "class_name": "PromptInjectionDetector",
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}", "threshold": 0.8},
+    }
+    context = {
+        "workflow_guardrails_model": "openrouter_qwen3_14b",
+        "llm_profiles": {
+            "openrouter_qwen3_14b": {
+                "llm_provider": "openrouter",
+                "llm_model_name": "qwen/qwen3-14b",
+                "llm_base_url": "https://openrouter.ai/api/v1",
+                "llm_api_key_env": "OPENROUTER_API_KEY",
+                "llm_disable_reasoning": True,
+            }
+        },
+    }
+    with (
+        patch.dict(os.environ, {"OPENROUTER_API_KEY": "openrouter-key"}, clear=True),
+        patch.object(service, "_import_hub_validator", return_value=FakePromptInjectionDetector),
+    ):
+        validator = service._build_hub_validator(config, context)
+        assert os.environ["OPENROUTER_API_KEY"] == "openrouter-key"
+
+    assert validator.kwargs["llm_callable"] == "openrouter/qwen/qwen3-14b"
+
+
+def test_guardrails_model_profile_missing_name_fails_fast() -> None:
+    service = WorkflowGuardrailService()
+    config = {
+        "id": "prompt_injection",
+        "hub": "hub://sainatha/prompt_injection_detector",
+        "class_name": "PromptInjectionDetector",
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}"},
+    }
+    context = {
+        "workflow_guardrails_model": "missing_profile",
+        "llm_profiles": {
+            "openai_gpt4o_mini": {
+                "llm_provider": "openai",
+                "llm_model_name": "gpt-4o-mini",
+            }
+        },
+    }
+
+    with pytest.raises(GuardrailConfigurationError, match="Unknown LLM profile|Available profiles"):
+        service._build_hub_validator(config, context)
+
+
+def test_guardrails_model_profile_missing_key_fails_fast() -> None:
+    service = WorkflowGuardrailService()
+    config = {
+        "id": "prompt_injection",
+        "hub": "hub://sainatha/prompt_injection_detector",
+        "class_name": "PromptInjectionDetector",
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}"},
+    }
+    context = {
+        "workflow_guardrails_model": "openrouter_qwen3_14b",
+        "llm_profiles": {
+            "openrouter_qwen3_14b": {
+                "llm_provider": "openrouter",
+                "llm_model_name": "qwen/qwen3-14b",
+                "llm_api_key_env": "OPENROUTER_API_KEY",
+            }
+        },
+    }
+
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(GuardrailConfigurationError, match="OPENROUTER_API_KEY"):
+            service._build_hub_validator(config, context)
 
 
 def test_support_output_guardrail_sets_review_required_for_provenance_failure_with_context() -> None:

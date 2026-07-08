@@ -36,6 +36,7 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_model_tiering_enabled",
     "workflow_worker_llm_profile",
     "workflow_reviewer_llm_profile",
+    "workflow_guardrails_model",
     "workflow_router_enabled",
     "workflow_router_llm_fallback_enabled",
     "workflow_router_confidence_threshold",
@@ -200,6 +201,7 @@ class RuntimeConfig:
     workflow_model_tiering_enabled: bool = True
     workflow_worker_llm_profile: str | None = None
     workflow_reviewer_llm_profile: str | None = None
+    workflow_guardrails_model: str = "openai_gpt4o_mini"
     workflow_router_enabled: bool = True
     workflow_router_llm_fallback_enabled: bool = True
     workflow_router_confidence_threshold: float = 0.75
@@ -461,6 +463,8 @@ def load_runtime_config() -> RuntimeConfig:
         if workflow_reviewer_llm_profile
         else None
     )
+    workflow_guardrails_model = os.getenv("WORKFLOW_GUARDRAILS_MODEL") or "openai_gpt4o_mini"
+    workflow_guardrails_model = _normalize_profile_name(workflow_guardrails_model)
     workflow_router_llm_profile = os.getenv("WORKFLOW_ROUTER_LLM_PROFILE") or None
     workflow_router_llm_profile = (
         _normalize_profile_name(workflow_router_llm_profile)
@@ -510,6 +514,7 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_model_tiering_enabled=workflow_model_tiering_enabled,
         workflow_worker_llm_profile=workflow_worker_llm_profile,
         workflow_reviewer_llm_profile=workflow_reviewer_llm_profile,
+        workflow_guardrails_model=workflow_guardrails_model,
         workflow_router_enabled=_bool_env("WORKFLOW_ROUTER_ENABLED", True),
         workflow_router_llm_fallback_enabled=_bool_env("WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED", True),
         workflow_router_confidence_threshold=_float_env_with_default(

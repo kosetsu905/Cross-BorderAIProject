@@ -108,6 +108,7 @@ class LLMConfigTests(unittest.TestCase):
             "OPENROUTER_API_KEY": "openrouter-key",
             "LLM_PROFILES_JSON": profiles_json,
             "SUPPORT_LLM_PROFILE": "openai_gpt4o_mini",
+            "WORKFLOW_GUARDRAILS_MODEL": "openrouter_gpt4o_mini",
         }
         with patch.dict(os.environ, env, clear=True):
             config = load_runtime_config()
@@ -115,6 +116,7 @@ class LLMConfigTests(unittest.TestCase):
 
         self.assertIn("openrouter_gpt4o_mini", config.llm_profiles)
         self.assertEqual(config.support_llm_profile, "openai_gpt4o_mini")
+        self.assertEqual(config.workflow_guardrails_model, "openrouter_gpt4o_mini")
         self.assertEqual(context["llm_profile"], "openai_gpt4o_mini")
         self.assertEqual(context["llm_provider"], "openai")
         self.assertEqual(context["llm_model_name"], "gpt-4o-mini")

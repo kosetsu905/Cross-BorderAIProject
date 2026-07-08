@@ -135,7 +135,7 @@ python -m pip install -r requirements-ml.txt
 
 The project expects a root-level `.env`.
 
-Do not overwrite an existing `.env` that already contains real keys. Use `.env.example` as the app template, and merge `.env.monitoring.example` only when enabling the local observability stack.
+Do not overwrite an existing `.env` that already contains real keys. Use `.env.example` as the single app and local observability template, and copy values selectively.
 
 Minimum local workflow config:
 
@@ -241,8 +241,7 @@ Use this rule of thumb:
 | File | Purpose |
 | --- | --- |
 | `.env` | Your real local runtime config. Do not commit it. |
-| `.env.example` | Full app config template. Copy values selectively. |
-| `.env.monitoring.example` | Extra local observability config. Merge selectively into `.env`. |
+| `.env.example` | Full app, Guardrails, and local observability config template. Copy values selectively. |
 
 If you already have a working `.env`, append missing variables instead of replacing the whole file.
 
@@ -274,10 +273,13 @@ OpenRouter reasoning/thinking models such as Qwen3 and DeepSeek R1 variants are 
 Named profiles let operators switch workflow models without editing code:
 
 ```env
-LLM_PROFILES_JSON={"openai_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"},"openrouter_gpt4o_mini":{"llm_provider":"openrouter","llm_model_name":"openai/gpt-4o-mini","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_API_KEY","llm_disable_reasoning":false}}
+LLM_PROFILES_JSON={"openai_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"},"openrouter_gpt4o_mini":{"llm_provider":"openrouter","llm_model_name":"openai/gpt-4o-mini","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_API_KEY","llm_disable_reasoning":false},"openrouter_qwen3_14b":{"llm_provider":"openrouter","llm_model_name":"qwen/qwen3-14b","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_API_KEY","llm_disable_reasoning":true}}
 SUPPORT_LLM_PROFILE=openai_gpt4o_mini
+WORKFLOW_GUARDRAILS_MODEL=openai_gpt4o_mini
 SUPPORT_QA_MODE=full_llm
 ```
+
+`WORKFLOW_GUARDRAILS_MODEL` selects the Guardrails evaluation profile from `LLM_PROFILES_JSON`. For example, set `WORKFLOW_GUARDRAILS_MODEL=openrouter_qwen3_14b` to run LLM-based Guardrails validators through that OpenRouter profile. Guardrails receives the LiteLLM model string only; profile `llm_disable_reasoning` is not passed into Hub validators.
 
 Two-tier routing is enabled by default but remains behavior-compatible until tier profiles are configured:
 
