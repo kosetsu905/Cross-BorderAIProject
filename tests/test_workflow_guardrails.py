@@ -24,6 +24,7 @@ from services.workflow_guardrails import (
     GuardrailSeverity,
     GuardrailStage,
     WorkflowGuardrailService,
+    _configure_prompt_injection_transport,
     apply_output_guardrail_result,
     guardrail_requires_override,
 )
@@ -90,10 +91,17 @@ def patched_guardrails(failures: dict[str, str]) -> Iterator[type[FakeGuard]]:
             "id": validator_config.get("id"),
         }
 
-    with patch("guardrails.Guard", FakeGuard, create=True), patch.object(
+    with patch.dict("sys.modules", {"guardrails": SimpleNamespace(Guard=FakeGuard)}), patch.object(
         WorkflowGuardrailService,
         "_build_hub_validator",
         build_validator,
+    ), patch.object(
+        WorkflowGuardrailService,
+        "_read_prompt_injection_cache",
+        return_value=None,
+    ), patch.object(
+        WorkflowGuardrailService,
+        "_write_prompt_injection_cache",
     ):
         yield FakeGuard
 
@@ -166,6 +174,73 @@ def test_regex_match_forbidden_terms_blocks_input() -> None:
     assert "forbidden_terms" in {str(call["validator"]) for call in guard.calls}
 
 
+def test_prompt_injection_receives_only_latest_support_message() -> None:
+    with patched_guardrails({}) as guard:
+        WorkflowGuardrailService().evaluate_input(
+            WorkflowType.SUPPORT,
+            {
+                "customer_email": "buyer@example.com",
+                "inquiry_text": "Please explain the return policy.",
+                "conversation_history": [
+                    {"direction": "inbound", "text": "Older private message."},
+                ],
+                "channel_message_id": "provider-message-id",
+            },
+        )
+
+    prompt_calls = [call for call in guard.calls if call["validator"] == "prompt_injection"]
+    assert len(prompt_calls) == 1
+    assert prompt_calls[0]["text"] == "Please explain the return policy."
+    assert "buyer@example.com" not in str(prompt_calls[0])
+    assert "Older private message" not in str(prompt_calls[0])
+
+
+def test_prompt_injection_redis_cache_avoids_second_validator_call() -> None:
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        def get(self, key: str) -> str | None:
+            return self.values.get(key)
+
+        def setex(self, key: str, _: int, value: str) -> None:
+            self.values[key] = value
+
+    def build_validator(
+        _: WorkflowGuardrailService,
+        validator_config: dict[str, object],
+        context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return {"hub": validator_config.get("hub"), "id": validator_config.get("id")}
+
+    FakeGuard.calls = []
+    FakeGuard.failures = {}
+    service = WorkflowGuardrailService()
+    service._redis_clients["redis://cache"] = FakeRedis()
+    context = {
+        "tool_cache_redis_url": "redis://cache",
+        "workflow_guardrails_prompt_injection_cache_ttl_seconds": 3600,
+    }
+    with patch.dict("sys.modules", {"guardrails": SimpleNamespace(Guard=FakeGuard)}), patch.object(
+        service,
+        "_build_hub_validator",
+        build_validator.__get__(service, WorkflowGuardrailService),
+    ):
+        service.evaluate_input(
+            WorkflowType.SUPPORT,
+            {"inquiry_text": "Where is my order?"},
+            context=context,
+        )
+        service.evaluate_input(
+            WorkflowType.SUPPORT,
+            {"inquiry_text": "Where   is my order?"},
+            context=context,
+        )
+
+    prompt_calls = [call for call in FakeGuard.calls if call["validator"] == "prompt_injection"]
+    assert len(prompt_calls) == 1
+
+
 def test_support_output_guardrail_skips_provenance_without_grounding_context() -> None:
     result = {
         "session_id": "conv-1",
@@ -233,10 +308,10 @@ def test_guardrails_model_profile_resolves_openai_llm_callable() -> None:
         "id": "prompt_injection",
         "hub": "hub://sainatha/prompt_injection_detector",
         "class_name": "PromptInjectionDetector",
-        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}", "threshold": 0.8},
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}", "threshold": 0.8},
     }
     context = {
-        "workflow_guardrails_model": "openai_gpt4o_mini",
+        "workflow_guardrails_prompt_injection_model": "openai_gpt4o_mini",
         "llm_profiles": {
             "openai_gpt4o_mini": {
                 "llm_provider": "openai",
@@ -255,6 +330,73 @@ def test_guardrails_model_profile_resolves_openai_llm_callable() -> None:
     assert validator.kwargs["llm_callable"] == "gpt-4o-mini"
 
 
+def test_prompt_injection_transport_passes_real_timeout_to_litellm() -> None:
+    validator = SimpleNamespace(llm_callable="gpt-4o-mini")
+    guardrails_context = SimpleNamespace(get_call_kwarg=lambda _name: None)
+    guardrails_stores = SimpleNamespace(context=guardrails_context)
+    guardrails_module = SimpleNamespace(stores=guardrails_stores)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="0"))]
+    )
+    with (
+        patch.dict(os.environ, {"OPENAI_API_KEY": "openai-key"}, clear=True),
+        patch.dict(
+            "sys.modules",
+            {
+                "guardrails": guardrails_module,
+                "guardrails.stores": guardrails_stores,
+                "guardrails.stores.context": guardrails_context,
+            },
+        ),
+        patch("litellm.completion", return_value=response) as completion,
+        patch("litellm.get_llm_provider", return_value=("gpt-4o-mini", "openai", None, None)),
+    ):
+        _configure_prompt_injection_transport(validator, 5.0)
+        assert validator.get_llm_response("validator prompt") == "0"
+
+    completion.assert_called_once_with(
+        model="gpt-4o-mini",
+        messages=[{"content": "validator prompt", "role": "user"}],
+        api_key="openai-key",
+        max_retries=0,
+        timeout=5.0,
+    )
+
+
+def test_prompt_injection_runtime_error_requires_review() -> None:
+    class RaisingGuard(FakeGuard):
+        def validate(self, text: str, metadata: dict[str, object] | None = None) -> FakeOutcome:
+            validator_id = str((self.validator or {}).get("id") or "")
+            if validator_id == "prompt_injection":
+                raise TimeoutError("provider timeout")
+            return super().validate(text, metadata)
+
+    service = WorkflowGuardrailService()
+
+    def build_validator(
+        _: WorkflowGuardrailService,
+        validator_config: dict[str, object],
+        context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return {"hub": validator_config.get("hub"), "id": validator_config.get("id")}
+
+    with (
+        patch.dict("sys.modules", {"guardrails": SimpleNamespace(Guard=RaisingGuard)}),
+        patch.object(WorkflowGuardrailService, "_build_hub_validator", build_validator),
+        patch.object(service, "_read_prompt_injection_cache", return_value=None),
+        patch.object(service, "_write_prompt_injection_cache"),
+    ):
+        decision = service.evaluate_input(
+            WorkflowType.SUPPORT,
+            {"inquiry_text": "Please explain the return policy."},
+        )
+
+    assert decision.action == GuardrailAction.REVIEW_REQUIRED
+    runtime_finding = next(item for item in decision.findings if item.validator == "prompt_injection")
+    assert runtime_finding.metadata["runtime_error"] is True
+    assert "provider timeout" not in str(runtime_finding.evidence_masked)
+
+
 def test_guardrails_model_profile_resolves_openrouter_llm_callable() -> None:
     class FakePromptInjectionDetector:
         def __init__(self, **kwargs: object) -> None:
@@ -265,10 +407,10 @@ def test_guardrails_model_profile_resolves_openrouter_llm_callable() -> None:
         "id": "prompt_injection",
         "hub": "hub://sainatha/prompt_injection_detector",
         "class_name": "PromptInjectionDetector",
-        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}", "threshold": 0.8},
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}", "threshold": 0.8},
     }
     context = {
-        "workflow_guardrails_model": "openrouter_qwen3_14b",
+        "workflow_guardrails_prompt_injection_model": "openrouter_qwen3_14b",
         "llm_profiles": {
             "openrouter_qwen3_14b": {
                 "llm_provider": "openrouter",
@@ -295,10 +437,10 @@ def test_guardrails_model_profile_missing_name_fails_fast() -> None:
         "id": "prompt_injection",
         "hub": "hub://sainatha/prompt_injection_detector",
         "class_name": "PromptInjectionDetector",
-        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}"},
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}"},
     }
     context = {
-        "workflow_guardrails_model": "missing_profile",
+        "workflow_guardrails_prompt_injection_model": "missing_profile",
         "llm_profiles": {
             "openai_gpt4o_mini": {
                 "llm_provider": "openai",
@@ -317,10 +459,10 @@ def test_guardrails_model_profile_missing_key_fails_fast() -> None:
         "id": "prompt_injection",
         "hub": "hub://sainatha/prompt_injection_detector",
         "class_name": "PromptInjectionDetector",
-        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}"},
+        "args": {"llm_callable": "${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}"},
     }
     context = {
-        "workflow_guardrails_model": "openrouter_qwen3_14b",
+        "workflow_guardrails_prompt_injection_model": "openrouter_qwen3_14b",
         "llm_profiles": {
             "openrouter_qwen3_14b": {
                 "llm_provider": "openrouter",
@@ -386,7 +528,10 @@ guards:
             encoding="utf-8",
         )
 
-        with patch("guardrails.Guard", FakeGuard, create=True):
+        with patch.dict(
+            "sys.modules",
+            {"guardrails": SimpleNamespace(Guard=FakeGuard, hub=SimpleNamespace())},
+        ):
             with pytest.raises(GuardrailConfigurationError, match="not installed|does not expose"):
                 WorkflowGuardrailService(config_path).evaluate_input(WorkflowType.SUPPORT, {"inquiry": "hello"})
     finally:

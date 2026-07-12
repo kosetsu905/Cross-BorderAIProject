@@ -30,7 +30,7 @@ guards:
           hub: hub://sainatha/prompt_injection_detector
           class_name: PromptInjectionDetector
           args:
-            llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
+            llm_callable: ${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}
             threshold: 0.8
           policy: block
           severity: high
@@ -106,7 +106,7 @@ guards:
           hub: hub://sainatha/prompt_injection_detector
           class_name: PromptInjectionDetector
           args:
-            llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
+            llm_callable: ${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}
             threshold: 0.8
           policy: block
           severity: high

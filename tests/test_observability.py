@@ -356,7 +356,50 @@ class ObservabilityTests(unittest.TestCase):
             )
 
         self.assertEqual(client, langfuse.return_value)
-        langfuse.assert_called_once_with(tracer_provider=provider)
+        langfuse.assert_called_once_with(
+            tracer_provider=provider,
+            should_export_span=observability._should_export_langfuse_span,
+        )
+
+    def test_shared_otel_provider_skips_duplicate_langfuse_observation(self) -> None:
+        observability._OTEL_PROVIDER = object()
+        client = FakeLangfuseClient()
+        with patch.dict(
+            os.environ,
+            {"LANGFUSE_PUBLIC_KEY": "public", "LANGFUSE_SECRET_KEY": "secret"},
+            clear=True,
+        ), patch("utils.observability._langfuse_client", return_value=client):
+            with observability._langfuse_observation(
+                "guardrail_input_evaluated",
+                {"observability_enabled": True, "otel_enabled": True},
+                {"workflow_type": "support"},
+            ):
+                pass
+
+        self.assertEqual(client.observations, [])
+
+    def test_langfuse_span_filter_keeps_only_high_value_scopes(self) -> None:
+        def readable_span(name: str, scope_name: str) -> object:
+            return SimpleNamespace(
+                name=name,
+                instrumentation_scope=SimpleNamespace(name=scope_name),
+            )
+
+        self.assertTrue(
+            observability._should_export_langfuse_span(
+                readable_span("workflow.support", "cross_border_ai.observability")
+            )
+        )
+        self.assertTrue(
+            observability._should_export_langfuse_span(
+                readable_span("completion", "openinference.instrumentation.litellm")
+            )
+        )
+        self.assertFalse(
+            observability._should_export_langfuse_span(
+                readable_span("SELECT crossborder_ai", "opentelemetry.instrumentation.sqlalchemy")
+            )
+        )
 
     def test_flush_observability_flushes_otel_provider(self) -> None:
         class FakeProvider:

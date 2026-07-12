@@ -37,6 +37,9 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_worker_llm_profile",
     "workflow_reviewer_llm_profile",
     "workflow_guardrails_model",
+    "workflow_guardrails_prompt_injection_model",
+    "workflow_guardrails_prompt_injection_timeout_seconds",
+    "workflow_guardrails_prompt_injection_cache_ttl_seconds",
     "workflow_router_enabled",
     "workflow_router_llm_fallback_enabled",
     "workflow_router_confidence_threshold",
@@ -203,6 +206,9 @@ class RuntimeConfig:
     workflow_worker_llm_profile: str | None = None
     workflow_reviewer_llm_profile: str | None = None
     workflow_guardrails_model: str = "openai_gpt4o_mini"
+    workflow_guardrails_prompt_injection_model: str = "openai_gpt4o_mini"
+    workflow_guardrails_prompt_injection_timeout_seconds: float = 5.0
+    workflow_guardrails_prompt_injection_cache_ttl_seconds: int = 86400
     workflow_router_enabled: bool = True
     workflow_router_llm_fallback_enabled: bool = True
     workflow_router_confidence_threshold: float = 0.75
@@ -467,6 +473,12 @@ def load_runtime_config() -> RuntimeConfig:
     )
     workflow_guardrails_model = os.getenv("WORKFLOW_GUARDRAILS_MODEL") or "openai_gpt4o_mini"
     workflow_guardrails_model = _normalize_profile_name(workflow_guardrails_model)
+    workflow_guardrails_prompt_injection_model = (
+        os.getenv("WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL") or "openai_gpt4o_mini"
+    )
+    workflow_guardrails_prompt_injection_model = _normalize_profile_name(
+        workflow_guardrails_prompt_injection_model
+    )
     workflow_router_llm_profile = os.getenv("WORKFLOW_ROUTER_LLM_PROFILE") or None
     workflow_router_llm_profile = (
         _normalize_profile_name(workflow_router_llm_profile)
@@ -517,6 +529,15 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_worker_llm_profile=workflow_worker_llm_profile,
         workflow_reviewer_llm_profile=workflow_reviewer_llm_profile,
         workflow_guardrails_model=workflow_guardrails_model,
+        workflow_guardrails_prompt_injection_model=workflow_guardrails_prompt_injection_model,
+        workflow_guardrails_prompt_injection_timeout_seconds=_float_env_with_default(
+            "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS",
+            5.0,
+        ),
+        workflow_guardrails_prompt_injection_cache_ttl_seconds=_int_env(
+            "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_CACHE_TTL_SECONDS",
+            86400,
+        ),
         workflow_router_enabled=_bool_env("WORKFLOW_ROUTER_ENABLED", True),
         workflow_router_llm_fallback_enabled=_bool_env("WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED", True),
         workflow_router_confidence_threshold=_float_env_with_default(

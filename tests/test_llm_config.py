@@ -109,6 +109,9 @@ class LLMConfigTests(unittest.TestCase):
             "LLM_PROFILES_JSON": profiles_json,
             "SUPPORT_LLM_PROFILE": "openai_gpt4o_mini",
             "WORKFLOW_GUARDRAILS_MODEL": "openrouter_gpt4o_mini",
+            "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL": "openai_gpt4o_mini",
+            "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS": "5",
+            "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_CACHE_TTL_SECONDS": "43200",
         }
         with patch.dict(os.environ, env, clear=True):
             config = load_runtime_config()
@@ -117,6 +120,9 @@ class LLMConfigTests(unittest.TestCase):
         self.assertIn("openrouter_gpt4o_mini", config.llm_profiles)
         self.assertEqual(config.support_llm_profile, "openai_gpt4o_mini")
         self.assertEqual(config.workflow_guardrails_model, "openrouter_gpt4o_mini")
+        self.assertEqual(config.workflow_guardrails_prompt_injection_model, "openai_gpt4o_mini")
+        self.assertEqual(config.workflow_guardrails_prompt_injection_timeout_seconds, 5.0)
+        self.assertEqual(config.workflow_guardrails_prompt_injection_cache_ttl_seconds, 43200)
         self.assertEqual(context["llm_profile"], "openai_gpt4o_mini")
         self.assertEqual(context["llm_provider"], "openai")
         self.assertEqual(context["llm_model_name"], "gpt-4o-mini")

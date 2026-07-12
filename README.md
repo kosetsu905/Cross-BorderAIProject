@@ -277,10 +277,15 @@ Named profiles let operators switch workflow models without editing code:
 LLM_PROFILES_JSON={"openai_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"},"openrouter_gpt4o_mini":{"llm_provider":"openrouter","llm_model_name":"openai/gpt-4o-mini","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_API_KEY","llm_disable_reasoning":false},"openrouter_qwen3_14b":{"llm_provider":"openrouter","llm_model_name":"qwen/qwen3-14b","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_API_KEY","llm_disable_reasoning":true}}
 SUPPORT_LLM_PROFILE=openai_gpt4o_mini
 WORKFLOW_GUARDRAILS_MODEL=openai_gpt4o_mini
+WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL=openai_gpt4o_mini
+WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS=5
+WORKFLOW_GUARDRAILS_PROMPT_INJECTION_CACHE_TTL_SECONDS=86400
 SUPPORT_QA_MODE=full_llm
 ```
 
 `WORKFLOW_GUARDRAILS_MODEL` selects the Guardrails evaluation profile from `LLM_PROFILES_JSON`. For example, set `WORKFLOW_GUARDRAILS_MODEL=openrouter_qwen3_14b` to run LLM-based Guardrails validators through that OpenRouter profile. Guardrails receives the LiteLLM model string only; profile `llm_disable_reasoning` is not passed into Hub validators.
+
+`WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL` independently selects the latency-sensitive prompt-injection evaluator. It receives only the latest customer text, uses the configured hard timeout with no LiteLLM retries, and caches the masked decision in Redis by normalized-text SHA-256. A timeout or provider failure requires human review and cannot auto-dispatch support replies.
 
 Two-tier routing is enabled by default but remains behavior-compatible until tier profiles are configured:
 
@@ -419,6 +424,8 @@ OTEL_CELERY_INSTRUMENTATION_ENABLED=false
 FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED=false
 OPENINFERENCE_CREWAI_ENABLED=false
 OPENINFERENCE_LITELLM_ENABLED=true
+OPENINFERENCE_HIDE_INPUTS=true
+OPENINFERENCE_HIDE_OUTPUTS=true
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://phoenix:6006/v1/traces
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 PHOENIX_PROJECT_NAME=cross-border-ai-dev
@@ -433,6 +440,8 @@ MLFLOW_TRACING_ENABLED=false
 ```
 
 Keep `OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false` unless you have reviewed privacy implications. Phoenix is business-first by default: project workflow, agent, stage, LiteLLM, and Guardrails spans remain enabled, while FastAPI route, HTTPX, Redis, SQLAlchemy, Celery, and CrewAI auto-instrumentation stay off unless explicitly enabled. Turn on individual low-level `*_INSTRUMENTATION_ENABLED` flags only while debugging infrastructure noise. Search Phoenix by `workflow_type=support`, `job_id`, `conversation_id`, `guardrail_action`, or `guardrail_severity` to find the useful spans quickly. The observability layer redacts secret-like keys, emails, phone numbers, and raw customer handles before attaching metadata.
+
+Keep the application workflow keys in a dedicated Langfuse project such as `cross-border-workflows`. Codex uses its separate user-level `~/.codex/langfuse.json`; both projects can share the same local Langfuse server at `http://localhost:3000`. The application exports one canonical OTel span for each project-defined observation and filters Langfuse exports to `workflow.*`, `stage.*`, `agent.*`, `guardrail_*`, and essential LiteLLM spans.
 
 Set `MLFLOW_TRACING_ENABLED=true` to mirror the same project-defined workflow, stage, agent, evaluator, and Guardrails spans into MLflow in realtime. The project does not enable MLflow autologging by default, so MLflow stays low-noise: search the `cross-border-ai` experiment by span names such as `workflow.support`, `stage.*`, or guardrail span metadata such as `job_id`, `workflow_type`, `guardrail_action`, and `guardrail_severity`.
 
@@ -474,6 +483,7 @@ LANGFUSE_REDIS_PASSWORD=replace_langfuse_redis_password
 LANGFUSE_S3_ACCESS_KEY_ID=minio
 LANGFUSE_S3_SECRET_ACCESS_KEY=replace_minio_password
 LANGFUSE_S3_BUCKET=langfuse
+LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://localhost:9090
 LANGFUSE_INIT_USER_EMAIL=admin@example.com
 LANGFUSE_INIT_USER_PASSWORD=replace_local_admin_password
 ```

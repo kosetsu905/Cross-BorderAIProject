@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from types import MethodType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,18 @@ DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "guardrails.yaml"
 MODEL_CACHE_DIR = BASE_DIR / ".cache"
 GUARDRAIL_REVIEW_FLAG = "GUARDRAIL_REVIEW_REQUIRED"
 GUARDRAIL_HIGH_RISK_FLAG = "GUARDRAIL_HIGH_RISK"
+PROMPT_INJECTION_VALIDATOR_ID = "prompt_injection"
+PROMPT_INJECTION_CACHE_PREFIX = "workflow-guardrails:prompt-injection:v1"
+PROMPT_INJECTION_MAX_CHARS = 8000
+SUPPORT_PROMPT_TEXT_KEYS: tuple[str, ...] = ("inquiry_text", "inquiry", "message", "text", "prompt")
+CONTENT_PROMPT_TEXT_KEYS: tuple[str, ...] = (
+    "subject",
+    "product_category",
+    "product_features",
+    "brand_voice",
+    "brand_name",
+    "primary_keywords",
+)
 
 SECRET_REDACTION_RE_LIST: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
@@ -138,6 +151,13 @@ class GuardrailDecision(BaseModel):
 class _PayloadEvaluation:
     findings: list[GuardrailFinding]
     skipped_validators: list[dict[str, Any]]
+
+
+class _CachedValidationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    validation_passed: bool
+    failure_reasons: list[str] = Field(default_factory=list)
 
 
 def _json_safe(value: Any) -> Any:
@@ -254,6 +274,7 @@ class WorkflowGuardrailService:
         self.config = self._load_config(self.config_path)
         self._embed_model: Any | None = None
         self._validator_cache: dict[str, Any] = {}
+        self._redis_clients: dict[str, Any] = {}
         self._validate_config()
 
     def evaluate_input(
@@ -392,15 +413,20 @@ class WorkflowGuardrailService:
     ) -> _PayloadEvaluation:
         if self._mode() == "off":
             return _PayloadEvaluation(findings=[], skipped_validators=[])
-        text = _payload_to_text(payload)
         validators = self._validators_for(workflow_type, stage, action_type)
-        return self._guardrails_ai_findings(workflow_type, stage, text, validators, context or {})
+        return self._guardrails_ai_findings(
+            workflow_type,
+            stage,
+            payload,
+            validators,
+            context or {},
+        )
 
     def _guardrails_ai_findings(
         self,
         workflow_type: str,
         stage: GuardrailStage,
-        text: str,
+        payload: Any,
         validators: list[dict[str, Any]],
         context: dict[str, Any],
     ) -> _PayloadEvaluation:
@@ -411,9 +437,11 @@ class WorkflowGuardrailService:
             from guardrails import Guard
         except Exception as exc:
             raise GuardrailConfigurationError("guardrails-ai is required for workflow guardrails") from exc
+        _disable_guardrails_raw_tracing()
 
         findings: list[GuardrailFinding] = []
         skipped_validators: list[dict[str, Any]] = []
+        default_text = _payload_to_text(payload)
         for validator_config in guardrails_validators:
             validator_id = str(validator_config.get("id") or validator_config.get("hub") or "guardrails_ai")
             skip_reason = self._skip_reason(validator_config, context)
@@ -427,12 +455,41 @@ class WorkflowGuardrailService:
                     }
                 )
                 continue
+            validation_text = self._validation_text(
+                workflow_type,
+                validator_id,
+                payload,
+                default_text,
+            )
+            cache_key = None
+            if validator_id == PROMPT_INJECTION_VALIDATOR_ID:
+                cache_key = self._prompt_injection_cache_key(validation_text, validator_config, context)
+                cached = self._read_prompt_injection_cache(cache_key, context)
+                if cached is not None:
+                    if not cached.validation_passed:
+                        failure_reason = "\n".join(cached.failure_reasons) or "Guardrails validation failed."
+                        findings.append(
+                            self._finding(
+                                workflow_type,
+                                stage,
+                                validator_config,
+                                validator_id,
+                                failure_reason,
+                                failure_reason,
+                                metadata={
+                                    "cache_hit": True,
+                                    "hub": validator_config.get("hub"),
+                                    "source": "guardrails_ai",
+                                },
+                            )
+                        )
+                    continue
             validator = self._build_hub_validator(validator_config, context)
             try:
                 guard = Guard()
                 guard.configure(allow_metrics_collection=False)
                 outcome = guard.use(validator).validate(
-                    text,
+                    validation_text,
                     metadata=self._metadata_for_validator(validator_config, context),
                 )
             except Exception as exc:
@@ -443,13 +500,27 @@ class WorkflowGuardrailService:
                         validator_config,
                         validator_id,
                         f"Guardrails validator failed: {type(exc).__name__}",
-                        str(exc),
-                        metadata={"runtime_error": True},
+                        type(exc).__name__,
+                        metadata={
+                            "runtime_error": True,
+                            "runtime_error_type": type(exc).__name__,
+                        },
                     )
                 )
                 continue
-            if not bool(getattr(outcome, "validation_passed", False)):
-                failure_reason = "\n".join(_validation_failure_reasons(outcome))
+            validation_passed = bool(getattr(outcome, "validation_passed", False))
+            failure_reasons = [] if validation_passed else _validation_failure_reasons(outcome)
+            if cache_key:
+                self._write_prompt_injection_cache(
+                    cache_key,
+                    _CachedValidationResult(
+                        validation_passed=validation_passed,
+                        failure_reasons=failure_reasons,
+                    ),
+                    context,
+                )
+            if not validation_passed:
+                failure_reason = "\n".join(failure_reasons)
                 findings.append(
                     self._finding(
                         workflow_type,
@@ -488,8 +559,104 @@ class WorkflowGuardrailService:
             raise GuardrailConfigurationError(
                 f"Guardrails Hub validator '{hub_uri}' could not be constructed with configured args"
             ) from exc
+        if validator_id == PROMPT_INJECTION_VALIDATOR_ID:
+            _configure_prompt_injection_transport(
+                validator,
+                _prompt_injection_timeout_seconds(context or {}),
+            )
         self._validator_cache[cache_key] = validator
         return validator
+
+    def _validation_text(
+        self,
+        workflow_type: str,
+        validator_id: str,
+        payload: Any,
+        default_text: str,
+    ) -> str:
+        if validator_id != PROMPT_INJECTION_VALIDATOR_ID:
+            return default_text
+        return _prompt_injection_text(workflow_type, payload)
+
+    def _prompt_injection_cache_key(
+        self,
+        text: str,
+        validator_config: dict[str, Any],
+        context: dict[str, Any],
+    ) -> str:
+        normalized = _normalize_prompt_injection_text(text)
+        model = str(
+            context.get("workflow_guardrails_prompt_injection_model")
+            or os.getenv("WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL")
+            or "openai_gpt4o_mini"
+        )
+        threshold = str((validator_config.get("args") or {}).get("threshold", "0.8"))
+        digest = hashlib.sha256(
+            f"{model}\n{threshold}\n{normalized}".encode("utf-8", errors="ignore")
+        ).hexdigest()
+        return f"{PROMPT_INJECTION_CACHE_PREFIX}:{digest}"
+
+    def _read_prompt_injection_cache(
+        self,
+        cache_key: str,
+        context: dict[str, Any],
+    ) -> _CachedValidationResult | None:
+        client = self._prompt_injection_redis_client(context)
+        if client is None:
+            return None
+        try:
+            raw = client.get(cache_key)
+            if not raw:
+                return None
+            return _CachedValidationResult.model_validate_json(raw)
+        except Exception:
+            logger.debug("Prompt-injection cache read failed", exc_info=True)
+            return None
+
+    def _write_prompt_injection_cache(
+        self,
+        cache_key: str,
+        result: _CachedValidationResult,
+        context: dict[str, Any],
+    ) -> None:
+        client = self._prompt_injection_redis_client(context)
+        if client is None:
+            return
+        ttl_seconds = _prompt_injection_cache_ttl_seconds(context)
+        if ttl_seconds <= 0:
+            return
+        try:
+            client.setex(cache_key, ttl_seconds, result.model_dump_json())
+        except Exception:
+            logger.debug("Prompt-injection cache write failed", exc_info=True)
+
+    def _prompt_injection_redis_client(self, context: dict[str, Any]) -> Any | None:
+        redis_url = str(
+            context.get("tool_cache_redis_url")
+            or os.getenv("TOOL_CACHE_REDIS_URL")
+            or os.getenv("CELERY_BROKER_URL")
+            or os.getenv("REDIS_URL")
+            or ""
+        ).strip()
+        if not redis_url:
+            return None
+        cached = self._redis_clients.get(redis_url)
+        if cached is not None:
+            return cached
+        try:
+            from redis import Redis
+
+            client = Redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.5,
+                socket_timeout=0.5,
+            )
+        except Exception:
+            logger.debug("Prompt-injection Redis cache is unavailable", exc_info=True)
+            return None
+        self._redis_clients[redis_url] = client
+        return client
 
     def _import_hub_validator(self, hub: Any, validator_id: str, class_names: tuple[str, ...]) -> Any:
         for name in class_names:
@@ -534,7 +701,16 @@ class WorkflowGuardrailService:
         kwargs.setdefault("on_fail", str(validator_config.get("on_fail") or defaults.get("on_fail") or "noop"))
         kwargs = _resolve_config_value(kwargs)
         if "llm_callable" in kwargs:
-            kwargs["llm_callable"] = _resolve_guardrails_llm_callable(str(kwargs["llm_callable"]), context or {})
+            context_key = (
+                "workflow_guardrails_prompt_injection_model"
+                if validator_id == PROMPT_INJECTION_VALIDATOR_ID
+                else "workflow_guardrails_model"
+            )
+            kwargs["llm_callable"] = _resolve_guardrails_llm_callable(
+                str(kwargs["llm_callable"]),
+                context or {},
+                context_key=context_key,
+            )
         return kwargs
 
     def _metadata_for_validator(self, validator_config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -591,7 +767,10 @@ class WorkflowGuardrailService:
         policy_by_id = {str(item.get("id") or item.get("builtin") or ""): item for item in validators}
         for finding in findings:
             validator_config = policy_by_id.get(finding.validator)
-            configured = _action_from_text(str((validator_config or {}).get("policy") or "monitor"))
+            if finding.metadata.get("runtime_error"):
+                configured = GuardrailAction.REVIEW_REQUIRED
+            else:
+                configured = _action_from_text(str((validator_config or {}).get("policy") or "monitor"))
             action = _max_action(action, configured)
         return action
 
@@ -896,14 +1075,127 @@ def _negative_regex_from_terms(terms: list[Any]) -> str:
     return rf"(?is)^(?!.*(?:{'|'.join(escaped_terms)})).*$"
 
 
-def _resolve_guardrails_llm_callable(profile_name: str, context: dict[str, Any]) -> str:
+def _prompt_injection_text(workflow_type: str, payload: Any) -> str:
+    if isinstance(payload, str):
+        return _normalize_prompt_injection_text(payload)[:PROMPT_INJECTION_MAX_CHARS]
+    if not isinstance(payload, dict):
+        return ""
+
+    values: list[str] = []
+    if workflow_type == WorkflowType.SUPPORT.value:
+        for key in SUPPORT_PROMPT_TEXT_KEYS:
+            value = payload.get(key)
+            if value not in (None, ""):
+                values.append(str(value))
+                break
+        if not values:
+            history = payload.get("conversation_history")
+            if isinstance(history, list):
+                for item in reversed(history):
+                    if not isinstance(item, dict) or str(item.get("direction") or "").lower() != "inbound":
+                        continue
+                    value = item.get("text")
+                    if value not in (None, ""):
+                        values.append(str(value))
+                        break
+    elif workflow_type == WorkflowType.CONTENT.value:
+        for key in CONTENT_PROMPT_TEXT_KEYS:
+            value = payload.get(key)
+            if value in (None, "", []):
+                continue
+            if isinstance(value, list):
+                values.extend(str(item) for item in value if str(item).strip())
+            else:
+                values.append(str(value))
+    else:
+        for key in ("prompt", "message", "text", "subject"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                values.append(str(value))
+
+    return _normalize_prompt_injection_text("\n".join(values))[:PROMPT_INJECTION_MAX_CHARS]
+
+
+def _normalize_prompt_injection_text(text: str) -> str:
+    return " ".join(str(text).split())
+
+
+def _prompt_injection_timeout_seconds(context: dict[str, Any]) -> float:
+    value = context.get("workflow_guardrails_prompt_injection_timeout_seconds")
+    if value in (None, ""):
+        value = os.getenv("WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS", "5")
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _prompt_injection_cache_ttl_seconds(context: dict[str, Any]) -> int:
+    value = context.get("workflow_guardrails_prompt_injection_cache_ttl_seconds")
+    if value in (None, ""):
+        value = os.getenv("WORKFLOW_GUARDRAILS_PROMPT_INJECTION_CACHE_TTL_SECONDS", "86400")
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 86400
+
+
+def _configure_prompt_injection_transport(validator: Any, timeout_seconds: float) -> None:
+    if getattr(validator, "_workflow_timeout_seconds", None) == timeout_seconds:
+        return
+
+    def get_llm_response(instance: Any, prompt: str) -> str:
+        from guardrails.stores.context import get_call_kwarg
+        from litellm import completion, get_llm_provider
+
+        kwargs: dict[str, Any] = {
+            "max_retries": 0,
+            "timeout": timeout_seconds,
+        }
+        _model, provider, *_rest = get_llm_provider(instance.llm_callable)
+        if provider == "openai":
+            kwargs["api_key"] = get_call_kwarg("api_key") or os.environ.get("OPENAI_API_KEY")
+        try:
+            response = completion(
+                model=instance.llm_callable,
+                messages=[{"content": prompt, "role": "user"}],
+                **kwargs,
+            )
+            content = response.choices[0].message.content
+            if content is None:
+                raise RuntimeError("Prompt injection evaluator returned an empty response")
+            return str(content).strip(" .").lower().strip()
+        except Exception as exc:
+            raise RuntimeError("Prompt injection evaluator request failed") from exc
+
+    validator.get_llm_response = MethodType(get_llm_response, validator)
+    validator._workflow_timeout_seconds = timeout_seconds
+
+
+def _disable_guardrails_raw_tracing() -> None:
+    """Keep project-level masked spans canonical and suppress validator payload spans."""
+    try:
+        from guardrails.settings import settings
+
+        settings.disable_tracing = True
+    except (ImportError, ModuleNotFoundError):
+        logger.debug("Guardrails tracing settings are unavailable")
+
+
+def _resolve_guardrails_llm_callable(
+    profile_name: str,
+    context: dict[str, Any],
+    *,
+    context_key: str = "workflow_guardrails_model",
+) -> str:
     runtime_context = _guardrails_runtime_context(context)
-    selected_profile = str(runtime_context.get("workflow_guardrails_model") or profile_name).strip()
+    selected_profile = str(runtime_context.get(context_key) or profile_name).strip()
     profiles = runtime_context.get("llm_profiles") if isinstance(runtime_context.get("llm_profiles"), dict) else {}
     if selected_profile not in profiles:
         available = ", ".join(sorted(str(name) for name in profiles)) or "none"
+        env_name = context_key.upper()
         raise GuardrailConfigurationError(
-            f"WORKFLOW_GUARDRAILS_MODEL references unknown LLM profile '{selected_profile}'. "
+            f"{env_name} references unknown LLM profile '{selected_profile}'. "
             f"Available profiles: {available}."
         )
     profile = _guardrails_profile_from_mapping(selected_profile, profiles[selected_profile])

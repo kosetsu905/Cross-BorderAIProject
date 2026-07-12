@@ -28,6 +28,13 @@ PII_KEY_RE = re.compile(
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d\s().-]{7,}\d)(?!\w)")
 MAX_ATTRIBUTE_LENGTH = 2048
+LANGFUSE_ALLOWED_SPAN_PREFIXES: tuple[str, ...] = (
+    "agent.",
+    "evaluator.",
+    "guardrail_",
+    "stage.",
+    "workflow.",
+)
 
 _INIT_LOCK = Lock()
 _INITIALIZED_SERVICES: set[str] = set()
@@ -775,6 +782,7 @@ def _observation_span(
         return
 
     tracer = _get_tracer() if _otel_enabled(config_context) else None
+    root_span = _current_span() is None
     span_cm = (
         tracer.start_as_current_span(name, attributes=_safe_span_attributes(attributes or {}))
         if tracer is not None
@@ -782,6 +790,10 @@ def _observation_span(
     )
     start_time = time.perf_counter()
     with ExitStack() as stack:
+        if root_span:
+            stack.enter_context(
+                _langfuse_trace_attributes(name, config_context, attributes or {})
+            )
         span = stack.enter_context(span_cm)
         stack.enter_context(_langfuse_observation(name, config_context, attributes or {}, observation_type))
         stack.enter_context(_mlflow_observation(name, config_context, attributes or {}, observation_type))
@@ -815,6 +827,9 @@ def _langfuse_observation(
     if not _langfuse_enabled(config_context):
         yield
         return
+    if _langfuse_uses_shared_otel_provider(config_context):
+        yield
+        return
     client = _langfuse_client(config_context)
     if client is None or not hasattr(client, "start_as_current_observation"):
         yield
@@ -841,6 +856,8 @@ def _start_langfuse_observation(
     observation_type: str = "span",
 ) -> tuple[Any | None, Any | None]:
     if not _langfuse_enabled(config_context):
+        return None, None
+    if _langfuse_uses_shared_otel_provider(config_context):
         return None, None
     client = _langfuse_client(config_context)
     if client is None or not hasattr(client, "start_as_current_observation"):
@@ -1090,6 +1107,30 @@ def _init_langfuse(config_context: dict[str, Any] | None) -> None:
     _langfuse_client(config_context)
 
 
+@contextmanager
+def _langfuse_trace_attributes(
+    name: str,
+    config_context: dict[str, Any] | None,
+    attributes: dict[str, Any],
+) -> Iterator[None]:
+    if not _langfuse_uses_shared_otel_provider(config_context):
+        yield
+        return
+    try:
+        from langfuse import propagate_attributes
+
+        context = propagate_attributes(
+            trace_name=name,
+            metadata=_json_safe(redact_observability_payload(attributes, capture_raw=False)),
+        )
+    except Exception:
+        logger.debug("Failed to prepare Langfuse trace attributes", exc_info=True)
+        yield
+        return
+    with context:
+        yield
+
+
 def _init_mlflow(config_context: dict[str, Any] | None) -> None:
     global _MLFLOW_CONFIGURED, _MLFLOW_INIT_FAILED
 
@@ -1160,7 +1201,10 @@ def _langfuse_client(config_context: dict[str, Any] | None = None) -> Any | None
         if _OTEL_PROVIDER is not None and _otel_enabled(config_context):
             from langfuse import Langfuse
 
-            _LANGFUSE_CLIENT = Langfuse(tracer_provider=_OTEL_PROVIDER)
+            _LANGFUSE_CLIENT = Langfuse(
+                tracer_provider=_OTEL_PROVIDER,
+                should_export_span=_should_export_langfuse_span,
+            )
             return _LANGFUSE_CLIENT
 
         from langfuse import get_client
@@ -1190,6 +1234,19 @@ def _mlflow_module(config_context: dict[str, Any] | None = None) -> Any | None:
     except Exception as exc:
         logger.warning("MLflow import failed: %s", exc)
     return None
+
+
+def _langfuse_uses_shared_otel_provider(config_context: dict[str, Any] | None) -> bool:
+    return _OTEL_PROVIDER is not None and _otel_enabled(config_context)
+
+
+def _should_export_langfuse_span(span: Any) -> bool:
+    name = str(getattr(span, "name", "") or "")
+    scope = getattr(span, "instrumentation_scope", None)
+    scope_name = str(getattr(scope, "name", "") or "")
+    if scope_name == "cross_border_ai.observability":
+        return name.startswith(LANGFUSE_ALLOWED_SPAN_PREFIXES)
+    return scope_name == "openinference.instrumentation.litellm"
 
 
 def _update_current_mlflow_span(
