@@ -7,6 +7,7 @@ import utils.observability as observability
 from utils.observability import (
     NoOpSpan,
     end_span,
+    guardrail_span,
     record_workflow_result_observability,
     redact_observability_payload,
     start_agent_span,
@@ -74,6 +75,88 @@ class FakeLangfuseClient:
         self.scores.append(dict(kwargs))
 
 
+class FakeMlflowSpan:
+    def __init__(self, name: str, span_type: str | None, attributes: dict[str, object] | None) -> None:
+        self.name = name
+        self.span_type = span_type
+        self.attributes = dict(attributes or {})
+        self.events: list[dict[str, object]] = []
+        self.exceptions: list[BaseException] = []
+        self.ended = False
+
+    def set_attribute(self, key: str, value: object) -> None:
+        self.attributes[key] = value
+
+    def set_attributes(self, attributes: dict[str, object]) -> None:
+        self.attributes.update(attributes)
+
+    def add_event(self, name: str, attributes: dict[str, object] | None = None) -> None:
+        self.events.append({"name": name, "attributes": attributes or {}})
+
+    def record_exception(self, exception: BaseException) -> None:
+        self.exceptions.append(exception)
+
+    def end(self) -> None:
+        self.ended = True
+
+
+class FakeMlflowContext:
+    def __init__(self, module: "FakeMlflowModule", span: FakeMlflowSpan) -> None:
+        self.module = module
+        self.span = span
+        self.exited = False
+        self.exit_exception_type: object | None = None
+
+    def __enter__(self) -> FakeMlflowSpan:
+        self.module.active_spans.append(self.span)
+        return self.span
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.exited = True
+        self.exit_exception_type = exc_type
+        if self.module.active_spans and self.module.active_spans[-1] is self.span:
+            self.module.active_spans.pop()
+        self.span.end()
+
+
+class FakeMlflowModule:
+    def __init__(self) -> None:
+        self.tracking_uri: str | None = None
+        self.experiment_name: str | None = None
+        self.contexts: list[FakeMlflowContext] = []
+        self.active_spans: list[FakeMlflowSpan] = []
+        self.flushed = False
+
+    def set_tracking_uri(self, tracking_uri: str) -> None:
+        self.tracking_uri = tracking_uri
+
+    def set_experiment(
+        self,
+        experiment_name: str | None = None,
+        experiment_id: str | None = None,
+        trace_location: object | None = None,
+    ) -> object:
+        self.experiment_name = experiment_name
+        return SimpleNamespace(name=experiment_name, experiment_id=experiment_id, trace_location=trace_location)
+
+    def start_span(
+        self,
+        name: str = "span",
+        span_type: str | None = "UNKNOWN",
+        attributes: dict[str, object] | None = None,
+        **_: object,
+    ) -> FakeMlflowContext:
+        context = FakeMlflowContext(self, FakeMlflowSpan(name, span_type, attributes))
+        self.contexts.append(context)
+        return context
+
+    def get_current_active_span(self) -> FakeMlflowSpan | None:
+        return self.active_spans[-1] if self.active_spans else None
+
+    def flush_trace_async_logging(self, terminate: bool = False) -> None:
+        self.flushed = not terminate
+
+
 class ObservabilityTests(unittest.TestCase):
     def setUp(self) -> None:
         observability._INITIALIZED_SERVICES.clear()
@@ -83,6 +166,15 @@ class ObservabilityTests(unittest.TestCase):
         observability._INSTRUMENTED_GLOBALS = False
         observability._OPENINFERENCE_CONFIGURED = False
         observability._LANGFUSE_CLIENT = None
+        observability._MLFLOW_CONFIGURED = False
+        observability._MLFLOW_INIT_FAILED = False
+        for env_name in (
+            "MLFLOW_EXPERIMENT_NAME",
+            "MLFLOW_HTTP_REQUEST_TIMEOUT",
+            "MLFLOW_TRACKING_URI",
+            "MLFLOW_TRACING_ENABLED",
+        ):
+            os.environ.pop(env_name, None)
 
     def test_workflow_span_is_noop_when_disabled(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -280,6 +372,144 @@ class ObservabilityTests(unittest.TestCase):
         observability.flush_observability()
 
         self.assertTrue(provider.flushed)
+
+    def test_init_observability_initializes_mlflow_when_enabled(self) -> None:
+        fake_mlflow = FakeMlflowModule()
+        with patch.dict("sys.modules", {"mlflow": fake_mlflow}):
+            observability.init_observability(
+                "cross-border-fastapi",
+                config_context={
+                    "observability_enabled": True,
+                    "otel_enabled": False,
+                    "mlflow_tracing_enabled": True,
+                    "mlflow_tracking_uri": "http://mlflow:5000",
+                    "mlflow_experiment_name": "cross-border-ai",
+                },
+            )
+
+        self.assertTrue(observability._MLFLOW_CONFIGURED)
+        self.assertEqual(fake_mlflow.tracking_uri, "http://mlflow:5000")
+        self.assertEqual(fake_mlflow.experiment_name, "cross-border-ai")
+
+    def test_workflow_span_creates_mlflow_span_with_safe_attributes(self) -> None:
+        fake_mlflow = FakeMlflowModule()
+        config_context = {
+            "observability_enabled": True,
+            "otel_enabled": False,
+            "mlflow_tracing_enabled": True,
+        }
+
+        with patch("utils.observability._mlflow_module", return_value=fake_mlflow):
+            with workflow_span(
+                "support",
+                job_id="job-1",
+                backend="celery",
+                config_context=config_context,
+                attributes={
+                    "customer_email": "buyer@example.com",
+                    "api_key": "sk-secret",
+                },
+            ):
+                observability.set_span_attributes({"cost_usd": 0.12}, config_context=config_context)
+
+        span = fake_mlflow.contexts[0].span
+        self.assertEqual(span.name, "workflow.support")
+        self.assertEqual(span.span_type, "CHAIN")
+        self.assertEqual(span.attributes["job_id"], "job-1")
+        self.assertEqual(span.attributes["customer_email"], "[REDACTED_PII]")
+        self.assertEqual(span.attributes["api_key"], "[REDACTED_SECRET]")
+        self.assertEqual(span.attributes["cost_usd"], 0.12)
+        self.assertIn("duration_ms", span.attributes)
+        self.assertTrue(span.ended)
+
+    @patch("utils.observability._get_tracer")
+    def test_start_agent_span_creates_mlflow_agent_when_enabled(self, get_tracer) -> None:
+        fake_mlflow = FakeMlflowModule()
+        with patch("utils.observability._mlflow_module", return_value=fake_mlflow):
+            span = start_agent_span(
+                job_id="job-1",
+                workflow_type="support",
+                task_name="pre_sales_consultation",
+                agent_role="E-commerce Pre-Sales Product Consultant",
+                backend="celery",
+                config_context={
+                    "observability_enabled": True,
+                    "otel_enabled": False,
+                    "mlflow_tracing_enabled": True,
+                },
+            )
+            span.add_event("agent_completed", {"customer_email": "buyer@example.com"})
+            end_span(span, attributes={"duration_ms": 123})
+
+        get_tracer.assert_not_called()
+        mlflow_span = fake_mlflow.contexts[0].span
+        self.assertEqual(mlflow_span.name, "agent.pre_sales_consultation")
+        self.assertEqual(mlflow_span.span_type, "AGENT")
+        self.assertEqual(mlflow_span.attributes["duration_ms"], 123)
+        self.assertEqual(mlflow_span.events[0]["attributes"]["customer_email"], "[REDACTED_PII]")
+        self.assertTrue(mlflow_span.ended)
+
+    def test_guardrail_span_writes_redacted_mlflow_metadata(self) -> None:
+        fake_mlflow = FakeMlflowModule()
+        config_context = {
+            "observability_enabled": True,
+            "otel_enabled": False,
+            "mlflow_tracing_enabled": True,
+        }
+
+        with patch("utils.observability._mlflow_module", return_value=fake_mlflow):
+            with guardrail_span(
+                "guardrail_input_evaluated",
+                workflow_type="support",
+                stage="input",
+                job_id="job-1",
+                conversation_id="buyer@example.com",
+                config_context=config_context,
+                attributes={
+                    "guardrail_action": "review_required",
+                    "guardrail_severity": "high",
+                },
+            ):
+                pass
+
+        serialized_attributes = str(fake_mlflow.contexts[0].span.attributes)
+        self.assertIn("guardrail_action", serialized_attributes)
+        self.assertIn("[REDACTED_EMAIL]", serialized_attributes)
+        self.assertNotIn("buyer@example.com", serialized_attributes)
+
+    def test_flush_observability_flushes_mlflow_when_configured(self) -> None:
+        fake_mlflow = FakeMlflowModule()
+        observability._MLFLOW_CONFIGURED = True
+
+        with patch.dict("sys.modules", {"mlflow": fake_mlflow}):
+            observability.flush_observability()
+
+        self.assertTrue(fake_mlflow.flushed)
+
+    def test_mlflow_initialization_failure_does_not_raise(self) -> None:
+        class FailingMlflow(FakeMlflowModule):
+            def set_experiment(
+                self,
+                experiment_name: str | None = None,
+                experiment_id: str | None = None,
+                trace_location: object | None = None,
+            ) -> object:
+                raise RuntimeError("mlflow unavailable")
+
+        with patch.dict("sys.modules", {"mlflow": FailingMlflow()}):
+            observability.init_observability(
+                "cross-border-fastapi",
+                config_context={
+                    "observability_enabled": True,
+                    "otel_enabled": False,
+                    "mlflow_tracing_enabled": True,
+                    "mlflow_tracking_uri": "http://mlflow:5000",
+                    "mlflow_experiment_name": "cross-border-ai",
+                },
+            )
+
+        self.assertFalse(observability._MLFLOW_CONFIGURED)
+        self.assertTrue(observability._MLFLOW_INIT_FAILED)
 
     @patch("utils.observability._get_tracer")
     def test_start_agent_span_creates_langfuse_agent_when_otel_disabled(self, get_tracer) -> None:

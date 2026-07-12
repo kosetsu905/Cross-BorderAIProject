@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from contextlib import ExitStack, contextmanager
 from importlib.util import find_spec
@@ -36,6 +37,8 @@ _OPENINFERENCE_CONFIGURED = False
 _OTEL_CONFIGURED = False
 _OTEL_PROVIDER: Any | None = None
 _LANGFUSE_CLIENT: Any | None = None
+_MLFLOW_CONFIGURED = False
+_MLFLOW_INIT_FAILED = False
 
 
 class NoOpSpan:
@@ -63,11 +66,15 @@ class ManagedObservationSpan:
         otel_span: Any | None = None,
         langfuse_context: Any | None = None,
         langfuse_observation: Any | None = None,
+        mlflow_context: Any | None = None,
+        mlflow_span: Any | None = None,
         attributes: dict[str, Any] | None = None,
     ) -> None:
         self._otel_span = otel_span
         self._langfuse_context = langfuse_context
         self._langfuse_observation = langfuse_observation
+        self._mlflow_context = mlflow_context
+        self._mlflow_span = mlflow_span
         self._attributes = dict(attributes or {})
         self._ended = False
 
@@ -77,11 +84,22 @@ class ManagedObservationSpan:
         self._attributes[str(key)] = value
         if self._otel_span is not None:
             self._otel_span.set_attribute(key, value)
+        if self._mlflow_span is not None:
+            try:
+                for safe_key, safe_value in _safe_span_attributes({str(key): value}).items():
+                    self._mlflow_span.set_attribute(safe_key, safe_value)
+            except Exception:
+                logger.debug("Failed to update MLflow span attribute %s", key, exc_info=True)
         self._update_langfuse_metadata()
 
     def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
         if self._otel_span is not None:
             self._otel_span.add_event(name, attributes=_safe_span_attributes(attributes or {}))
+        if self._mlflow_span is not None and hasattr(self._mlflow_span, "add_event"):
+            try:
+                self._mlflow_span.add_event(name, attributes=_safe_span_attributes(attributes or {}))
+            except Exception:
+                logger.debug("Failed to add MLflow span event %s", name, exc_info=True)
         observation = self._langfuse_observation
         if observation is not None and hasattr(observation, "create_event"):
             try:
@@ -95,6 +113,11 @@ class ManagedObservationSpan:
     def record_exception(self, exception: BaseException) -> None:
         if self._otel_span is not None:
             self._otel_span.record_exception(exception)
+        if self._mlflow_span is not None and hasattr(self._mlflow_span, "record_exception"):
+            try:
+                self._mlflow_span.record_exception(exception)
+            except Exception:
+                logger.debug("Failed to record MLflow span exception", exc_info=True)
         observation = self._langfuse_observation
         if observation is not None and hasattr(observation, "update"):
             try:
@@ -109,6 +132,16 @@ class ManagedObservationSpan:
         self._update_langfuse_metadata()
         if self._otel_span is not None:
             self._otel_span.end()
+        if self._mlflow_context is not None and hasattr(self._mlflow_context, "__exit__"):
+            try:
+                self._mlflow_context.__exit__(None, None, None)
+            except Exception:
+                logger.debug("Failed to exit MLflow span context", exc_info=True)
+        elif self._mlflow_span is not None and hasattr(self._mlflow_span, "end"):
+            try:
+                self._mlflow_span.end()
+            except Exception:
+                logger.debug("Failed to end MLflow span", exc_info=True)
         if self._langfuse_observation is not None and hasattr(self._langfuse_observation, "end"):
             try:
                 self._langfuse_observation.end()
@@ -147,6 +180,7 @@ def init_observability(
                 _init_otel(service_name, config_context)
                 _init_openinference(config_context)
             _init_langfuse(config_context)
+            _init_mlflow(config_context)
             _INITIALIZED_SERVICES.add(service_name)
 
         if (
@@ -174,6 +208,15 @@ def flush_observability() -> None:
             client.flush()
         except Exception:
             logger.debug("Langfuse flush failed", exc_info=True)
+
+    if _MLFLOW_CONFIGURED:
+        try:
+            import mlflow
+
+            if hasattr(mlflow, "flush_trace_async_logging"):
+                mlflow.flush_trace_async_logging(terminate=False)
+        except Exception:
+            logger.debug("MLflow flush failed", exc_info=True)
 
 
 @contextmanager
@@ -414,12 +457,20 @@ def start_agent_span(
         attributes=span_attributes,
         observation_type="agent",
     )
-    if otel_span is None and langfuse_observation is None:
+    mlflow_context, mlflow_span = _start_mlflow_span(
+        span_name,
+        config_context=config_context,
+        attributes=span_attributes,
+        observation_type="agent",
+    )
+    if otel_span is None and langfuse_observation is None and mlflow_span is None:
         return NoOpSpan()
     return ManagedObservationSpan(
         otel_span=otel_span,
         langfuse_context=langfuse_context,
         langfuse_observation=langfuse_observation,
+        mlflow_context=mlflow_context,
+        mlflow_span=mlflow_span,
         attributes=span_attributes,
     )
 
@@ -453,12 +504,12 @@ def add_span_event(
     if not _observability_enabled(config_context):
         return
     span = _current_span()
-    if span is None:
-        return
-    try:
-        span.add_event(name, attributes=_safe_span_attributes(attributes or {}))
-    except Exception:
-        logger.debug("Failed to add observability event %s", name, exc_info=True)
+    if span is not None:
+        try:
+            span.add_event(name, attributes=_safe_span_attributes(attributes or {}))
+        except Exception:
+            logger.debug("Failed to add observability event %s", name, exc_info=True)
+    _add_current_mlflow_event(name, attributes or {}, config_context)
 
 
 def set_span_attributes(
@@ -469,6 +520,7 @@ def set_span_attributes(
     if not _observability_enabled(config_context):
         return
     _update_current_langfuse_span(attributes, config_context)
+    _update_current_mlflow_span(attributes, config_context)
     span = _current_span()
     if span is None:
         return
@@ -732,6 +784,7 @@ def _observation_span(
     with ExitStack() as stack:
         span = stack.enter_context(span_cm)
         stack.enter_context(_langfuse_observation(name, config_context, attributes or {}, observation_type))
+        stack.enter_context(_mlflow_observation(name, config_context, attributes or {}, observation_type))
         try:
             yield span
             duration_ms = round((time.perf_counter() - start_time) * 1000, 3)
@@ -803,6 +856,64 @@ def _start_langfuse_observation(
         return context, observation
     except Exception:
         logger.debug("Langfuse observation failed for %s", name, exc_info=True)
+        return None, None
+
+
+@contextmanager
+def _mlflow_observation(
+    name: str,
+    config_context: dict[str, Any] | None,
+    attributes: dict[str, Any],
+    observation_type: str = "span",
+) -> Iterator[Any | None]:
+    context, span = _start_mlflow_span(
+        name,
+        config_context=config_context,
+        attributes=attributes,
+        observation_type=observation_type,
+    )
+    if context is None:
+        yield None
+        return
+
+    exc_info: tuple[type[BaseException] | None, BaseException | None, Any | None] = (None, None, None)
+    try:
+        yield span
+    except BaseException as exc:
+        exc_info = sys.exc_info()
+        if span is not None and hasattr(span, "record_exception"):
+            try:
+                span.record_exception(exc)
+            except Exception:
+                logger.debug("Failed to record MLflow span exception", exc_info=True)
+        raise
+    finally:
+        try:
+            context.__exit__(*exc_info)
+        except Exception:
+            logger.debug("Failed to exit MLflow span context for %s", name, exc_info=True)
+
+
+def _start_mlflow_span(
+    name: str,
+    *,
+    config_context: dict[str, Any] | None,
+    attributes: dict[str, Any],
+    observation_type: str = "span",
+) -> tuple[Any | None, Any | None]:
+    mlflow = _mlflow_module(config_context)
+    if mlflow is None or not hasattr(mlflow, "start_span"):
+        return None, None
+    try:
+        context = mlflow.start_span(
+            name=name,
+            span_type=_mlflow_span_type(observation_type),
+            attributes=_safe_span_attributes(attributes),
+        )
+        span = context.__enter__()
+        return context, span
+    except Exception:
+        logger.debug("MLflow span failed for %s", name, exc_info=True)
         return None, None
 
 
@@ -979,6 +1090,46 @@ def _init_langfuse(config_context: dict[str, Any] | None) -> None:
     _langfuse_client(config_context)
 
 
+def _init_mlflow(config_context: dict[str, Any] | None) -> None:
+    global _MLFLOW_CONFIGURED, _MLFLOW_INIT_FAILED
+
+    if not _mlflow_enabled(config_context) or _MLFLOW_CONFIGURED or _MLFLOW_INIT_FAILED:
+        return
+    try:
+        import mlflow
+    except ImportError:
+        logger.info("MLflow package is not installed; MLflow tracing is disabled.")
+        _MLFLOW_INIT_FAILED = True
+        return
+
+    try:
+        tracking_uri = _string_config(config_context, "mlflow_tracking_uri")
+        experiment_name = _string_config(config_context, "mlflow_experiment_name", "cross-border-ai")
+        os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        if experiment_name:
+            experiment = mlflow.set_experiment(experiment_name=experiment_name)
+            _set_mlflow_trace_destination(mlflow, getattr(experiment, "experiment_id", None))
+        _MLFLOW_CONFIGURED = True
+    except Exception as exc:
+        _MLFLOW_INIT_FAILED = True
+        logger.warning("MLflow tracing initialization failed: %s", exc)
+
+
+def _set_mlflow_trace_destination(mlflow: Any, experiment_id: Any) -> None:
+    if experiment_id in (None, ""):
+        return
+    try:
+        from mlflow.entities.trace_location import MlflowExperimentLocation
+
+        tracing = getattr(mlflow, "tracing", None)
+        if tracing is not None and hasattr(tracing, "set_destination"):
+            tracing.set_destination(MlflowExperimentLocation(experiment_id=str(experiment_id)))
+    except Exception:
+        logger.debug("Failed to set MLflow trace destination", exc_info=True)
+
+
 def _apply_observability_environment(config_context: dict[str, Any] | None) -> None:
     os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
     os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
@@ -988,6 +1139,7 @@ def _apply_observability_environment(config_context: dict[str, Any] | None) -> N
         "LANGFUSE_BASE_URL": config_context.get("langfuse_base_url"),
         "MLFLOW_TRACKING_URI": config_context.get("mlflow_tracking_uri"),
         "MLFLOW_EXPERIMENT_NAME": config_context.get("mlflow_experiment_name"),
+        "MLFLOW_TRACING_ENABLED": config_context.get("mlflow_tracing_enabled"),
         "PHOENIX_PROJECT_NAME": config_context.get("phoenix_project_name"),
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": config_context.get("otel_exporter_otlp_traces_endpoint"),
         "OTEL_EXPORTER_OTLP_PROTOCOL": config_context.get("otel_exporter_otlp_protocol"),
@@ -1020,6 +1172,63 @@ def _langfuse_client(config_context: dict[str, Any] | None = None) -> Any | None
     except Exception as exc:
         logger.warning("Langfuse client initialization failed: %s", exc)
     return None
+
+
+def _mlflow_module(config_context: dict[str, Any] | None = None) -> Any | None:
+    if not _mlflow_enabled(config_context):
+        return None
+    if not _MLFLOW_CONFIGURED:
+        _init_mlflow(config_context)
+    if not _MLFLOW_CONFIGURED:
+        return None
+    try:
+        import mlflow
+
+        return mlflow
+    except ImportError:
+        logger.info("MLflow package is not installed; MLflow tracing is disabled.")
+    except Exception as exc:
+        logger.warning("MLflow import failed: %s", exc)
+    return None
+
+
+def _update_current_mlflow_span(
+    attributes: dict[str, Any],
+    config_context: dict[str, Any] | None,
+) -> None:
+    if not attributes:
+        return
+    mlflow = _mlflow_module(config_context)
+    if mlflow is None or not hasattr(mlflow, "get_current_active_span"):
+        return
+    try:
+        span = mlflow.get_current_active_span()
+        if span is None:
+            return
+        safe_attributes = _safe_span_attributes(attributes)
+        if hasattr(span, "set_attributes"):
+            span.set_attributes(safe_attributes)
+            return
+        for key, value in safe_attributes.items():
+            span.set_attribute(key, value)
+    except Exception:
+        logger.debug("Failed to update current MLflow span", exc_info=True)
+
+
+def _add_current_mlflow_event(
+    name: str,
+    attributes: dict[str, Any],
+    config_context: dict[str, Any] | None,
+) -> None:
+    mlflow = _mlflow_module(config_context)
+    if mlflow is None or not hasattr(mlflow, "get_current_active_span"):
+        return
+    try:
+        span = mlflow.get_current_active_span()
+        if span is not None and hasattr(span, "add_event"):
+            span.add_event(name, attributes=_safe_span_attributes(attributes))
+    except Exception:
+        logger.debug("Failed to add current MLflow event %s", name, exc_info=True)
 
 
 def _get_tracer() -> Any | None:
@@ -1128,6 +1337,21 @@ def _langfuse_enabled(config_context: dict[str, Any] | None = None) -> bool:
     if not _observability_enabled(config_context):
         return False
     return bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
+
+
+def _mlflow_enabled(config_context: dict[str, Any] | None = None) -> bool:
+    if not _observability_enabled(config_context):
+        return False
+    return _bool_config(config_context, "mlflow_tracing_enabled", False)
+
+
+def _mlflow_span_type(observation_type: str) -> str:
+    return {
+        "agent": "AGENT",
+        "chain": "CHAIN",
+        "evaluator": "EVALUATOR",
+        "tool": "TOOL",
+    }.get(str(observation_type).lower(), "UNKNOWN")
 
 
 def _bool_config(

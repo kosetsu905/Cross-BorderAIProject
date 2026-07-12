@@ -165,6 +165,7 @@ class LLMConfigTests(unittest.TestCase):
             "LANGFUSE_BASE_URL": "http://langfuse-web:3000",
             "MLFLOW_TRACKING_URI": "http://mlflow:5000",
             "MLFLOW_EXPERIMENT_NAME": "cross-border-ai",
+            "MLFLOW_TRACING_ENABLED": "true",
         }
         with patch.dict(os.environ, env, clear=True):
             config = load_runtime_config()
@@ -187,6 +188,7 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(config.langfuse_base_url, "http://langfuse-web:3000")
         self.assertEqual(config.mlflow_tracking_uri, "http://mlflow:5000")
         self.assertEqual(config.mlflow_experiment_name, "cross-border-ai")
+        self.assertTrue(config.mlflow_tracing_enabled)
 
     def test_provider_credentials_override_tool_cache_without_infra_settings(self) -> None:
         credentials = ProviderCredentials.model_validate(

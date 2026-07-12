@@ -134,6 +134,7 @@ RUNTIME_CONFIG_KEYS = {
     "langfuse_base_url",
     "mlflow_tracking_uri",
     "mlflow_experiment_name",
+    "mlflow_tracing_enabled",
     "content_language_concurrency",
     "marketing_market_concurrency",
     "serper_deep_read_enabled",
@@ -299,6 +300,7 @@ class RuntimeConfig:
     langfuse_base_url: str | None = None
     mlflow_tracking_uri: str | None = None
     mlflow_experiment_name: str = "cross-border-ai"
+    mlflow_tracing_enabled: bool = False
     content_language_concurrency: int = 4
     marketing_market_concurrency: int = 4
     serper_deep_read_enabled: bool = False
@@ -615,6 +617,7 @@ def load_runtime_config() -> RuntimeConfig:
         langfuse_base_url=_env("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
         mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI"),
         mlflow_experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "cross-border-ai"),
+        mlflow_tracing_enabled=_bool_env("MLFLOW_TRACING_ENABLED", False),
         content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
         marketing_market_concurrency=_int_env("MARKETING_MARKET_CONCURRENCY", 4),
         serper_deep_read_enabled=_bool_env("SERPER_DEEP_READ_ENABLED", False),

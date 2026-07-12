@@ -52,6 +52,7 @@ services:
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-cross-border-ai}
+      MLFLOW_TRACING_ENABLED: ${MLFLOW_TRACING_ENABLED:-false}
     depends_on:
       - postgres
       - redis
@@ -87,6 +88,7 @@ services:
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-cross-border-ai}
+      MLFLOW_TRACING_ENABLED: ${MLFLOW_TRACING_ENABLED:-false}
     depends_on:
       - postgres
       - redis

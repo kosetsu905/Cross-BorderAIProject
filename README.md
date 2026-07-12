@@ -186,6 +186,7 @@ LANGFUSE_SECRET_KEY=replace_with_langfuse_secret_key
 
 MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_EXPERIMENT_NAME=cross-border-ai
+MLFLOW_TRACING_ENABLED=false
 ```
 
 ### 3. Start Docker services
@@ -400,7 +401,7 @@ The local observability harness combines:
 | --- | --- |
 | Phoenix + OpenTelemetry | workflow traces, agent handoffs, tool calls |
 | Langfuse | LLM and agent observations, token usage, cost, latency |
-| MLflow | offline evaluation records, prompt/model comparisons |
+| MLflow | optional realtime workflow traces plus offline evaluation records |
 
 ### Required `.env` Values
 
@@ -428,9 +429,12 @@ LANGFUSE_SECRET_KEY=replace_with_langfuse_secret_key
 
 MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_EXPERIMENT_NAME=cross-border-ai
+MLFLOW_TRACING_ENABLED=false
 ```
 
 Keep `OBSERVABILITY_CAPTURE_INPUT_OUTPUT=false` unless you have reviewed privacy implications. Phoenix is business-first by default: project workflow, agent, stage, LiteLLM, and Guardrails spans remain enabled, while FastAPI route, HTTPX, Redis, SQLAlchemy, Celery, and CrewAI auto-instrumentation stay off unless explicitly enabled. Turn on individual low-level `*_INSTRUMENTATION_ENABLED` flags only while debugging infrastructure noise. Search Phoenix by `workflow_type=support`, `job_id`, `conversation_id`, `guardrail_action`, or `guardrail_severity` to find the useful spans quickly. The observability layer redacts secret-like keys, emails, phone numbers, and raw customer handles before attaching metadata.
+
+Set `MLFLOW_TRACING_ENABLED=true` to mirror the same project-defined workflow, stage, agent, evaluator, and Guardrails spans into MLflow in realtime. The project does not enable MLflow autologging by default, so MLflow stays low-noise: search the `cross-border-ai` experiment by span names such as `workflow.support`, `stage.*`, or guardrail span metadata such as `job_id`, `workflow_type`, `guardrail_action`, and `guardrail_severity`.
 
 ## Workflow Guardrails
 
@@ -498,6 +502,7 @@ docker compose -f docker-compose.monitoring.yml up -d
 ```env
 MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_EXPERIMENT_NAME=cross-border-ai
+MLFLOW_TRACING_ENABLED=false
 MLFLOW_POSTGRES_PASSWORD=replace_mlflow_postgres_password
 ```
 
