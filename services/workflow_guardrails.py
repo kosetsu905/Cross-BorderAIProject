@@ -437,7 +437,7 @@ class WorkflowGuardrailService:
             from guardrails import Guard
         except Exception as exc:
             raise GuardrailConfigurationError("guardrails-ai is required for workflow guardrails") from exc
-        _disable_guardrails_raw_tracing()
+        _configure_guardrails_native_tracing(context)
 
         findings: list[GuardrailFinding] = []
         skipped_validators: list[dict[str, Any]] = []
@@ -1172,12 +1172,16 @@ def _configure_prompt_injection_transport(validator: Any, timeout_seconds: float
     validator._workflow_timeout_seconds = timeout_seconds
 
 
-def _disable_guardrails_raw_tracing() -> None:
-    """Keep project-level masked spans canonical and suppress validator payload spans."""
+def _configure_guardrails_native_tracing(context: dict[str, Any]) -> None:
+    """Control Guardrails' local OTel spans without enabling Hub metrics collection."""
     try:
         from guardrails.settings import settings
 
-        settings.disable_tracing = True
+        value = context.get("workflow_guardrails_native_tracing_enabled")
+        if value in (None, ""):
+            value = os.getenv("WORKFLOW_GUARDRAILS_NATIVE_TRACING_ENABLED", "true")
+        enabled = value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "on"}
+        settings.disable_tracing = not enabled
     except (ImportError, ModuleNotFoundError):
         logger.debug("Guardrails tracing settings are unavailable")
 

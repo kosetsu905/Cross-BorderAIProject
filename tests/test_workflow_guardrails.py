@@ -24,6 +24,7 @@ from services.workflow_guardrails import (
     GuardrailSeverity,
     GuardrailStage,
     WorkflowGuardrailService,
+    _configure_guardrails_native_tracing,
     _configure_prompt_injection_transport,
     apply_output_guardrail_result,
     guardrail_requires_override,
@@ -395,6 +396,28 @@ def test_prompt_injection_runtime_error_requires_review() -> None:
     runtime_finding = next(item for item in decision.findings if item.validator == "prompt_injection")
     assert runtime_finding.metadata["runtime_error"] is True
     assert "provider timeout" not in str(runtime_finding.evidence_masked)
+
+
+def test_guardrails_native_tracing_switch_controls_local_settings() -> None:
+    settings = SimpleNamespace(disable_tracing=None)
+    settings_module = SimpleNamespace(settings=settings)
+    guardrails_module = SimpleNamespace(settings=settings_module)
+    with patch.dict(
+        "sys.modules",
+        {
+            "guardrails": guardrails_module,
+            "guardrails.settings": settings_module,
+        },
+    ):
+        _configure_guardrails_native_tracing(
+            {"workflow_guardrails_native_tracing_enabled": True}
+        )
+        assert settings.disable_tracing is False
+
+        _configure_guardrails_native_tracing(
+            {"workflow_guardrails_native_tracing_enabled": False}
+        )
+        assert settings.disable_tracing is True
 
 
 def test_guardrails_model_profile_resolves_openrouter_llm_callable() -> None:

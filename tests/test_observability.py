@@ -400,6 +400,11 @@ class ObservabilityTests(unittest.TestCase):
                 readable_span("SELECT crossborder_ai", "opentelemetry.instrumentation.sqlalchemy")
             )
         )
+        self.assertFalse(
+            observability._should_export_langfuse_span(
+                readable_span("guardrails/detect_pii.validate", "guardrails.telemetry")
+            )
+        )
 
     def test_flush_observability_flushes_otel_provider(self) -> None:
         class FakeProvider:

@@ -280,12 +280,15 @@ WORKFLOW_GUARDRAILS_MODEL=openai_gpt4o_mini
 WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL=openai_gpt4o_mini
 WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS=5
 WORKFLOW_GUARDRAILS_PROMPT_INJECTION_CACHE_TTL_SECONDS=86400
+WORKFLOW_GUARDRAILS_NATIVE_TRACING_ENABLED=true
 SUPPORT_QA_MODE=full_llm
 ```
 
 `WORKFLOW_GUARDRAILS_MODEL` selects the Guardrails evaluation profile from `LLM_PROFILES_JSON`. For example, set `WORKFLOW_GUARDRAILS_MODEL=openrouter_qwen3_14b` to run LLM-based Guardrails validators through that OpenRouter profile. Guardrails receives the LiteLLM model string only; profile `llm_disable_reasoning` is not passed into Hub validators.
 
 `WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL` independently selects the latency-sensitive prompt-injection evaluator. It receives only the latest customer text, uses the configured hard timeout with no LiteLLM retries, and caches the masked decision in Redis by normalized-text SHA-256. A timeout or provider failure requires human review and cannot auto-dispatch support replies.
+
+`WORKFLOW_GUARDRAILS_NATIVE_TRACING_ENABLED=true` restores Guardrails AI's native `guard`, `step`, and `validator.validate` spans in Phoenix. These native spans intentionally retain raw validator input/output, so local Phoenix may store customer email bodies, PII, and other sensitive text. Set it to `false` and recreate FastAPI/Celery to suppress these detailed spans while keeping the project's masked `guardrail_*` decision spans. Guardrails Hub metrics collection remains disabled, and the workflow Langfuse project filters out native Guardrails spans to stay low-noise.
 
 Two-tier routing is enabled by default but remains behavior-compatible until tier profiles are configured:
 
