@@ -1,5 +1,5 @@
 mode: monitor
-config_version: 2
+config_version: 3
 evidence_storage: masked_only
 human_override_requires_reason: true
 
@@ -79,12 +79,13 @@ guards:
         - id: provenance_llm
           hub: hub://guardrails/provenance_llm
           class_name: ProvenanceLLM
+          execution: async
           enabled_when: grounding_context_available
           args:
             llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
-            validation_method: sentence
+            validation_method: full
             top_k: 3
-          policy: review_required
+          policy: monitor
           severity: high
     action:
       gmail.send:

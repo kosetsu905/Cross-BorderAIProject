@@ -17,6 +17,7 @@ from database import get_db_session
 from job_store import InMemoryJobStore
 from models import WorkflowType
 from runtime_config import RuntimeConfig
+from services.provenance_evaluation import evaluate_support_job_provenance
 from services.workflow_guardrails import (
     GuardrailAction,
     GuardrailConfigurationError,
@@ -27,7 +28,8 @@ from services.workflow_guardrails import (
     _configure_guardrails_native_tracing,
     _configure_prompt_injection_transport,
     apply_output_guardrail_result,
-    guardrail_requires_override,
+    support_provenance_claim,
+    support_provenance_grounding_context,
 )
 from utils.workflow_engine import WorkflowExecutionEngine
 
@@ -160,6 +162,50 @@ def test_workflow_guardrail_masks_pii_and_keeps_raw_out_of_evidence() -> None:
     assert "[PHONE:1212]" in serialized
 
 
+def test_workflow_guardrail_preserves_operational_identifiers_while_masking_contact_fields() -> None:
+    conversation_id = "bc810e41-b8d5-4627-8563-03b5f5b46659"
+    with patched_guardrails({}) as guard:
+        decision = WorkflowGuardrailService().evaluate_input(
+            WorkflowType.SUPPORT,
+            {
+                "session_id": conversation_id,
+                "ticket_id": conversation_id,
+                "channel_thread_id": "thread-4627-8563",
+                "customer_email": "tonny@example.com",
+                "inquiry_text": "Call me on +1 415 555 1212.",
+            },
+        )
+
+    sanitized = decision.sanitized_payload
+    assert sanitized["session_id"] == conversation_id
+    assert sanitized["ticket_id"] == conversation_id
+    assert sanitized["channel_thread_id"] == "thread-4627-8563"
+    assert sanitized["customer_email"] == "to***@example.com"
+    assert sanitized["inquiry_text"] == "Call me on [PHONE:1212]."
+    validator_inputs = "\n".join(str(call["text"]) for call in guard.calls)
+    assert "tonny@example.com" not in validator_inputs
+    assert "to***@example.com" in validator_inputs
+
+
+def test_workflow_guardrail_preserves_labeled_business_ids_inside_customer_reply() -> None:
+    with patched_guardrails({}):
+        decision = WorkflowGuardrailService().evaluate_output(
+            WorkflowType.SUPPORT,
+            {
+                "final_response": (
+                    "Tracking number 123456789012 is in transit. "
+                    "Your reference: 998877665544. Call +1 415 555 1212 for help."
+                ),
+            },
+        )
+
+    final_response = decision.sanitized_payload["final_response"]
+    assert "123456789012" in final_response
+    assert "998877665544" in final_response
+    assert "+1 415 555 1212" not in final_response
+    assert "[PHONE:1212]" in final_response
+
+
 def test_regex_match_forbidden_terms_blocks_input() -> None:
     with patched_guardrails({"forbidden_terms": "Result must match the configured regex."}) as guard:
         decision = WorkflowGuardrailService().evaluate_input(
@@ -255,12 +301,7 @@ def test_support_output_guardrail_skips_provenance_without_grounding_context() -
 
     assert decision.action == GuardrailAction.ALLOW
     assert "provenance_llm" not in {str(call["validator"]) for call in guard.calls}
-    assert {
-        "id": "provenance_llm",
-        "hub": "hub://guardrails/provenance_llm",
-        "reason": "grounding_context_unavailable",
-        "status": "not_applicable",
-    } in decision.metadata["skipped_validators"]
+    assert "provenance_llm" in decision.metadata["deferred_validators"]
 
 
 def test_toxic_language_output_uses_local_hub_validator() -> None:
@@ -500,34 +541,143 @@ def test_guardrails_model_profile_missing_key_fails_fast() -> None:
             service._build_hub_validator(config, context)
 
 
-def test_support_output_guardrail_sets_review_required_for_provenance_failure_with_context() -> None:
-    result = {
-        "session_id": "conv-1",
-        "detected_intent": "post_sales_support",
-        "routing_confidence": 0.95,
-        "final_response": "Your return is approved and a refund is guaranteed.",
-        "qa_status": "APPROVED",
-        "escalation_needed": False,
-        "compliance_flags": [],
-    }
-
+def test_support_provenance_failure_is_async_advisory_and_validates_only_final_reply() -> None:
+    final_reply = "Your return is approved and a refund is guaranteed."
     with patched_guardrails({"provenance_llm": "Generated response is not supported by provided context."}) as guard:
-        decision = WorkflowGuardrailService().evaluate_output(
+        decision = WorkflowGuardrailService().evaluate_provenance(
             WorkflowType.SUPPORT,
-            result,
+            final_reply,
             grounding_context=["Only managers can approve refunds after RMA review."],
             embed_function=lambda values: values,
+            config_context={"job_id": "job-1", "conversation_id": "conv-1"},
         )
-    guarded = apply_output_guardrail_result(WorkflowType.SUPPORT, result, decision)
 
     provenance_calls = [call for call in guard.calls if call["validator"] == "provenance_llm"]
-    assert provenance_calls
+    assert len(provenance_calls) == 1
+    assert provenance_calls[0]["text"] == final_reply
     assert provenance_calls[0]["metadata"]["sources"] == ["Only managers can approve refunds after RMA review."]
-    assert decision.action == GuardrailAction.REVIEW_REQUIRED
-    assert guarded["qa_status"] == "REVIEW_REQUIRED"
-    assert guarded["requires_approval"] is True
-    assert "GUARDRAIL_REVIEW_REQUIRED" in guarded["compliance_flags"]
-    assert guardrail_requires_override(guarded) is True
+    assert decision.action == GuardrailAction.MONITOR
+    assert decision.severity == GuardrailSeverity.HIGH
+    assert decision.metadata["advisory"] is True
+
+
+def test_support_provenance_uses_customer_reply_and_authoritative_source_content_only() -> None:
+    result = {
+        "customer_email": "buyer@example.com",
+        "final_response": "The headset supports Bluetooth 5.3.",
+        "data_sources": ["local_pdf_catalog"],
+        "pre_sales_response": {
+            "catalog_knowledge_results": [
+                {"source": "catalog.pdf", "content": "Model F9 supports Bluetooth 5.3."},
+            ],
+            "catalog_product_offer": {
+                "evidence": ["Bluetooth version: 5.3"],
+            },
+        },
+    }
+
+    assert support_provenance_claim(result) == "The headset supports Bluetooth 5.3."
+    assert support_provenance_grounding_context(result) == [
+        "Model F9 supports Bluetooth 5.3.",
+        "Bluetooth version: 5.3",
+    ]
+
+
+def test_high_severity_monitor_decision_does_not_override_support_qa() -> None:
+    result = {
+        "session_id": "conv-1",
+        "routing_confidence": 0.95,
+        "final_response": "A supported customer reply.",
+        "qa_status": "APPROVED",
+        "requires_approval": False,
+        "compliance_flags": [],
+    }
+    decision = GuardrailDecision(
+        workflow_type=WorkflowType.SUPPORT.value,
+        stage=GuardrailStage.OUTPUT,
+        action=GuardrailAction.MONITOR,
+        severity=GuardrailSeverity.HIGH,
+        findings=[],
+        sanitized_payload=result,
+    )
+
+    guarded = apply_output_guardrail_result(WorkflowType.SUPPORT, result, decision)
+
+    assert guarded["qa_status"] == "APPROVED"
+    assert guarded["requires_approval"] is False
+    assert "GUARDRAIL_REVIEW_REQUIRED" not in guarded["compliance_flags"]
+
+
+def test_action_guardrail_runs_only_synchronous_hard_risk_validators() -> None:
+    with patched_guardrails({}) as guard:
+        decision = WorkflowGuardrailService().evaluate_action(
+            WorkflowType.SUPPORT,
+            "gmail.send",
+            {"conversation_id": "conv-1", "draft_text": "A safe reply."},
+        )
+
+    validators = {str(call["validator"]) for call in guard.calls}
+    assert decision.action == GuardrailAction.ALLOW
+    assert validators == {"secrets_present", "toxic_language", "forbidden_terms"}
+
+
+def test_async_provenance_task_records_one_advisory_evaluation() -> None:
+    store = InMemoryJobStore()
+    store.create_job(
+        "job-provenance",
+        WorkflowType.SUPPORT,
+        {"session_id": "conv-1", "customer_email": "bu***@example.com"},
+    )
+    store.update_job(
+        "job-provenance",
+        status="completed",
+        result={
+            "session_id": "conv-1",
+            "final_response": "The headset supports Bluetooth 5.3.",
+            "pre_sales_response": {
+                "catalog_knowledge_results": [
+                    {"content": "Model F9 supports Bluetooth 5.3."},
+                ],
+            },
+        },
+    )
+    decision = GuardrailDecision(
+        workflow_type=WorkflowType.SUPPORT.value,
+        stage=GuardrailStage.OUTPUT,
+        action=GuardrailAction.MONITOR,
+        severity=GuardrailSeverity.NONE,
+        findings=[],
+        sanitized_payload="The headset supports Bluetooth 5.3.",
+        metadata={"advisory": True, "skipped_validators": []},
+    )
+    service = Mock(spec=WorkflowGuardrailService)
+    service.evaluate_provenance.return_value = decision
+
+    first = evaluate_support_job_provenance(
+        "job-provenance",
+        job_store=store,
+        service=service,
+        config_context=RuntimeConfig().as_context(),
+    )
+    second = evaluate_support_job_provenance(
+        "job-provenance",
+        job_store=store,
+        service=service,
+        config_context=RuntimeConfig().as_context(),
+    )
+
+    assert first["status"] == "evaluated"
+    assert second["status"] == "already_evaluated"
+    service.evaluate_provenance.assert_called_once()
+    assert service.evaluate_provenance.call_args.args[1] == "The headset supports Bluetooth 5.3."
+    assert service.evaluate_provenance.call_args.kwargs["grounding_context"] == ["Model F9 supports Bluetooth 5.3."]
+    provenance_events = [
+        event
+        for event in store.get_job_events("job-provenance")
+        if event["event_type"] == "guardrail_provenance_evaluated"
+    ]
+    assert len(provenance_events) == 1
+    assert provenance_events[0]["payload"]["advisory"] is True
 
 
 def test_missing_hub_validator_fails_fast() -> None:

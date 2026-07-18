@@ -19,6 +19,7 @@ import yaml
 from models import WorkflowType
 from runtime_config import LLMProfileConfig, load_runtime_config
 from utils.observability import guardrail_span, set_span_attributes
+from utils.support_drafts import customer_facing_draft_text
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,75 @@ SECRET_REDACTION_RE_LIST: tuple[re.Pattern[str], ...] = (
 )
 EMAIL_ADDRESS_REDACTOR = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE_NUMBER_REDACTOR = re.compile(r"(?<!\w)(?:\+?\d[\d\s().-]{7,}\d)(?!\w)")
+BUSINESS_IDENTIFIER_RE = re.compile(
+    r"\b(?:channel\s+thread|conversation|job|message|order|product|reference|session|sku|ticket|tracking)"
+    r"(?:\s+(?:id|no\.?|number))?\s*[:#=-]?\s*([A-Z0-9][A-Z0-9._/-]{3,})",
+    re.IGNORECASE,
+)
+UUID_TOKEN_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
 ENV_VALUE_RE = re.compile(r"^\$\{([A-Z0-9_]+)(?::([^}]*))?\}$")
+PRESERVED_IDENTIFIER_FIELDS = {
+    "channel_thread_id",
+    "conversation_id",
+    "family_code",
+    "job_id",
+    "message_id",
+    "order_id",
+    "order_number",
+    "product_id",
+    "product_sku",
+    "reference",
+    "reference_number",
+    "session_id",
+    "sku",
+    "source_job_id",
+    "ticket_id",
+    "thread_id",
+    "tracking_number",
+    "tracking",
+}
+PII_TEXT_FIELDS = {
+    "body",
+    "content",
+    "conversation_history",
+    "customer_email",
+    "customer_handle",
+    "customer_message",
+    "customer_query",
+    "description",
+    "drafted_response",
+    "email",
+    "final_response",
+    "history",
+    "inquiry",
+    "inquiry_text",
+    "internal_notes",
+    "message",
+    "messages",
+    "notes",
+    "phone",
+    "phone_number",
+    "prompt",
+    "query",
+    "recipient",
+    "response",
+    "sender",
+    "subject",
+    "support_response",
+    "text",
+}
+DELIVERY_CONTACT_FIELDS = {
+    "customer_email",
+    "customer_handle",
+    "email",
+    "phone",
+    "phone_number",
+    "recipient",
+    "sender",
+}
 HUB_VALIDATOR_CLASS_NAMES: dict[str, tuple[str, ...]] = {
     "hub://guardrails/secrets_present": ("SecretsPresent",),
     "hub://guardrails/detect_pii": ("DetectPII",),
@@ -175,17 +244,40 @@ def _short_hash(value: str) -> str:
 
 
 def mask_text(text: str) -> str:
-    masked = str(text)
-    for pattern in SECRET_REDACTION_RE_LIST:
-        masked = pattern.sub("[SECRET]", masked)
+    masked = _mask_secrets(str(text))
     masked = EMAIL_ADDRESS_REDACTOR.sub(lambda match: _mask_email(match.group(0)), masked)
-    masked = PHONE_NUMBER_REDACTOR.sub(lambda match: _mask_phone(match.group(0)), masked)
+    masked = _mask_phone_numbers_preserving_business_ids(masked)
     return masked
 
 
-def sanitize_payload(payload: Any) -> Any:
+def _mask_secrets(text: str) -> str:
+    masked = str(text)
+    for pattern in SECRET_REDACTION_RE_LIST:
+        masked = pattern.sub("[SECRET]", masked)
+    return masked
+
+
+def _mask_phone_numbers_preserving_business_ids(text: str) -> str:
+    protected_spans = [match.span(1) for match in BUSINESS_IDENTIFIER_RE.finditer(text)]
+    protected_spans.extend(match.span(0) for match in UUID_TOKEN_RE.finditer(text))
+
+    def replace(match: re.Match[str]) -> str:
+        start, end = match.span(0)
+        if any(start < protected_end and end > protected_start for protected_start, protected_end in protected_spans):
+            return match.group(0)
+        return _mask_phone(match.group(0))
+
+    return PHONE_NUMBER_REDACTOR.sub(replace, text)
+
+
+def sanitize_payload(payload: Any, field_name: str | None = None) -> Any:
     if isinstance(payload, str):
-        return mask_text(payload)
+        normalized_field = str(field_name or "").lower()
+        if _is_preserved_identifier_field(normalized_field):
+            return payload
+        if not normalized_field or normalized_field in PII_TEXT_FIELDS:
+            return mask_text(payload)
+        return _mask_secrets(payload)
     if isinstance(payload, dict):
         sanitized: dict[str, Any] = {}
         for key, value in payload.items():
@@ -193,13 +285,74 @@ def sanitize_payload(payload: Any) -> Any:
             if _is_sensitive_key(key_text):
                 sanitized[key_text] = _mask_sensitive_value(value)
             else:
-                sanitized[key_text] = sanitize_payload(value)
+                sanitized[key_text] = sanitize_payload(value, key_text)
         return sanitized
     if isinstance(payload, list):
-        return [sanitize_payload(item) for item in payload]
+        return [sanitize_payload(item, field_name) for item in payload]
     if isinstance(payload, tuple):
-        return [sanitize_payload(item) for item in payload]
+        return [sanitize_payload(item, field_name) for item in payload]
     return payload
+
+
+def mask_delivery_contacts(payload: Any, field_name: str | None = None) -> Any:
+    if isinstance(payload, str):
+        normalized_field = str(field_name or "").lower()
+        if normalized_field in DELIVERY_CONTACT_FIELDS:
+            return mask_text(payload)
+        return payload
+    if isinstance(payload, dict):
+        return {
+            str(key): (
+                _mask_sensitive_value(value)
+                if _is_sensitive_key(str(key))
+                else mask_delivery_contacts(value, str(key))
+            )
+            for key, value in payload.items()
+        }
+    if isinstance(payload, list):
+        return [mask_delivery_contacts(item, field_name) for item in payload]
+    if isinstance(payload, tuple):
+        return [mask_delivery_contacts(item, field_name) for item in payload]
+    return payload
+
+
+def support_provenance_claim(result: dict[str, Any]) -> str:
+    return str(customer_facing_draft_text(result) or "").strip()
+
+
+def support_provenance_grounding_context(result: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+
+    def add_text(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in sources:
+            sources.append(text[:2000])
+
+    def add_knowledge_results(value: Any) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            if isinstance(item, dict):
+                add_text(item.get("content"))
+
+    pre_sales = result.get("pre_sales_response")
+    if isinstance(pre_sales, dict):
+        add_knowledge_results(pre_sales.get("catalog_knowledge_results"))
+        offer = pre_sales.get("catalog_product_offer")
+        if isinstance(offer, dict):
+            for evidence in offer.get("evidence") or []:
+                add_text(evidence)
+
+    order = result.get("order_response")
+    if isinstance(order, dict):
+        add_knowledge_results(order.get("order_knowledge_results"))
+        tracking_record = order.get("local_tracking_record")
+        if isinstance(tracking_record, dict):
+            safe_tracking_record = dict(tracking_record)
+            safe_tracking_record.pop("receiver_name", None)
+            add_text(json.dumps(sanitize_payload(safe_tracking_record), ensure_ascii=False, default=str))
+
+    return sources[:20]
 
 
 def decision_event_payload(decision: GuardrailDecision) -> dict[str, Any]:
@@ -217,9 +370,8 @@ def has_high_risk_guardrail(payload: Any) -> bool:
     decision = _guardrail_payload_from_result(payload)
     if not isinstance(decision, dict):
         return False
-    severity = str(decision.get("severity") or "").lower()
     action = str(decision.get("action") or "").lower()
-    return severity in {"high", "critical"} or action in {"review_required", "block"}
+    return action in {"review_required", "block"}
 
 
 def guardrail_requires_override(payload: Any) -> bool:
@@ -234,10 +386,7 @@ def apply_support_guardrail_result(result: dict[str, Any], decision: GuardrailDe
         finding.model_dump(mode="json")
         for finding in decision.findings
     ]
-    if decision.action in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK} or decision.severity in {
-        GuardrailSeverity.HIGH,
-        GuardrailSeverity.CRITICAL,
-    }:
+    if decision.action in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK}:
         result["qa_status"] = "REVIEW_REQUIRED"
         result["requires_approval"] = True
         flags = [str(flag) for flag in result.get("compliance_flags") or []]
@@ -293,10 +442,11 @@ class WorkflowGuardrailService:
             conversation_id=_conversation_trace_id(inputs, context),
             config_context=config_context,
         ):
+            validation_inputs = mask_delivery_contacts(inputs)
             evaluation = self._evaluate_payload(
                 workflow_value,
                 GuardrailStage.INPUT,
-                inputs,
+                validation_inputs,
                 context=context,
             )
             action = self._policy_action(workflow_value, GuardrailStage.INPUT, evaluation.findings)
@@ -351,10 +501,76 @@ class WorkflowGuardrailService:
                 sanitized_payload=sanitize_payload(result),
                 metadata={
                     "grounding_context_available": bool(grounding_context),
+                    "deferred_validators": [
+                        str(item.get("id") or item.get("hub") or "")
+                        for item in self._validators_for(
+                            workflow_value,
+                            GuardrailStage.OUTPUT,
+                            execution="async",
+                        )
+                    ],
                     "skipped_validators": evaluation.skipped_validators,
                 },
             )
             _record_guardrail_observability(decision, context, _conversation_trace_id(result, context))
+            return decision
+
+    def evaluate_provenance(
+        self,
+        workflow_type: WorkflowType | str,
+        claim: str,
+        *,
+        grounding_context: list[str] | None = None,
+        query_function: Any | None = None,
+        embed_function: Any | None = None,
+        config_context: dict[str, Any] | None = None,
+    ) -> GuardrailDecision:
+        workflow_value = _workflow_value(workflow_type)
+        context = {
+            **(config_context or {}),
+            "embed_function": embed_function,
+            "grounding_context": grounding_context or [],
+            "query_function": query_function,
+        }
+        validators = [
+            item
+            for item in self._validators_for(
+                workflow_value,
+                GuardrailStage.OUTPUT,
+                execution="async",
+            )
+            if str(item.get("id") or "") == "provenance_llm"
+        ]
+        with guardrail_span(
+            "guardrail_provenance_evaluated",
+            workflow_type=workflow_value,
+            stage=GuardrailStage.OUTPUT.value,
+            job_id=_safe_trace_identifier(context.get("job_id")),
+            conversation_id=_conversation_trace_id(context, context),
+            config_context=context,
+            attributes={"guardrail_execution": "async", "guardrail_advisory": True},
+        ):
+            evaluation = self._guardrails_ai_findings(
+                workflow_value,
+                GuardrailStage.OUTPUT,
+                str(claim or ""),
+                validators,
+                context,
+            )
+            decision = self._decision(
+                workflow_value,
+                GuardrailStage.OUTPUT,
+                GuardrailAction.MONITOR,
+                evaluation.findings,
+                sanitized_payload=sanitize_payload(str(claim or ""), "final_response"),
+                metadata={
+                    "advisory": True,
+                    "execution": "async",
+                    "grounding_context_available": bool(grounding_context),
+                    "skipped_validators": evaluation.skipped_validators,
+                },
+            )
+            _record_guardrail_observability(decision, context, _conversation_trace_id(context, context))
             return decision
 
     def evaluate_action(
@@ -845,12 +1061,22 @@ class WorkflowGuardrailService:
         workflow_type: str,
         stage: GuardrailStage,
         action_type: str | None = None,
+        *,
+        execution: str = "sync",
     ) -> list[dict[str, Any]]:
         stage_config = self._stage_config(workflow_type, stage)
         if stage == GuardrailStage.ACTION:
             output_config = self._stage_config(workflow_type, GuardrailStage.OUTPUT)
-            return list(output_config.get("validators") or []) if isinstance(output_config, dict) else []
-        return list(stage_config.get("validators") or []) if isinstance(stage_config, dict) else []
+            validators = list(output_config.get("validators") or []) if isinstance(output_config, dict) else []
+            return [
+                item
+                for item in validators
+                if _validator_execution(item) == "sync"
+                and _action_from_text(str(item.get("policy") or "monitor"))
+                in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK}
+            ]
+        validators = list(stage_config.get("validators") or []) if isinstance(stage_config, dict) else []
+        return [item for item in validators if _validator_execution(item) == execution]
 
     def _stage_config(self, workflow_type: str, stage: GuardrailStage) -> dict[str, Any]:
         guards = self.config.get("guards") or {}
@@ -890,6 +1116,10 @@ class WorkflowGuardrailService:
             if validator_config.get("enable_ai_runtime") is False:
                 raise GuardrailConfigurationError(
                     f"Workflow guardrail '{validator_id}' disables Hub runtime. Install the validator instead."
+                )
+            if _validator_execution(validator_config) not in {"sync", "async"}:
+                raise GuardrailConfigurationError(
+                    f"Workflow guardrail '{validator_id}' has invalid execution mode. Use sync or async."
                 )
             if str(validator_config.get("id") or "") == "forbidden_terms":
                 args = validator_config.get("args") if isinstance(validator_config.get("args"), dict) else {}
@@ -975,11 +1205,21 @@ def _safe_trace_identifier(value: Any) -> str | None:
     if value in (None, ""):
         return None
     text = str(value)
+    try:
+        uuid.UUID(text)
+        return text
+    except ValueError:
+        pass
     if EMAIL_ADDRESS_REDACTOR.search(text) or PHONE_NUMBER_REDACTOR.search(text):
         return None
     if not re.fullmatch(r"[\w:.-]{1,128}", text):
         return None
     return text
+
+
+def _is_preserved_identifier_field(key: str) -> bool:
+    normalized = str(key or "").lower()
+    return normalized in PRESERVED_IDENTIFIER_FIELDS or normalized.endswith("_id")
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -1014,6 +1254,10 @@ def _action_from_text(value: str) -> GuardrailAction:
     if normalized in GuardrailAction._value2member_map_:
         return GuardrailAction(normalized)
     return GuardrailAction.MONITOR
+
+
+def _validator_execution(validator_config: dict[str, Any]) -> str:
+    return str(validator_config.get("execution") or "sync").strip().lower()
 
 
 def _max_severity(findings: list[GuardrailFinding]) -> GuardrailSeverity:

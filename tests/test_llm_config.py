@@ -255,6 +255,17 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(config.workflow_router_max_workflows, 3)
         self.assertEqual(config.workflow_router_llm_profile, "router_profile")
 
+    def test_runtime_config_loads_support_auto_send_confidence_threshold(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"SUPPORT_AUTO_SEND_CONFIDENCE_THRESHOLD": "0.82"},
+            clear=True,
+        ):
+            config = load_runtime_config()
+
+        self.assertEqual(config.support_auto_send_confidence_threshold, 0.82)
+        self.assertEqual(config.as_context()["support_auto_send_confidence_threshold"], 0.82)
+
     def test_provider_credentials_override_workflow_router_safely(self) -> None:
         credentials = ProviderCredentials.model_validate(
             {

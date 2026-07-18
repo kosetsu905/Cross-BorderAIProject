@@ -55,6 +55,16 @@ async def process_completed_support_job(
 
     with SessionLocal() as db:
         store = SupportInboxStore(db)
+        conversation = db.get(SupportConversationRecord, conversation_id)
+        if conversation is None:
+            conversation = db.execute(
+                select(SupportConversationRecord)
+                .where(SupportConversationRecord.latest_job_id == job_id)
+                .order_by(SupportConversationRecord.updated_at.desc())
+            ).scalars().first()
+        if conversation is None:
+            return {"status": "skipped", "reason": "conversation_not_found"}
+        conversation_id = str(conversation.conversation_id)
         store.sync_job_result(
             conversation_id,
             {
@@ -63,11 +73,12 @@ async def process_completed_support_job(
                 "result": result,
             },
         )
-        conversation = db.get(SupportConversationRecord, conversation_id)
-        if conversation is None:
-            return {"status": "skipped", "reason": "conversation_not_found"}
         if conversation.escalation_flag:
             return {"status": "skipped", "reason": "human_handoff"}
+        if _guardrail_requires_review(result):
+            conversation.requires_approval = True
+            db.commit()
+            return {"status": "skipped", "reason": "guardrail_review_required"}
         if conversation.requires_approval:
             return {"status": "skipped", "reason": "requires_approval"}
         if _auto_dispatch_already_recorded(db, conversation_id, job_id):
@@ -168,6 +179,13 @@ def _config_context_dict(config_context: dict[str, Any] | RuntimeConfig | None) 
     if isinstance(config_context, RuntimeConfig):
         return config_context.as_context()
     return dict(config_context)
+
+
+def _guardrail_requires_review(result: dict[str, Any]) -> bool:
+    decision = result.get("guardrail_decision")
+    if not isinstance(decision, dict):
+        return False
+    return str(decision.get("action") or "").lower() in {"review_required", "block"}
 
 
 def _auto_dispatch_already_recorded(db: Any, conversation_id: str, job_id: str) -> bool:

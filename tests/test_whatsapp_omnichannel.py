@@ -1544,29 +1544,31 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         fake_session = FakeSupportSession(conversation)
         session_local.return_value = FakeSessionContext(fake_session)
 
-        result = asyncio.run(
-            process_completed_support_job(
-                job_id="job-1",
-                inputs={"session_id": "conv-1"},
-                result={
-                    "ticket_id": "conv-1",
-                    "drafted_response": "Your order is on the way.",
-                    "requires_approval": False,
-                    "escalation_flag": False,
-                    "channel_recommended_action": "auto_send",
-                    "sentiment_analysis": {
-                        "customer_tier": "STANDARD",
-                        "sentiment_score": 0.1,
-                        "intent_category": "SHIPPING_INQUIRY",
+        with patch("services.support_auto_dispatch.WorkflowGuardrailService") as guardrails:
+            guardrails.return_value.evaluate_action.return_value = SimpleNamespace(action="allow")
+            result = asyncio.run(
+                process_completed_support_job(
+                    job_id="job-1",
+                    inputs={"session_id": "conv-1"},
+                    result={
+                        "ticket_id": "conv-1",
+                        "drafted_response": "Your order is on the way.",
+                        "requires_approval": False,
+                        "escalation_flag": False,
+                        "channel_recommended_action": "auto_send",
+                        "sentiment_analysis": {
+                            "customer_tier": "STANDARD",
+                            "sentiment_score": 0.1,
+                            "intent_category": "SHIPPING_INQUIRY",
+                        },
                     },
-                },
-                config_context={
-                    "gmail_send_enabled": True,
-                    "gmail_access_token": "token",
-                    "gmail_sender_email": "support@example.com",
-                },
+                    config_context={
+                        "gmail_send_enabled": True,
+                        "gmail_access_token": "token",
+                        "gmail_sender_email": "support@example.com",
+                    },
+                )
             )
-        )
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(fake_session.added[-1].raw_payload["auto_dispatch"], True)
@@ -1591,22 +1593,24 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         fake_session = FakeSupportSession(conversation)
         session_local.return_value = FakeSessionContext(fake_session)
 
-        result = asyncio.run(
-            process_completed_support_job(
-                job_id="job-1",
-                inputs={"session_id": "conv-1"},
-                result={
-                    "session_id": "conv-1",
-                    "detected_intent": "pre_sales",
-                    "routing_confidence": 0.95,
-                    "final_response": "The catalog item is available.",
-                    "qa_status": "REVIEW_REQUIRED",
-                    "escalation_needed": True,
-                    "pre_sales_response": {"requires_human_review": True},
-                },
-                config_context={"gmail_send_enabled": False},
+        with patch("services.support_auto_dispatch.WorkflowGuardrailService") as guardrails:
+            guardrails.return_value.evaluate_action.return_value = SimpleNamespace(action="allow")
+            result = asyncio.run(
+                process_completed_support_job(
+                    job_id="job-1",
+                    inputs={"session_id": "conv-1"},
+                    result={
+                        "session_id": "conv-1",
+                        "detected_intent": "pre_sales",
+                        "routing_confidence": 0.95,
+                        "final_response": "The catalog item is available.",
+                        "qa_status": "REVIEW_REQUIRED",
+                        "escalation_needed": True,
+                        "pre_sales_response": {"requires_human_review": True},
+                    },
+                    config_context={"gmail_send_enabled": False},
+                )
             )
-        )
 
         self.assertEqual(result["status"], "disabled")
         self.assertEqual(fake_session.added[-1].status, "disabled")
@@ -1634,23 +1638,25 @@ class WhatsAppOmniChannelTests(unittest.TestCase):
         fake_session = FakeSupportSession(conversation)
         session_local.return_value = FakeSessionContext(fake_session)
 
-        result = asyncio.run(
-            process_completed_support_job(
-                job_id="job-1",
-                inputs={"session_id": "conv-1"},
-                result={
-                    "session_id": "conv-1",
-                    "detected_intent": "order_fulfillment",
-                    "routing_confidence": 0.95,
-                    "final_response": "Tracking C88943021 was successfully delivered.",
-                    "qa_status": "REVIEW_REQUIRED",
-                    "escalation_needed": True,
-                    "compliance_flags": ["GDPR_COMPLIANT_REVIEW", "CCPA_OPT_OUT_AVAILABLE"],
-                    "order_response": {"tracking_record_found": True},
-                },
-                config_context={"gmail_send_enabled": False},
+        with patch("services.support_auto_dispatch.WorkflowGuardrailService") as guardrails:
+            guardrails.return_value.evaluate_action.return_value = SimpleNamespace(action="allow")
+            result = asyncio.run(
+                process_completed_support_job(
+                    job_id="job-1",
+                    inputs={"session_id": "conv-1"},
+                    result={
+                        "session_id": "conv-1",
+                        "detected_intent": "order_fulfillment",
+                        "routing_confidence": 0.95,
+                        "final_response": "Tracking C88943021 was successfully delivered.",
+                        "qa_status": "REVIEW_REQUIRED",
+                        "escalation_needed": True,
+                        "compliance_flags": ["GDPR_COMPLIANT_REVIEW", "CCPA_OPT_OUT_AVAILABLE"],
+                        "order_response": {"tracking_record_found": True},
+                    },
+                    config_context={"gmail_send_enabled": False},
+                )
             )
-        )
 
         self.assertEqual(result["status"], "disabled")
         self.assertEqual(fake_session.added[-1].raw_payload["auto_dispatch"], True)

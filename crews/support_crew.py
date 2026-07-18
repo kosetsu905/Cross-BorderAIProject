@@ -435,7 +435,10 @@ def _region_from_inputs(inputs: dict[str, Any]) -> str:
     return {"ja": "JP", "zh": "CN", "de": "DE", "fr": "FR", "es": "ES"}.get(language, "US")
 
 
-def _build_automation_context(inputs: dict[str, Any]) -> dict[str, Any]:
+def _build_automation_context(
+    inputs: dict[str, Any],
+    config_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     sentiment = analyze_sentiment_intent(
         inquiry_text=inputs["inquiry_text"],
         customer_email=inputs["customer_email"],
@@ -458,6 +461,11 @@ def _build_automation_context(inputs: dict[str, Any]) -> dict[str, Any]:
         "logistics_output": rma_payload.get("logistics_output"),
         "escalation_flag": sentiment["requires_human_handoff"],
         "compliance_tags": _compliance_tags(sentiment, rma_payload),
+        "auto_send_confidence_threshold": _float_config(
+            config_context or {},
+            "support_auto_send_confidence_threshold",
+            0.75,
+        ),
     }
     return automation_context
 
@@ -526,6 +534,16 @@ def _bool_config(config_context: dict[str, Any], key: str, default: bool = False
     if isinstance(value, bool):
         return value
     return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _float_config(config_context: dict[str, Any], key: str, default: float) -> float:
+    value = config_context.get(key)
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _email_delivery_status(
@@ -612,7 +630,7 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
     """Callable wrapper for Customer Service orchestration."""
     config_context = config_context or {}
     normalized_inputs = _normalize_inputs(inputs)
-    automation_context = _build_automation_context(normalized_inputs)
+    automation_context = _build_automation_context(normalized_inputs, config_context)
     router_tool = IntentRouterTool(config_context=config_context)
     router_result = router_tool._run(
         inquiry_text=normalized_inputs["inquiry_text"],
@@ -1551,8 +1569,15 @@ def _attach_customer_service_context(
     normalized["detected_intent"] = normalized.get("detected_intent") or intent
     normalized["routing_confidence"] = float(normalized.get("routing_confidence") or router_result["confidence_score"])
     normalized["final_response"] = str(final_response)
+    auto_send_threshold = _float_config(
+        config_context,
+        "support_auto_send_confidence_threshold",
+        0.75,
+    )
     normalized["qa_status"] = normalized.get("qa_status") or (
-        "REVIEW_REQUIRED" if normalized["routing_confidence"] < 0.75 or automation_context["escalation_flag"] else "APPROVED"
+        "REVIEW_REQUIRED"
+        if normalized["routing_confidence"] < auto_send_threshold or automation_context["escalation_flag"]
+        else "APPROVED"
     )
     normalized["compliance_flags"] = normalized.get("compliance_flags") or automation_context.get("compliance_tags", [])
     normalized["recommended_follow_up"] = normalized.get("recommended_follow_up") or "Follow up if the customer replies."
@@ -2191,7 +2216,8 @@ def _is_low_risk_pre_sales_output(
         return False
     if automation_context["escalation_flag"]:
         return False
-    if float(normalized.get("routing_confidence") or 0) < 0.75 or not normalized.get("final_response"):
+    confidence_threshold = float(automation_context.get("auto_send_confidence_threshold") or 0.75)
+    if float(normalized.get("routing_confidence") or 0) < confidence_threshold or not normalized.get("final_response"):
         return False
     compliance_flags = {str(flag).upper() for flag in normalized.get("compliance_flags") or []}
     hard_flags = {

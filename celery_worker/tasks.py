@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_process_init
 
 from celery_worker.celery_app import celery_app
@@ -16,6 +17,7 @@ from database import SessionLocal
 from job_store import PostgresJobStore
 from models import JobStatus, WorkflowRoutePlan, WorkflowType
 from runtime_config import apply_runtime_environment, load_runtime_config, resolve_workflow_runtime_context
+from services.provenance_evaluation import evaluate_support_job_provenance
 from services.workflow_guardrails import (
     GuardrailAction,
     WorkflowGuardrailService,
@@ -94,6 +96,24 @@ def _workflow_grounding_context(result: dict[str, Any]) -> list[str]:
 
     visit(result)
     return candidates
+
+
+def _queue_support_provenance(job_id: str) -> None:
+    try:
+        queued = run_guardrail_provenance_task.delay(job_id)
+        job_store.log_event(
+            job_id,
+            "guardrail_provenance_queued",
+            "Asynchronous provenance evaluation queued.",
+            {"task_id": str(queued.id)},
+        )
+    except Exception as exc:
+        job_store.log_event(
+            job_id,
+            "guardrail_provenance_queue_failed",
+            "Asynchronous provenance evaluation could not be queued.",
+            {"error_type": type(exc).__name__},
+        )
 
 
 @worker_process_init.connect
@@ -320,6 +340,7 @@ def _run_with_job_state(
                         "Support auto-dispatch failed after workflow completion.",
                         {"error": str(dispatch_exc)},
                     )
+                _queue_support_provenance(job_id)
             return {
                 "data": normalized_result,
                 "meta": usage_summary,
@@ -592,6 +613,28 @@ def run_workflow_route_monitor_task(
             )
             raise RuntimeError(error)
         raise self.retry(countdown=poll_interval_seconds)
+
+
+@celery_app.task(name="guardrails.provenance", soft_time_limit=90, time_limit=120)
+def run_guardrail_provenance_task(job_id: str) -> dict[str, Any]:
+    try:
+        return evaluate_support_job_provenance(job_id, job_store=job_store)
+    except SoftTimeLimitExceeded:
+        job_store.log_event(
+            job_id,
+            "guardrail_provenance_evaluated",
+            "Asynchronous provenance evaluation timed out.",
+            {"status": "timeout", "advisory": True},
+        )
+        return {"status": "timeout", "job_id": job_id}
+    except Exception as exc:
+        job_store.log_event(
+            job_id,
+            "guardrail_provenance_evaluated",
+            "Asynchronous provenance evaluation failed.",
+            {"status": "runtime_error", "advisory": True, "error_type": type(exc).__name__},
+        )
+        return {"status": "runtime_error", "job_id": job_id, "error_type": type(exc).__name__}
 
 
 @celery_app.task(bind=True, name="workflow.marketing", soft_time_limit=1200, time_limit=1500)

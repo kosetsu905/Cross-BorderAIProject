@@ -50,19 +50,22 @@ def _requires_approval(result: dict[str, Any]) -> bool:
     rma = _rma_validation_from_result(result) or {}
     qa_status = str(result.get("qa_status") or "").upper()
     confidence = float(result.get("routing_confidence") or 1)
+    threshold = _support_auto_send_confidence_threshold()
+    if _guardrail_requires_review(result):
+        return True
     if _is_pre_sales(result):
         return (
-            confidence < 0.75
+            confidence < threshold
             or qa_status == "REJECTED"
             or _has_pre_sales_hard_blocker(result)
         )
-    if _is_low_risk_order_fulfillment(result):
+    if _is_low_risk_order_fulfillment(result, threshold=threshold):
         return False
     forced_review = bool(
         _requires_handoff(result)
         or result.get("escalation_flag")
         or qa_status in {"REVIEW_REQUIRED", "REJECTED"}
-        or confidence < 0.75
+        or confidence < threshold
         or sentiment.get("customer_tier") in {"VIP", "PREMIUM"}
         or float(sentiment.get("sentiment_score") or 0) < -0.25
         or sentiment.get("intent_category") == "BILLING_ISSUE"
@@ -120,12 +123,17 @@ def _is_order_fulfillment(result: dict[str, Any]) -> bool:
     return str(result.get("detected_intent") or "").lower() == "order_fulfillment"
 
 
-def _is_low_risk_order_fulfillment(result: dict[str, Any]) -> bool:
+def _is_low_risk_order_fulfillment(
+    result: dict[str, Any],
+    *,
+    threshold: float | None = None,
+) -> bool:
     if not _is_order_fulfillment(result):
         return False
     qa_status = str(result.get("qa_status") or "").upper()
     confidence = float(result.get("routing_confidence") or 0)
-    if confidence < 0.75 or qa_status == "REJECTED":
+    confidence_threshold = threshold if threshold is not None else _support_auto_send_confidence_threshold()
+    if confidence < confidence_threshold or qa_status == "REJECTED":
         return False
     sentiment = result.get("sentiment_analysis") or {}
     rma = _rma_validation_from_result(result) or {}
@@ -160,6 +168,18 @@ def _has_hard_compliance_blocker(result: dict[str, Any]) -> bool:
     }
     compliance_flags = {str(flag).upper() for flag in result.get("compliance_flags") or []}
     return bool(hard_flags.intersection(compliance_flags))
+
+
+def _guardrail_requires_review(result: dict[str, Any]) -> bool:
+    decision = result.get("guardrail_decision")
+    if not isinstance(decision, dict):
+        return False
+    return str(decision.get("action") or "").lower() in {"review_required", "block"}
+
+
+def _support_auto_send_confidence_threshold() -> float:
+    configured = float(getattr(load_runtime_config(), "support_auto_send_confidence_threshold", 0.75))
+    return max(0.0, min(configured, 1.0))
 
 
 def _handoff_notification_sent(payload: dict[str, Any] | None) -> bool:

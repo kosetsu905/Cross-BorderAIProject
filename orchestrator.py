@@ -9,6 +9,7 @@ from celery_worker.celery_app import celery_app
 from job_store import InMemoryJobStore, JobStore
 from models import JobStatus, WorkflowGroupRequest, WorkflowRoutePlan, WorkflowRouteRequest, WorkflowType, WORKFLOW_ROUTE_TYPE
 from runtime_config import RuntimeConfig, apply_runtime_environment, resolve_workflow_runtime_context
+from services.provenance_evaluation import evaluate_support_job_provenance
 from services.workflow_guardrails import (
     WorkflowGuardrailService,
     apply_output_guardrail_result,
@@ -82,6 +83,29 @@ def _split_task_result(task_result: Any) -> tuple[dict[str, Any], dict[str, Any]
 
     result_payload = task_result if isinstance(task_result, dict) else {"raw": str(task_result)}
     return result_payload, {}
+
+
+async def _evaluate_support_provenance_in_background(
+    job_id: str,
+    *,
+    job_store: JobStore,
+    config_context: dict[str, Any],
+) -> None:
+    try:
+        await asyncio.to_thread(
+            evaluate_support_job_provenance,
+            job_id,
+            job_store=job_store,
+            config_context=config_context,
+        )
+    except Exception as exc:
+        logger.exception("Asynchronous provenance evaluation failed for job %s", job_id)
+        job_store.log_event(
+            job_id,
+            "guardrail_provenance_evaluated",
+            "Asynchronous provenance evaluation failed.",
+            {"status": "runtime_error", "advisory": True, "error_type": type(exc).__name__},
+        )
 
 
 def _ensure_submittable_route_plan(plan: WorkflowRoutePlan) -> None:
@@ -485,6 +509,19 @@ class MasterOrchestrator:
                             "Support auto-dispatch failed after workflow completion.",
                             {"error": str(dispatch_exc)},
                         )
+                    asyncio.create_task(
+                        _evaluate_support_provenance_in_background(
+                            job_id,
+                            job_store=self._job_store,
+                            config_context=config_context,
+                        )
+                    )
+                    self._job_store.log_event(
+                        job_id,
+                        "guardrail_provenance_queued",
+                        "Asynchronous provenance evaluation queued.",
+                        {"backend": "local"},
+                    )
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._job_store.update_job(

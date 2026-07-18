@@ -137,6 +137,17 @@ class FakeDbSession:
         return SimpleNamespace(scalars=lambda: FakeScalarResult(self.records))
 
 
+class FallbackConversationDbSession(FakeDbSession):
+    def __init__(self, conversation: SimpleNamespace) -> None:
+        super().__init__(conversation)
+        self.execute_count = 0
+
+    def execute(self, statement: object) -> object:
+        self.execute_count += 1
+        records = [self.conversation] if self.execute_count == 1 else []
+        return SimpleNamespace(scalars=lambda: FakeScalarResult(records))
+
+
 class FakeSessionContext:
     def __init__(self, session: FakeDbSession) -> None:
         self.session = session
@@ -267,6 +278,30 @@ class SupportDraftTests(unittest.TestCase):
                 },
             },
         )
+
+        self.assertTrue(conversation.requires_approval)
+
+    def test_sync_job_result_uses_configured_auto_send_confidence_threshold(self) -> None:
+        conversation = SimpleNamespace(
+            conversation_id="conv-threshold",
+            channel="gmail",
+            draft_response=None,
+            draft_payload=None,
+            requires_approval=False,
+            escalation_flag=False,
+            status="processing",
+        )
+        store = SupportInboxStore(FakeDbSession(conversation))  # type: ignore[arg-type]
+
+        with patch("support_inbox._support_auto_send_confidence_threshold", return_value=0.96):
+            store.sync_job_result(
+                "conv-threshold",
+                {
+                    "job_id": "job-threshold",
+                    "workflow_type": "support",
+                    "result": _structured_pre_sales_job_result("conv-threshold"),
+                },
+            )
 
         self.assertTrue(conversation.requires_approval)
 
@@ -530,6 +565,71 @@ class SupportDraftTests(unittest.TestCase):
             conversation.draft_payload["pre_sales_response"]["product_recommendation"]["product_name"],
             "Wireless Bluetooth headset",
         )
+
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_recovers_conversation_by_latest_job_id_and_uses_raw_recipient(
+        self,
+        session_local: Mock,
+        send_gmail: Mock,
+    ) -> None:
+        send_gmail.return_value = {"status": "sent", "message_id": "gmail-out-1", "error": None}
+        conversation = _gmail_conversation(
+            conversation_id="bc810e41-b8d5-4627-8563-03b5f5b46659",
+            latest_job_id="job-1",
+        )
+        fake_db = FallbackConversationDbSession(conversation)
+        session_local.return_value = FakeSessionContext(fake_db)
+
+        with patch("services.support_auto_dispatch.WorkflowGuardrailService") as guardrails:
+            guardrails.return_value.evaluate_action.return_value = _allow_action_decision()
+            result = asyncio.run(
+                process_completed_support_job(
+                    job_id="job-1",
+                    inputs={"session_id": "bc810e41-b8d5-4627-[PHONE:8563]-03b5f5b46659"},
+                    result=_structured_pre_sales_job_result(conversation.conversation_id),
+                    config_context={
+                        "gmail_send_enabled": True,
+                        "gmail_access_token": "token",
+                        "gmail_sender_email": "support@example.com",
+                    },
+                )
+            )
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["conversation_id"], conversation.conversation_id)
+        self.assertEqual(send_gmail.call_args.kwargs["recipient"], "tonny@example.com")
+
+    @patch("services.support_auto_dispatch.send_gmail_reply_message")
+    @patch("services.support_auto_dispatch.SessionLocal")
+    def test_auto_dispatch_skips_hard_guardrail_decision(
+        self,
+        session_local: Mock,
+        send_gmail: Mock,
+    ) -> None:
+        conversation = _gmail_conversation(requires_approval=False)
+        fake_db = FakeDbSession(conversation)
+        session_local.return_value = FakeSessionContext(fake_db)
+        result_payload = _structured_pre_sales_job_result("conv-1")
+        result_payload["guardrail_decision"] = {
+            "action": "block",
+            "severity": "critical",
+            "findings": [],
+        }
+
+        result = asyncio.run(
+            process_completed_support_job(
+                job_id="job-1",
+                inputs={"session_id": "conv-1"},
+                result=result_payload,
+                config_context={"gmail_send_enabled": True},
+            )
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "guardrail_review_required")
+        self.assertTrue(conversation.requires_approval)
+        send_gmail.assert_not_called()
 
     @patch("services.support_auto_dispatch.send_gmail_reply_message")
     @patch("services.support_auto_dispatch.SessionLocal")

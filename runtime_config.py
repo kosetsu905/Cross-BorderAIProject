@@ -41,6 +41,7 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_guardrails_prompt_injection_timeout_seconds",
     "workflow_guardrails_prompt_injection_cache_ttl_seconds",
     "workflow_guardrails_native_tracing_enabled",
+    "support_auto_send_confidence_threshold",
     "workflow_router_enabled",
     "workflow_router_llm_fallback_enabled",
     "workflow_router_confidence_threshold",
@@ -218,6 +219,7 @@ class RuntimeConfig:
     workflow_guardrails_prompt_injection_timeout_seconds: float = 5.0
     workflow_guardrails_prompt_injection_cache_ttl_seconds: int = 86400
     workflow_guardrails_native_tracing_enabled: bool = True
+    support_auto_send_confidence_threshold: float = 0.75
     workflow_router_enabled: bool = True
     workflow_router_llm_fallback_enabled: bool = True
     workflow_router_confidence_threshold: float = 0.75
@@ -557,6 +559,10 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_guardrails_native_tracing_enabled=_bool_env(
             "WORKFLOW_GUARDRAILS_NATIVE_TRACING_ENABLED",
             True,
+        ),
+        support_auto_send_confidence_threshold=_float_env_with_default(
+            "SUPPORT_AUTO_SEND_CONFIDENCE_THRESHOLD",
+            0.75,
         ),
         workflow_router_enabled=_bool_env("WORKFLOW_ROUTER_ENABLED", True),
         workflow_router_llm_fallback_enabled=_bool_env("WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED", True),
