@@ -187,6 +187,11 @@ LANGFUSE_SECRET_KEY=replace_with_langfuse_secret_key
 MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_EXPERIMENT_NAME=cross-border-ai
 MLFLOW_TRACING_ENABLED=false
+MLFLOW_PROMPT_REGISTRY_ENABLED=true
+MLFLOW_SUPPORT_PROMPT_ALIAS=production
+MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false
+MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openai:/gpt-4o-mini
+MLFLOW_GIT_VERSION_TRACKING_ENABLED=true
 ```
 
 ### 3. Start Docker services
@@ -515,9 +520,21 @@ docker compose -f docker-compose.monitoring.yml up -d
 ```env
 MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_EXPERIMENT_NAME=cross-border-ai
-MLFLOW_TRACING_ENABLED=false
+MLFLOW_TRACING_ENABLED=true
+MLFLOW_PROMPT_REGISTRY_ENABLED=true
+MLFLOW_SUPPORT_PROMPT_ALIAS=production
+MLFLOW_PROMPT_CACHE_DIR=artifacts/mlflow_prompt_cache
+MLFLOW_SUPPORT_EVALUATION_DATASET_NAME=support-governance
+MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false
+MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openai:/gpt-4o-mini
+MLFLOW_GIT_VERSION_TRACKING_ENABLED=true
+MLFLOW_ADMIN_USERNAME=admin
+MLFLOW_ADMIN_PASSWORD=replace_mlflow_admin_password
+MLFLOW_FLASK_SERVER_SECRET_KEY=replace_with_a_long_random_value
 MLFLOW_POSTGRES_PASSWORD=replace_mlflow_postgres_password
 ```
+
+The local MLflow image is pinned to `3.14.0` and runs with MLflow's official Basic Auth app. Open `http://localhost:5000` and sign in with `MLFLOW_ADMIN_USERNAME` and `MLFLOW_ADMIN_PASSWORD`. New non-admin users inherit read-only access by default.
 
 If `http://localhost:5000` shows `Invalid Host header - possible DNS rebinding attack detected`, MLflow is rejecting the browser Host header. For local development, configure the MLflow service with allowed hosts such as:
 
@@ -531,19 +548,25 @@ Then recreate only MLflow:
 docker compose -f docker-compose.monitoring.yml up -d --force-recreate mlflow
 ```
 
-### Offline Evaluations
+### MLflow Governance
 
-After at least one job completes:
+Seed the official Prompt Registry entries, the `support-governance` Evaluation Dataset, and the official built-in scorers:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\run_observability_evals.py --limit 25
+docker compose exec fastapi python scripts/bootstrap_mlflow_governance.py
 ```
 
-Expected output:
+The bootstrap creates one immutable prompt per support agent and task and assigns the `production` alias only when an alias is missing. After bootstrap, edit prompts and move aliases from the MLflow Prompts UI. Support workers load `prompts:/<name>@production`; successful versions are cached under the ignored `artifacts/mlflow_prompt_cache` directory so a temporary MLflow outage does not select an ungoverned new prompt.
 
-- Phoenix receives `eval.rag_groundedness` spans.
-- MLflow receives a `cross-border-ai` experiment run.
-- The console prints JSON records with groundedness, hallucination risk, token, cost, and latency fields.
+Run an official offline evaluation against the MLflow Evaluation Dataset:
+
+```powershell
+docker compose exec fastapi python scripts/run_mlflow_support_evaluation.py
+```
+
+This calls `mlflow.genai.evaluate()` with MLflow's official `RelevanceToQuery`, `Completeness`, `Safety`, `PIIDetection`, and `Guidelines` scorers. `ConversationalRoleAdherence` and `UserFrustration` are registered for conversation-aware evaluation.
+
+MLflow 3.14 Automatic Evaluation requires an AI Gateway endpoint. This project intentionally keeps `MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false` while the first governance phase does not use AI Gateway. Setting it to `true` without a `gateway:/<endpoint>` judge model fails validation instead of silently running a custom scheduler. Human approve, reject, and override actions are attached to the matching support trace through `mlflow.log_feedback()`; an edited approved response is attached through `mlflow.log_expectation()`.
 
 ## Common Test Commands
 

@@ -139,6 +139,13 @@ RUNTIME_CONFIG_KEYS = {
     "mlflow_tracking_uri",
     "mlflow_experiment_name",
     "mlflow_tracing_enabled",
+    "mlflow_prompt_registry_enabled",
+    "mlflow_support_prompt_alias",
+    "mlflow_prompt_cache_dir",
+    "mlflow_support_evaluation_dataset_name",
+    "mlflow_automatic_evaluation_enabled",
+    "mlflow_genai_judge_default_model",
+    "mlflow_git_version_tracking_enabled",
     "content_language_concurrency",
     "marketing_market_concurrency",
     "serper_deep_read_enabled",
@@ -309,6 +316,13 @@ class RuntimeConfig:
     mlflow_tracking_uri: str | None = None
     mlflow_experiment_name: str = "cross-border-ai"
     mlflow_tracing_enabled: bool = False
+    mlflow_prompt_registry_enabled: bool = False
+    mlflow_support_prompt_alias: str = "production"
+    mlflow_prompt_cache_dir: str = "artifacts/mlflow_prompt_cache"
+    mlflow_support_evaluation_dataset_name: str = "support-governance"
+    mlflow_automatic_evaluation_enabled: bool = False
+    mlflow_genai_judge_default_model: str = "openai:/gpt-4o-mini"
+    mlflow_git_version_tracking_enabled: bool = False
     content_language_concurrency: int = 4
     marketing_market_concurrency: int = 4
     serper_deep_read_enabled: bool = False
@@ -645,6 +659,28 @@ def load_runtime_config() -> RuntimeConfig:
         mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI"),
         mlflow_experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "cross-border-ai"),
         mlflow_tracing_enabled=_bool_env("MLFLOW_TRACING_ENABLED", False),
+        mlflow_prompt_registry_enabled=_bool_env("MLFLOW_PROMPT_REGISTRY_ENABLED", False),
+        mlflow_support_prompt_alias=os.getenv("MLFLOW_SUPPORT_PROMPT_ALIAS", "production"),
+        mlflow_prompt_cache_dir=os.getenv(
+            "MLFLOW_PROMPT_CACHE_DIR",
+            "artifacts/mlflow_prompt_cache",
+        ),
+        mlflow_support_evaluation_dataset_name=os.getenv(
+            "MLFLOW_SUPPORT_EVALUATION_DATASET_NAME",
+            "support-governance",
+        ),
+        mlflow_automatic_evaluation_enabled=_bool_env(
+            "MLFLOW_AUTOMATIC_EVALUATION_ENABLED",
+            False,
+        ),
+        mlflow_genai_judge_default_model=os.getenv(
+            "MLFLOW_GENAI_JUDGE_DEFAULT_MODEL",
+            "openai:/gpt-4o-mini",
+        ),
+        mlflow_git_version_tracking_enabled=_bool_env(
+            "MLFLOW_GIT_VERSION_TRACKING_ENABLED",
+            False,
+        ),
         content_language_concurrency=_int_env("CONTENT_LANGUAGE_CONCURRENCY", 4),
         marketing_market_concurrency=_int_env("MARKETING_MARKET_CONCURRENCY", 4),
         serper_deep_read_enabled=_bool_env("SERPER_DEEP_READ_ENABLED", False),

@@ -30,7 +30,8 @@ services:
       - cross-border-net
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:latest
+    build:
+      context: ./monitoring/mlflow
     depends_on:
       mlflow-postgres:
         condition: service_healthy
@@ -38,13 +39,20 @@ services:
       - "5000:5000"
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_AUTH_CONFIG_PATH: /etc/mlflow/basic_auth.ini
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY:?Set MLFLOW_FLASK_SERVER_SECRET_KEY in .env}
+    configs:
+      - source: mlflow_auth_config
+        target: /etc/mlflow/basic_auth.ini
     command: >
       mlflow server
+      --app-name basic-auth
       --backend-store-uri postgresql://${MLFLOW_POSTGRES_USER:-mlflow}:${MLFLOW_POSTGRES_PASSWORD:-mlflow_local_password}@mlflow-postgres:5432/${MLFLOW_POSTGRES_DB:-mlflow}
       --artifacts-destination /mlflow/artifacts
       --serve-artifacts
       --host 0.0.0.0
       --port 5000
+      --workers 1
       --allowed-hosts localhost:*,127.0.0.1:*,mlflow,mlflow:5000,fastapi,celery_worker
     volumes:
       - mlflow_artifacts:/mlflow/artifacts
@@ -205,6 +213,19 @@ volumes:
   langfuse_clickhouse_logs:
   langfuse_redis_data:
   langfuse_minio_data:
+
+configs:
+  mlflow_auth_config:
+    content: |
+      [mlflow]
+      default_permission = READ
+      database_uri = postgresql://${MLFLOW_POSTGRES_USER:-mlflow}:${MLFLOW_POSTGRES_PASSWORD:-mlflow_local_password}@mlflow-postgres:5432/${MLFLOW_POSTGRES_DB:-mlflow}
+      admin_username = ${MLFLOW_ADMIN_USERNAME:-admin}
+      admin_password = ${MLFLOW_ADMIN_PASSWORD:?Set MLFLOW_ADMIN_PASSWORD in .env}
+      authorization_function = mlflow.server.auth:authenticate_request_basic_auth
+      grant_default_workspace_access = false
+      auth_cache_max_size = 10000
+      auth_cache_ttl_seconds = 60
 
 networks:
   cross-border-net:

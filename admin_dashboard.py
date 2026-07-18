@@ -1878,8 +1878,20 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
     if draft:
         st.markdown("**Draft response**")
         edited = st.text_area("Approved message", value=str(draft), height=160)
+        review_decision = st.selectbox(
+            "Review decision",
+            options=["approve", "reject", "override"],
+        )
+        reviewer = st.text_input("Reviewer")
+        override_reason = st.text_area("Review reason", height=80)
         send_disabled = bool(conversation.get("escalation_flag"))
-        send_label = "Approve and send" if conversation.get("requires_approval") else "Send manually"
+        send_label = (
+            "Reject draft"
+            if review_decision == "reject"
+            else "Approve and send"
+            if conversation.get("requires_approval")
+            else "Send manually"
+        )
         if not conversation.get("requires_approval") and not conversation.get("escalation_flag"):
             st.caption("Auto-send eligible. Use manual send only if provider auto-dispatch did not send.")
         if st.button(send_label, disabled=send_disabled, width="stretch"):
@@ -1888,7 +1900,12 @@ def _render_support_inbox(api_base_url: str, bearer_token: str) -> None:
                 api_base_url,
                 f"/api/v1/support/conversations/{conversation_id}/approve-send",
                 bearer_token,
-                {"message": edited},
+                {
+                    "message": edited,
+                    "decision": review_decision,
+                    "reviewer": reviewer or None,
+                    "override_reason": override_reason or None,
+                },
             )
             if send_error:
                 st.error(send_error)

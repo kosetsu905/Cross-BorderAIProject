@@ -8,6 +8,7 @@ from utils.observability import (
     NoOpSpan,
     end_span,
     guardrail_span,
+    record_mlflow_workflow_inputs,
     record_workflow_result_observability,
     redact_observability_payload,
     start_agent_span,
@@ -83,6 +84,8 @@ class FakeMlflowSpan:
         self.events: list[dict[str, object]] = []
         self.exceptions: list[BaseException] = []
         self.ended = False
+        self.inputs: object | None = None
+        self.outputs: object | None = None
 
     def set_attribute(self, key: str, value: object) -> None:
         self.attributes[key] = value
@@ -95,6 +98,12 @@ class FakeMlflowSpan:
 
     def record_exception(self, exception: BaseException) -> None:
         self.exceptions.append(exception)
+
+    def set_inputs(self, inputs: object) -> None:
+        self.inputs = inputs
+
+    def set_outputs(self, outputs: object) -> None:
+        self.outputs = outputs
 
     def end(self) -> None:
         self.ended = True
@@ -126,6 +135,7 @@ class FakeMlflowModule:
         self.contexts: list[FakeMlflowContext] = []
         self.active_spans: list[FakeMlflowSpan] = []
         self.flushed = False
+        self.trace_updates: list[dict[str, object]] = []
 
     def set_tracking_uri(self, tracking_uri: str) -> None:
         self.tracking_uri = tracking_uri
@@ -156,6 +166,9 @@ class FakeMlflowModule:
     def flush_trace_async_logging(self, terminate: bool = False) -> None:
         self.flushed = not terminate
 
+    def update_current_trace(self, **kwargs: object) -> None:
+        self.trace_updates.append(dict(kwargs))
+
 
 class ObservabilityTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -168,6 +181,7 @@ class ObservabilityTests(unittest.TestCase):
         observability._LANGFUSE_CLIENT = None
         observability._MLFLOW_CONFIGURED = False
         observability._MLFLOW_INIT_FAILED = False
+        observability._MLFLOW_GIT_VERSION_CONFIGURED = False
         for env_name in (
             "MLFLOW_EXPERIMENT_NAME",
             "MLFLOW_HTTP_REQUEST_TIMEOUT",
@@ -458,6 +472,14 @@ class ObservabilityTests(unittest.TestCase):
                     "api_key": "sk-secret",
                 },
             ):
+                record_mlflow_workflow_inputs(
+                    {"inquiry_text": "Contact buyer@example.com"},
+                    config_context,
+                )
+                record_workflow_result_observability(
+                    {"final_response": "Call +1 555 123 4567"},
+                    config_context,
+                )
                 observability.set_span_attributes({"cost_usd": 0.12}, config_context=config_context)
 
         span = fake_mlflow.contexts[0].span
@@ -467,6 +489,9 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(span.attributes["customer_email"], "[REDACTED_PII]")
         self.assertEqual(span.attributes["api_key"], "[REDACTED_SECRET]")
         self.assertEqual(span.attributes["cost_usd"], 0.12)
+        self.assertNotIn("buyer@example.com", str(span.inputs))
+        self.assertNotIn("555 123 4567", str(span.outputs))
+        self.assertEqual(fake_mlflow.trace_updates[0]["metadata"]["job_id"], "job-1")
         self.assertIn("duration_ms", span.attributes)
         self.assertTrue(span.ended)
 

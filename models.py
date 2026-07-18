@@ -1,6 +1,6 @@
 from enum import Enum
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -330,6 +330,16 @@ class WorkflowRequest(BaseModel):
 
         self.inputs = validated_inputs.model_dump()
         return self
+
+
+class SupportApprovalPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str | None = None
+    reviewer: str | None = None
+    override_reason: str | None = None
+    guardrail_decision_id: str | None = None
+    decision: Literal["approve", "reject", "override"] = "approve"
 
 
 class WorkflowGroupItem(StrictInputModel):

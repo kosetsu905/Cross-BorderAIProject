@@ -9,6 +9,7 @@ from crewai import Agent, Crew, Task
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from services.language_detector import LanguageDetector
+from services.mlflow_governance import load_support_prompts
 from tools.custom.gmail_tools import resolve_gmail_access_token, send_gmail_message
 from tools.custom.support_automation_tools import (
     LogisticsIntegrationOutput,
@@ -663,9 +664,19 @@ def run_support_crew(inputs: dict[str, Any], config_context: dict[str, Any] | No
         "recent_conversation_history": normalized_inputs.get("recent_conversation_history"),
     }
 
-    agents_config = _load_yaml_config("agents.yaml")
-    agents_config = augment_agents_config(agents_config, workflow='support')
-    tasks_config = _load_yaml_config("tasks.yaml")
+    local_agents_config = _load_yaml_config("agents.yaml")
+    local_tasks_config = _load_yaml_config("tasks.yaml")
+    governed_prompts = load_support_prompts(
+        local_agents_config,
+        local_tasks_config,
+        config_context,
+    )
+    agents_config = augment_agents_config(governed_prompts.agents, workflow="support")
+    tasks_config = governed_prompts.tasks
+    config_context["mlflow_support_prompt_lineage"] = {
+        name: lineage.model_dump()
+        for name, lineage in governed_prompts.lineage.items()
+    }
     llm_router = ModelTierRouter(config_context)
 
     pre_sales_agent = Agent(

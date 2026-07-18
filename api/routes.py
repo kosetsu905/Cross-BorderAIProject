@@ -14,6 +14,7 @@ from models import (
     JobResponse,
     JobStatus,
     ProviderCredentials,
+    SupportApprovalPayload,
     WorkflowGroupRequest,
     WorkflowRoutePlan,
     WorkflowRouteRequest,
@@ -21,6 +22,7 @@ from models import (
     WorkflowType,
 )
 from runtime_config import load_runtime_config
+from services.mlflow_governance import log_support_review
 from services.workflow_guardrails import (
     GuardrailAction,
     WorkflowGuardrailService,
@@ -488,9 +490,9 @@ def create_router(orchestrator: object) -> APIRouter:
         conversation_id: str,
         _: AuthDependency,
         db: DbDependency,
-        payload: dict[str, str | None] | None = Body(default=None),
+        payload: SupportApprovalPayload | None = Body(default=None),
     ) -> dict[str, object]:
-        payload = payload or {}
+        payload = payload or SupportApprovalPayload()
         store = SupportInboxStore(db)
         conversation = db.get(SupportConversationRecord, conversation_id)
         if conversation is None:
@@ -503,7 +505,8 @@ def create_router(orchestrator: object) -> APIRouter:
             raise HTTPException(status_code=404, detail="Conversation not found")
         if conversation.escalation_flag:
             raise HTTPException(status_code=409, detail="Conversation requires human handoff and cannot be sent from approval API")
-        draft_text = customer_facing_draft_text(payload.get("message") or conversation.draft_response)
+        original_draft = customer_facing_draft_text(conversation.draft_response)
+        draft_text = customer_facing_draft_text(payload.message or conversation.draft_response)
         if not draft_text:
             raise HTTPException(status_code=409, detail="No draft response is available for this conversation")
         if conversation.channel not in {"whatsapp", "gmail"}:
@@ -527,27 +530,30 @@ def create_router(orchestrator: object) -> APIRouter:
         guardrail_payload = decision_result_payload(action_decision)
         existing_guardrail_requires_override = guardrail_requires_override(conversation.draft_payload)
         action_requires_override = action_decision.action in {GuardrailAction.REVIEW_REQUIRED, GuardrailAction.BLOCK}
-        if action_decision.action == GuardrailAction.BLOCK:
+        if action_decision.action == GuardrailAction.BLOCK and payload.decision != "reject":
             raise HTTPException(
                 status_code=409,
                 detail="Support message is blocked by guardrail and cannot be sent from approval API",
             )
-        if existing_guardrail_requires_override or action_requires_override:
-            reviewer = str(payload.get("reviewer") or "").strip()
-            override_reason = str(payload.get("override_reason") or "").strip()
+        if payload.decision == "override" or (
+            payload.decision == "approve"
+            and (existing_guardrail_requires_override or action_requires_override)
+        ):
+            reviewer = str(payload.reviewer or "").strip()
+            override_reason = str(payload.override_reason or "").strip()
             if not reviewer or not override_reason:
                 raise HTTPException(
                     status_code=409,
                     detail="reviewer and override_reason are required to approve a high-risk guardrail finding",
                 )
         else:
-            reviewer = str(payload.get("reviewer") or "").strip() or None
-            override_reason = str(payload.get("override_reason") or "").strip() or None
+            reviewer = str(payload.reviewer or "").strip() or None
+            override_reason = str(payload.override_reason or "").strip() or None
         approval_guardrail = {
-            "decision": str(payload.get("decision") or "approve"),
+            "decision": payload.decision,
             "reviewer": reviewer,
             "override_reason": override_reason,
-            "guardrail_decision_id": payload.get("guardrail_decision_id") or action_decision.decision_id,
+            "guardrail_decision_id": payload.guardrail_decision_id or action_decision.decision_id,
             "guardrail_decision": guardrail_payload,
         }
         log_job_event = getattr(orchestrator, "log_job_event", None)
@@ -570,6 +576,27 @@ def create_router(orchestrator: object) -> APIRouter:
                         "guardrail_decision_id": approval_guardrail["guardrail_decision_id"],
                     },
                 )
+
+        mlflow_trace_id = None
+        if latest_job_id:
+            mlflow_trace_id = log_support_review(
+                job_id=str(latest_job_id),
+                decision=payload.decision,
+                reviewer=reviewer,
+                rationale=override_reason,
+                approved_response=str(draft_text) if payload.decision != "reject" else None,
+                original_response=str(original_draft) if original_draft else None,
+                config_context=config.as_context(),
+            )
+        if payload.decision == "reject":
+            conversation.requires_approval = True
+            return {
+                "status": "rejected",
+                "conversation_id": conversation_id,
+                "message_id": None,
+                "mlflow_trace_id": mlflow_trace_id,
+                "error": None,
+            }
 
         if conversation.channel == "gmail":
             if not config.gmail_send_enabled:

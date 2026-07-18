@@ -18,6 +18,7 @@ from services.workflow_router import WorkflowRouterAgent
 from utils.observability import (
     group_span,
     init_observability,
+    record_mlflow_workflow_inputs,
     record_usage_metrics,
     record_workflow_result_observability,
     route_span,
@@ -380,7 +381,9 @@ class MasterOrchestrator:
                 job_id=job_id,
                 backend="local",
                 config_context=config_context,
+                attributes={"conversation_id": inputs.get("session_id")},
             ):
+                record_mlflow_workflow_inputs(inputs, config_context)
                 self._job_store.update_job(job_id, status=JobStatus.RUNNING)
                 self._job_store.log_event(
                     job_id,

@@ -46,6 +46,7 @@ _OTEL_PROVIDER: Any | None = None
 _LANGFUSE_CLIENT: Any | None = None
 _MLFLOW_CONFIGURED = False
 _MLFLOW_INIT_FAILED = False
+_MLFLOW_GIT_VERSION_CONFIGURED = False
 
 
 class NoOpSpan:
@@ -248,6 +249,7 @@ def workflow_span(
         attributes=span_attributes,
         observation_type="chain",
     ) as span:
+        _update_current_mlflow_trace_context(span_attributes, config_context)
         yield span
 
 
@@ -568,7 +570,16 @@ def record_workflow_result_observability(
     summary = _workflow_result_summary(result)
     if summary:
         set_span_attributes(summary, config_context=config_context)
+    _set_current_mlflow_span_io(outputs=result, config_context=config_context)
     _record_langfuse_scores(_workflow_result_scores(result), config_context)
+
+
+def record_mlflow_workflow_inputs(
+    inputs: dict[str, Any],
+    config_context: dict[str, Any] | None = None,
+) -> None:
+    """Attach a redacted workflow input to the active MLflow root span."""
+    _set_current_mlflow_span_io(inputs=inputs, config_context=config_context)
 
 
 def redact_observability_payload(value: Any, *, capture_raw: bool | None = None) -> Any:
@@ -1152,10 +1163,29 @@ def _init_mlflow(config_context: dict[str, Any] | None) -> None:
         if experiment_name:
             experiment = mlflow.set_experiment(experiment_name=experiment_name)
             _set_mlflow_trace_destination(mlflow, getattr(experiment, "experiment_id", None))
+        _init_mlflow_git_versioning(mlflow, config_context)
         _MLFLOW_CONFIGURED = True
     except Exception as exc:
         _MLFLOW_INIT_FAILED = True
         logger.warning("MLflow tracing initialization failed: %s", exc)
+
+
+def _init_mlflow_git_versioning(mlflow: Any, config_context: dict[str, Any] | None) -> None:
+    global _MLFLOW_GIT_VERSION_CONFIGURED
+
+    if _MLFLOW_GIT_VERSION_CONFIGURED or not _bool_config(
+        config_context,
+        "mlflow_git_version_tracking_enabled",
+        False,
+    ):
+        return
+    try:
+        genai = getattr(mlflow, "genai", None)
+        if genai is not None and hasattr(genai, "enable_git_model_versioning"):
+            genai.enable_git_model_versioning()
+            _MLFLOW_GIT_VERSION_CONFIGURED = True
+    except Exception:
+        logger.warning("MLflow Git application version tracking could not be enabled", exc_info=True)
 
 
 def _set_mlflow_trace_destination(mlflow: Any, experiment_id: Any) -> None:
@@ -1286,6 +1316,56 @@ def _add_current_mlflow_event(
             span.add_event(name, attributes=_safe_span_attributes(attributes))
     except Exception:
         logger.debug("Failed to add current MLflow event %s", name, exc_info=True)
+
+
+def _set_current_mlflow_span_io(
+    *,
+    inputs: dict[str, Any] | None = None,
+    outputs: dict[str, Any] | None = None,
+    config_context: dict[str, Any] | None = None,
+) -> None:
+    mlflow = _mlflow_module(config_context)
+    if mlflow is None or not hasattr(mlflow, "get_current_active_span"):
+        return
+    try:
+        span = mlflow.get_current_active_span()
+        if span is None:
+            return
+        if inputs is not None and hasattr(span, "set_inputs"):
+            span.set_inputs(redact_observability_payload(inputs, capture_raw=False))
+        if outputs is not None and hasattr(span, "set_outputs"):
+            span.set_outputs(redact_observability_payload(outputs, capture_raw=False))
+    except Exception:
+        logger.debug("Failed to attach redacted inputs or outputs to MLflow", exc_info=True)
+
+
+def _update_current_mlflow_trace_context(
+    attributes: dict[str, Any],
+    config_context: dict[str, Any] | None,
+) -> None:
+    mlflow = _mlflow_module(config_context)
+    if mlflow is None or not hasattr(mlflow, "update_current_trace"):
+        return
+    metadata = {
+        key: str(value)
+        for key, value in {
+            "job_id": attributes.get("job_id"),
+            "workflow_type": attributes.get("workflow_type"),
+            "backend": attributes.get("backend"),
+            "environment": (config_context or {}).get("observability_environment"),
+            "llm_profile": (config_context or {}).get("llm_profile"),
+        }.items()
+        if value not in (None, "")
+    }
+    session_id = _safe_identifier(
+        attributes.get("conversation_id")
+        or attributes.get("session_id")
+        or (config_context or {}).get("session_id")
+    )
+    try:
+        mlflow.update_current_trace(metadata=metadata or None, session_id=session_id)
+    except Exception:
+        logger.debug("Failed to attach MLflow workflow trace metadata", exc_info=True)
 
 
 def _get_tracer() -> Any | None:

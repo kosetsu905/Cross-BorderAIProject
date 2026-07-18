@@ -174,6 +174,13 @@ class LLMConfigTests(unittest.TestCase):
             "MLFLOW_TRACKING_URI": "http://mlflow:5000",
             "MLFLOW_EXPERIMENT_NAME": "cross-border-ai",
             "MLFLOW_TRACING_ENABLED": "true",
+            "MLFLOW_PROMPT_REGISTRY_ENABLED": "true",
+            "MLFLOW_SUPPORT_PROMPT_ALIAS": "production",
+            "MLFLOW_PROMPT_CACHE_DIR": "artifacts/mlflow_prompt_cache",
+            "MLFLOW_SUPPORT_EVALUATION_DATASET_NAME": "support-governance",
+            "MLFLOW_AUTOMATIC_EVALUATION_ENABLED": "false",
+            "MLFLOW_GENAI_JUDGE_DEFAULT_MODEL": "openai:/gpt-4o-mini",
+            "MLFLOW_GIT_VERSION_TRACKING_ENABLED": "true",
         }
         with patch.dict(os.environ, env, clear=True):
             config = load_runtime_config()
@@ -197,6 +204,13 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(config.mlflow_tracking_uri, "http://mlflow:5000")
         self.assertEqual(config.mlflow_experiment_name, "cross-border-ai")
         self.assertTrue(config.mlflow_tracing_enabled)
+        self.assertTrue(config.mlflow_prompt_registry_enabled)
+        self.assertEqual(config.mlflow_support_prompt_alias, "production")
+        self.assertEqual(config.mlflow_prompt_cache_dir, "artifacts/mlflow_prompt_cache")
+        self.assertEqual(config.mlflow_support_evaluation_dataset_name, "support-governance")
+        self.assertFalse(config.mlflow_automatic_evaluation_enabled)
+        self.assertEqual(config.mlflow_genai_judge_default_model, "openai:/gpt-4o-mini")
+        self.assertTrue(config.mlflow_git_version_tracking_enabled)
 
     def test_provider_credentials_override_tool_cache_without_infra_settings(self) -> None:
         credentials = ProviderCredentials.model_validate(

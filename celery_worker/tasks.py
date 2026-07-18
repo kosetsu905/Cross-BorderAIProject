@@ -27,6 +27,7 @@ from utils.observability import (
     flush_observability,
     group_span,
     init_observability,
+    record_mlflow_workflow_inputs,
     record_usage_metrics,
     record_workflow_result_observability,
     route_span,
@@ -228,8 +229,12 @@ def _run_with_job_state(
             job_id=job_id,
             backend="celery",
             config_context=config_context,
-            attributes={"task_name": getattr(self, "name", None)},
+            attributes={
+                "task_name": getattr(self, "name", None),
+                "conversation_id": inputs.get("session_id"),
+            },
         ):
+            record_mlflow_workflow_inputs(inputs, config_context)
             result = crew_function(inputs, config_context)
             clean_result, usage_metrics = pop_usage_metrics(result)
             normalized_result = clean_result if isinstance(clean_result, dict) else {"raw": str(clean_result)}

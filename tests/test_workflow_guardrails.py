@@ -630,6 +630,47 @@ class FakeGuardrailService:
         )
 
 
+def test_reject_support_review_does_not_send_provider_message() -> None:
+    conversation = SimpleNamespace(
+        conversation_id="conv-1",
+        channel="gmail",
+        channel_thread_id="thread-1",
+        customer_handle="tonny@example.com",
+        draft_response="Draft requiring revision.",
+        draft_payload={},
+        escalation_flag=False,
+        requires_approval=True,
+        latest_job_id=None,
+        status="draft_ready",
+    )
+    fake_db = FakeDbSession(conversation)
+
+    class FakeOrchestrator:
+        registered_workflows = []
+
+        def get_job_status(self, job_id: str) -> dict[str, object]:
+            return {}
+
+    app = FastAPI()
+    app.include_router(create_router(FakeOrchestrator()))
+    app.dependency_overrides[get_db_session] = lambda: fake_db
+
+    with (
+        patch("api.routes.SupportInboxStore", return_value=FakeSupportStore(fake_db)),
+        patch("api.routes.WorkflowGuardrailService", return_value=FakeGuardrailService()),
+        patch("api.routes.send_gmail_reply_message") as send_gmail,
+    ):
+        response = TestClient(app).post(
+            "/api/v1/support/conversations/conv-1/approve-send",
+            json={"message": "Draft requiring revision.", "decision": "reject"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    assert conversation.requires_approval is True
+    send_gmail.assert_not_called()
+
+
 def test_approve_send_requires_reviewer_and_reason_for_high_risk_guardrail() -> None:
     conversation = SimpleNamespace(
         conversation_id="conv-1",

@@ -55,6 +55,8 @@ services:
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-cross-border-ai}
       MLFLOW_TRACING_ENABLED: ${MLFLOW_TRACING_ENABLED:-false}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_ADMIN_USERNAME:-admin}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_ADMIN_PASSWORD:-}
     depends_on:
       - postgres
       - redis
@@ -93,6 +95,8 @@ services:
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-cross-border-ai}
       MLFLOW_TRACING_ENABLED: ${MLFLOW_TRACING_ENABLED:-false}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_ADMIN_USERNAME:-admin}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_ADMIN_PASSWORD:-}
     depends_on:
       - postgres
       - redis
