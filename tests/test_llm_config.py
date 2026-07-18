@@ -8,7 +8,11 @@ import yaml
 from pydantic import ValidationError
 
 from models import ProviderCredentials, WorkflowType
-from runtime_config import RuntimeConfig, load_runtime_config, resolve_workflow_runtime_context
+from runtime_config import (
+    RuntimeConfig,
+    load_runtime_config,
+    resolve_workflow_runtime_context,
+)
 from utils.llm_config import build_llm, llm_chat_completions_url
 from utils.model_tiering import ModelTierRouter, agent_llm_tier
 from utils.result_cache import build_workflow_cache_key
@@ -65,7 +69,9 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(llm.reasoning_effort, "none")
         self.assertEqual(llm.additional_params, {})
 
-    def test_build_llm_does_not_add_reasoning_params_for_openrouter_gpt4o_mini(self) -> None:
+    def test_build_llm_does_not_add_reasoning_params_for_openrouter_gpt4o_mini(
+        self,
+    ) -> None:
         llm = build_llm(
             {
                 "llm_api_key": "openrouter-key",
@@ -121,9 +127,15 @@ class LLMConfigTests(unittest.TestCase):
         self.assertIn("openrouter_gpt4o_mini", config.llm_profiles)
         self.assertEqual(config.support_llm_profile, "openai_gpt4o_mini")
         self.assertEqual(config.workflow_guardrails_model, "openrouter_gpt4o_mini")
-        self.assertEqual(config.workflow_guardrails_prompt_injection_model, "openai_gpt4o_mini")
-        self.assertEqual(config.workflow_guardrails_prompt_injection_timeout_seconds, 5.0)
-        self.assertEqual(config.workflow_guardrails_prompt_injection_cache_ttl_seconds, 43200)
+        self.assertEqual(
+            config.workflow_guardrails_prompt_injection_model, "openai_gpt4o_mini"
+        )
+        self.assertEqual(
+            config.workflow_guardrails_prompt_injection_timeout_seconds, 5.0
+        )
+        self.assertEqual(
+            config.workflow_guardrails_prompt_injection_cache_ttl_seconds, 43200
+        )
         self.assertFalse(config.workflow_guardrails_native_tracing_enabled)
         self.assertEqual(context["llm_profile"], "openai_gpt4o_mini")
         self.assertEqual(context["llm_provider"], "openai")
@@ -178,6 +190,12 @@ class LLMConfigTests(unittest.TestCase):
             "MLFLOW_SUPPORT_PROMPT_ALIAS": "production",
             "MLFLOW_PROMPT_CACHE_DIR": "artifacts/mlflow_prompt_cache",
             "MLFLOW_SUPPORT_EVALUATION_DATASET_NAME": "support-governance",
+            "MLFLOW_GUARDRAIL_EXPERIMENT_NAME": "guardrail-eval-test",
+            "MLFLOW_GUARDRAIL_EVALUATION_DATASET_NAME": "guardrail-dataset-test",
+            "MLFLOW_GUARDRAIL_MAX_CASES": "200",
+            "MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS": "96",
+            "MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS": "1800",
+            "MLFLOW_GUARDRAIL_JUDGE_MODEL": "openrouter:/qwen/qwen3.7-plus",
             "MLFLOW_AUTOMATIC_EVALUATION_ENABLED": "false",
             "MLFLOW_GENAI_JUDGE_DEFAULT_MODEL": "openai:/gpt-4o-mini",
             "MLFLOW_GIT_VERSION_TRACKING_ENABLED": "true",
@@ -197,7 +215,9 @@ class LLMConfigTests(unittest.TestCase):
         self.assertTrue(config.fastapi_otel_auto_instrumentation_enabled)
         self.assertTrue(config.openinference_crewai_enabled)
         self.assertFalse(config.openinference_litellm_enabled)
-        self.assertEqual(config.otel_exporter_otlp_traces_endpoint, "http://phoenix:6006/v1/traces")
+        self.assertEqual(
+            config.otel_exporter_otlp_traces_endpoint, "http://phoenix:6006/v1/traces"
+        )
         self.assertEqual(config.otel_exporter_otlp_protocol, "http/protobuf")
         self.assertEqual(config.phoenix_project_name, "cross-border-ai-dev")
         self.assertEqual(config.langfuse_base_url, "http://langfuse-web:3000")
@@ -206,13 +226,31 @@ class LLMConfigTests(unittest.TestCase):
         self.assertTrue(config.mlflow_tracing_enabled)
         self.assertTrue(config.mlflow_prompt_registry_enabled)
         self.assertEqual(config.mlflow_support_prompt_alias, "production")
-        self.assertEqual(config.mlflow_prompt_cache_dir, "artifacts/mlflow_prompt_cache")
-        self.assertEqual(config.mlflow_support_evaluation_dataset_name, "support-governance")
+        self.assertEqual(
+            config.mlflow_prompt_cache_dir, "artifacts/mlflow_prompt_cache"
+        )
+        self.assertEqual(
+            config.mlflow_support_evaluation_dataset_name, "support-governance"
+        )
+        self.assertEqual(config.mlflow_guardrail_experiment_name, "guardrail-eval-test")
+        self.assertEqual(
+            config.mlflow_guardrail_evaluation_dataset_name,
+            "guardrail-dataset-test",
+        )
+        self.assertEqual(config.mlflow_guardrail_max_cases, 200)
+        self.assertEqual(config.mlflow_guardrail_max_judge_calls, 96)
+        self.assertEqual(config.mlflow_guardrail_suite_timeout_seconds, 1800)
+        self.assertEqual(
+            config.mlflow_guardrail_judge_model,
+            "openrouter:/qwen/qwen3.7-plus",
+        )
         self.assertFalse(config.mlflow_automatic_evaluation_enabled)
         self.assertEqual(config.mlflow_genai_judge_default_model, "openai:/gpt-4o-mini")
         self.assertTrue(config.mlflow_git_version_tracking_enabled)
 
-    def test_provider_credentials_override_tool_cache_without_infra_settings(self) -> None:
+    def test_provider_credentials_override_tool_cache_without_infra_settings(
+        self,
+    ) -> None:
         credentials = ProviderCredentials.model_validate(
             {
                 "tool_cache_enabled": False,
@@ -231,7 +269,9 @@ class LLMConfigTests(unittest.TestCase):
         self.assertFalse(context["tool_execution_async_enabled"])
 
         with self.assertRaises(ValidationError):
-            ProviderCredentials.model_validate({"tool_cache_redis_url": "redis://malicious.local/0"})
+            ProviderCredentials.model_validate(
+                {"tool_cache_redis_url": "redis://malicious.local/0"}
+            )
 
     def test_runtime_config_loads_workflow_router_flags(self) -> None:
         env = {
@@ -264,7 +304,9 @@ class LLMConfigTests(unittest.TestCase):
             config = load_runtime_config()
 
         self.assertEqual(config.support_auto_send_confidence_threshold, 0.82)
-        self.assertEqual(config.as_context()["support_auto_send_confidence_threshold"], 0.82)
+        self.assertEqual(
+            config.as_context()["support_auto_send_confidence_threshold"], 0.82
+        )
 
     def test_provider_credentials_override_workflow_router_safely(self) -> None:
         credentials = ProviderCredentials.model_validate(
@@ -349,7 +391,9 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(config.support_qa_mode, "adaptive_fast")
 
     def test_runtime_config_reads_workflow_async_execution_flag(self) -> None:
-        with patch.dict(os.environ, {"WORKFLOW_ASYNC_EXECUTION_ENABLED": "false"}, clear=True):
+        with patch.dict(
+            os.environ, {"WORKFLOW_ASYNC_EXECUTION_ENABLED": "false"}, clear=True
+        ):
             config = load_runtime_config()
 
         self.assertFalse(config.workflow_async_execution_enabled)
@@ -441,7 +485,9 @@ class LLMConfigTests(unittest.TestCase):
             disabled_router.llm_for_agent({"llm_tier": "worker"}),
             disabled_router.llm_for_agent({"llm_tier": "reviewer"}),
         )
-        self.assertEqual(disabled_router.llm_for_agent({"llm_tier": "worker"}).model, "gpt-base")
+        self.assertEqual(
+            disabled_router.llm_for_agent({"llm_tier": "worker"}).model, "gpt-base"
+        )
 
         reviewer_only_router = ModelTierRouter(
             {
@@ -523,23 +569,37 @@ class LLMConfigTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context),
-            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_secret_context),
+            build_workflow_cache_key(
+                WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context
+            ),
+            build_workflow_cache_key(
+                WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_secret_context
+            ),
         )
         self.assertNotEqual(
-            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context),
-            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_model_context),
+            build_workflow_cache_key(
+                WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context
+            ),
+            build_workflow_cache_key(
+                WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_model_context
+            ),
         )
         self.assertNotEqual(
-            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context),
-            build_workflow_cache_key(WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_tier_profile_context),
+            build_workflow_cache_key(
+                WorkflowType.SUPPORT, {"inquiry": "hello"}, base_context
+            ),
+            build_workflow_cache_key(
+                WorkflowType.SUPPORT, {"inquiry": "hello"}, changed_tier_profile_context
+            ),
         )
 
     def test_agents_yaml_declares_expected_model_tiers(self) -> None:
         root = Path(__file__).resolve().parents[1]
         failures: dict[str, object] = {}
         for relative_path, expected_reviewers in EXPECTED_REVIEWER_AGENTS.items():
-            agents_config = yaml.safe_load((root / relative_path).read_text(encoding="utf-8"))
+            agents_config = yaml.safe_load(
+                (root / relative_path).read_text(encoding="utf-8")
+            )
             tiers = {
                 agent_name: str(agent_config.get("llm_tier") or "")
                 for agent_name, agent_config in agents_config.items()
@@ -550,9 +610,7 @@ class LLMConfigTests(unittest.TestCase):
                 if tier not in {"worker", "reviewer"}
             }
             actual_reviewers = {
-                agent_name
-                for agent_name, tier in tiers.items()
-                if tier == "reviewer"
+                agent_name for agent_name, tier in tiers.items() if tier == "reviewer"
             }
             if invalid or actual_reviewers != expected_reviewers:
                 failures[relative_path] = {

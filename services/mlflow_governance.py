@@ -195,7 +195,8 @@ def register_official_support_scorers(
     from mlflow.genai.scorers import ScorerSamplingConfig, get_scorer
 
     model = str(
-        config_context.get("mlflow_genai_judge_default_model") or "openai:/gpt-4o-mini"
+        config_context.get("mlflow_genai_judge_default_model")
+        or "openrouter:/qwen/qwen3.7-plus"
     )
     automatic_enabled = bool(config_context.get("mlflow_automatic_evaluation_enabled"))
     if automatic_enabled and not model.startswith("gateway:/"):

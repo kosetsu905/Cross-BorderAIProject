@@ -190,7 +190,7 @@ MLFLOW_TRACING_ENABLED=false
 MLFLOW_PROMPT_REGISTRY_ENABLED=true
 MLFLOW_SUPPORT_PROMPT_ALIAS=production
 MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false
-MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openai:/gpt-4o-mini
+MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openrouter:/qwen/qwen3.7-plus
 MLFLOW_GIT_VERSION_TRACKING_ENABLED=true
 ```
 
@@ -530,8 +530,14 @@ MLFLOW_PROMPT_REGISTRY_ENABLED=true
 MLFLOW_SUPPORT_PROMPT_ALIAS=production
 MLFLOW_PROMPT_CACHE_DIR=artifacts/mlflow_prompt_cache
 MLFLOW_SUPPORT_EVALUATION_DATASET_NAME=support-governance
+MLFLOW_GUARDRAIL_EXPERIMENT_NAME=cross-border-ai-guardrails
+MLFLOW_GUARDRAIL_EVALUATION_DATASET_NAME=guardrail-regression-v1
+MLFLOW_GUARDRAIL_MAX_CASES=200
+MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS=96
+MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS=1800
+MLFLOW_GUARDRAIL_JUDGE_MODEL=openrouter:/qwen/qwen3.7-plus
 MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false
-MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openai:/gpt-4o-mini
+MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openrouter:/qwen/qwen3.7-plus
 MLFLOW_GIT_VERSION_TRACKING_ENABLED=true
 MLFLOW_ADMIN_USERNAME=admin
 MLFLOW_ADMIN_PASSWORD=replace_mlflow_admin_password
@@ -572,6 +578,32 @@ docker compose exec fastapi python scripts/run_mlflow_support_evaluation.py
 This calls `mlflow.genai.evaluate()` with MLflow's official `RelevanceToQuery`, `Completeness`, `Safety`, `PIIDetection`, and `Guidelines` scorers. `ConversationalRoleAdherence` and `UserFrustration` are registered for conversation-aware evaluation.
 
 MLflow 3.14 Automatic Evaluation requires an AI Gateway endpoint. This project intentionally keeps `MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false` while the first governance phase does not use AI Gateway. Setting it to `true` without a `gateway:/<endpoint>` judge model fails validation instead of silently running a custom scheduler. Human approve, reject, and override actions are attached to the matching support trace through `mlflow.log_feedback()`; an edited approved response is attached through `mlflow.log_expectation()`.
+
+### Guardrail Regression Evaluation
+
+The fixed suite in `config/mlflow/guardrail_evaluation_dataset.json` contains 200 reviewed support/content cases (140 English and 60 Chinese). Every case has two labels: `policy_expectation` is the desired safety behavior used by the PR gate, while `current_expectation` detects unintentional changes to today's configuration contract. The MLflow dataset receives only case IDs, labels, tags, a dataset digest, and redacted evaluation outputs; source attack payloads remain in Git and are not uploaded as trace inputs.
+
+Create an evaluator-only secret file and keep it outside the API, worker, MLflow server, and browser environments:
+
+```powershell
+Copy-Item .env.guardrail-eval.example .env.guardrail-eval
+# Edit .env.guardrail-eval and set OPENROUTER_API_KEY.
+```
+
+MLflow Evaluation Datasets require a SQL backend. The monitoring stack already uses PostgreSQL, so no schema setting is needed beyond starting MLflow and running the idempotent bootstrap:
+
+```powershell
+docker compose -f docker-compose.monitoring.yml up -d mlflow
+docker compose exec fastapi python scripts/bootstrap_mlflow_guardrail_evaluation.py
+```
+
+Run all deterministic cases plus at most 96 explicitly invoked Qwen3.7 Plus judges:
+
+```powershell
+docker compose run --rm --no-deps fastapi python scripts/evaluate_guardrails.py
+```
+
+Use `--skip-judges` for a local deterministic-only diagnostic run and `--report-only` to collect results without failing on quality thresholds. Exit code `0` means the gate passed, `1` means quality thresholds failed, and `2` means evaluator/MLflow/provider infrastructure failed. The redacted report is written to `artifacts/guardrail_evaluation/latest.json`. Full design, metrics, thresholds, and CI settings are documented in `docs/guardrail-evaluation.md`.
 
 ## Common Test Commands
 

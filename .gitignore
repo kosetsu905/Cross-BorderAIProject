@@ -21,6 +21,7 @@ env/
 .env
 .env.*
 !.env.example
+!.env.guardrail-eval.example
 
 # IDEs and OS files
 .idea/

@@ -144,6 +144,12 @@ RUNTIME_CONFIG_KEYS = {
     "mlflow_support_prompt_alias",
     "mlflow_prompt_cache_dir",
     "mlflow_support_evaluation_dataset_name",
+    "mlflow_guardrail_experiment_name",
+    "mlflow_guardrail_evaluation_dataset_name",
+    "mlflow_guardrail_max_cases",
+    "mlflow_guardrail_max_judge_calls",
+    "mlflow_guardrail_suite_timeout_seconds",
+    "mlflow_guardrail_judge_model",
     "mlflow_automatic_evaluation_enabled",
     "mlflow_genai_judge_default_model",
     "mlflow_git_version_tracking_enabled",
@@ -166,7 +172,13 @@ class LLMProfileConfig(BaseModel):
     llm_api_key_env: str | None = Field(default=None, min_length=1)
     llm_disable_reasoning: bool | None = None
 
-    @field_validator("llm_provider", "llm_model_name", "llm_base_url", "llm_api_key_env", mode="before")
+    @field_validator(
+        "llm_provider",
+        "llm_model_name",
+        "llm_base_url",
+        "llm_api_key_env",
+        mode="before",
+    )
     @classmethod
     def _strip_string(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
@@ -185,7 +197,9 @@ class LLMProfileConfig(BaseModel):
     @classmethod
     def _validate_api_key_env(cls, value: str | None) -> str | None:
         if value and not ENV_NAME_RE.fullmatch(value):
-            raise ValueError("llm_api_key_env must be a valid environment variable name")
+            raise ValueError(
+                "llm_api_key_env must be a valid environment variable name"
+            )
         return value
 
 
@@ -206,7 +220,9 @@ class RuntimeConfig:
     openai_api_key: str | None = None
     openai_model_name: str = "gpt-4o-mini"
     crewai_memory_enabled: bool = False
-    crewai_memory_workflows: str = "marketing,content,analytics,bizdev,scheduler,sales_improvement"
+    crewai_memory_workflows: str = (
+        "marketing,content,analytics,bizdev,scheduler,sales_improvement"
+    )
     crewai_memory_storage_path: str = "artifacts/crewai_memory"
     crewai_memory_embedder_model: str = "text-embedding-3-small"
     workflow_context_max_chars: int = 12000
@@ -322,8 +338,14 @@ class RuntimeConfig:
     mlflow_support_prompt_alias: str = "production"
     mlflow_prompt_cache_dir: str = "artifacts/mlflow_prompt_cache"
     mlflow_support_evaluation_dataset_name: str = "support-governance"
+    mlflow_guardrail_experiment_name: str = "cross-border-ai-guardrails"
+    mlflow_guardrail_evaluation_dataset_name: str = "guardrail-regression-v1"
+    mlflow_guardrail_max_cases: int = 200
+    mlflow_guardrail_max_judge_calls: int = 96
+    mlflow_guardrail_suite_timeout_seconds: int = 1800
+    mlflow_guardrail_judge_model: str = "openrouter:/qwen/qwen3.7-plus"
     mlflow_automatic_evaluation_enabled: bool = False
-    mlflow_genai_judge_default_model: str = "openai:/gpt-4o-mini"
+    mlflow_genai_judge_default_model: str = "openrouter:/qwen/qwen3.7-plus"
     mlflow_git_version_tracking_enabled: bool = False
     content_language_concurrency: int = 4
     marketing_market_concurrency: int = 4
@@ -361,7 +383,9 @@ def parse_llm_profiles(raw_json: str | None) -> dict[str, LLMProfileConfig]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid LLM_PROFILES_JSON: {exc.msg}") from exc
     if not isinstance(parsed, dict):
-        raise ValueError("LLM_PROFILES_JSON must be a JSON object keyed by profile name.")
+        raise ValueError(
+            "LLM_PROFILES_JSON must be a JSON object keyed by profile name."
+        )
 
     profiles: dict[str, LLMProfileConfig] = {}
     for raw_name, raw_profile in parsed.items():
@@ -369,18 +393,24 @@ def parse_llm_profiles(raw_json: str | None) -> dict[str, LLMProfileConfig]:
             raise ValueError("LLM profile names must be strings.")
         profile_name = _normalize_profile_name(raw_name)
         if profile_name in profiles:
-            raise ValueError(f"Duplicate LLM profile name after normalization: {profile_name}")
+            raise ValueError(
+                f"Duplicate LLM profile name after normalization: {profile_name}"
+            )
         if not isinstance(raw_profile, dict):
             raise ValueError(f"LLM profile '{profile_name}' must be a JSON object.")
         profiles[profile_name] = LLMProfileConfig.model_validate(raw_profile)
     return profiles
 
 
-def _profile_from_context(context: dict[str, Any], profile_name: str) -> LLMProfileConfig:
+def _profile_from_context(
+    context: dict[str, Any], profile_name: str
+) -> LLMProfileConfig:
     profiles = context.get("llm_profiles") or {}
     if profile_name not in profiles:
         available = ", ".join(sorted(str(name) for name in profiles)) or "none"
-        raise ValueError(f"Unknown LLM profile '{profile_name}'. Available profiles: {available}.")
+        raise ValueError(
+            f"Unknown LLM profile '{profile_name}'. Available profiles: {available}."
+        )
     profile = profiles[profile_name]
     if isinstance(profile, LLMProfileConfig):
         return profile
@@ -389,7 +419,9 @@ def _profile_from_context(context: dict[str, Any], profile_name: str) -> LLMProf
     raise ValueError(f"LLM profile '{profile_name}' has an invalid configuration.")
 
 
-def _resolved_profile_api_key(profile_name: str, profile: LLMProfileConfig) -> str | None:
+def _resolved_profile_api_key(
+    profile_name: str, profile: LLMProfileConfig
+) -> str | None:
     if not profile.llm_api_key_env:
         return None
     api_key = os.getenv(profile.llm_api_key_env)
@@ -414,7 +446,9 @@ def apply_llm_profile_context(
     context["llm_base_url"] = (
         profile.llm_base_url
         if profile.llm_base_url
-        else DEFAULT_OPENROUTER_BASE_URL if profile.llm_provider == "openrouter" else None
+        else DEFAULT_OPENROUTER_BASE_URL
+        if profile.llm_provider == "openrouter"
+        else None
     )
     api_key = _resolved_profile_api_key(normalized_name, profile)
     if api_key:
@@ -429,17 +463,23 @@ def resolve_workflow_runtime_context(
     workflow_type: Any,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    context = base_context.as_context() if isinstance(base_context, RuntimeConfig) else dict(base_context)
-    workflow_value = workflow_type.value if hasattr(workflow_type, "value") else str(workflow_type)
+    context = (
+        base_context.as_context()
+        if isinstance(base_context, RuntimeConfig)
+        else dict(base_context)
+    )
+    workflow_value = (
+        workflow_type.value if hasattr(workflow_type, "value") else str(workflow_type)
+    )
 
     if workflow_value == "support" and context.get("support_llm_profile"):
-        context = apply_llm_profile_context(context, str(context["support_llm_profile"]))
+        context = apply_llm_profile_context(
+            context, str(context["support_llm_profile"])
+        )
 
     request_profile = (overrides or {}).get("llm_profile")
     direct_overrides = {
-        key: value
-        for key, value in (overrides or {}).items()
-        if key != "llm_profile"
+        key: value for key, value in (overrides or {}).items() if key != "llm_profile"
     }
     context = merge_runtime_context(context, direct_overrides)
 
@@ -469,13 +509,17 @@ def _env(name: str, fallback: str | None = None) -> str | None:
 def load_runtime_config() -> RuntimeConfig:
     llm_provider = os.getenv("LLM_PROVIDER", "openai")
     llm_api_key = _env("LLM_API_KEY", "OPENAI_API_KEY")
-    llm_model_name = os.getenv("LLM_MODEL_NAME") or os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini")
+    llm_model_name = os.getenv("LLM_MODEL_NAME") or os.getenv(
+        "OPENAI_MODEL_NAME", "gpt-4o-mini"
+    )
     llm_base_url = os.getenv("LLM_BASE_URL")
     if not llm_base_url and llm_provider.lower() == "openrouter":
         llm_base_url = DEFAULT_OPENROUTER_BASE_URL
     llm_profiles = parse_llm_profiles(os.getenv("LLM_PROFILES_JSON"))
     support_llm_profile = os.getenv("SUPPORT_LLM_PROFILE")
-    support_llm_profile = _normalize_profile_name(support_llm_profile) if support_llm_profile else None
+    support_llm_profile = (
+        _normalize_profile_name(support_llm_profile) if support_llm_profile else None
+    )
     workflow_model_tiering_enabled = _bool_env("WORKFLOW_MODEL_TIERING_ENABLED", True)
     workflow_worker_llm_profile = os.getenv("WORKFLOW_WORKER_LLM_PROFILE") or None
     workflow_worker_llm_profile = (
@@ -489,7 +533,9 @@ def load_runtime_config() -> RuntimeConfig:
         if workflow_reviewer_llm_profile
         else None
     )
-    workflow_guardrails_model = os.getenv("WORKFLOW_GUARDRAILS_MODEL") or "openai_gpt4o_mini"
+    workflow_guardrails_model = (
+        os.getenv("WORKFLOW_GUARDRAILS_MODEL") or "openai_gpt4o_mini"
+    )
     workflow_guardrails_model = _normalize_profile_name(workflow_guardrails_model)
     workflow_guardrails_prompt_injection_model = (
         os.getenv("WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL") or "openai_gpt4o_mini"
@@ -512,7 +558,10 @@ def load_runtime_config() -> RuntimeConfig:
     if support_llm_profile:
         apply_llm_profile_context(profile_context, support_llm_profile)
     if workflow_model_tiering_enabled:
-        for tier_profile in (workflow_worker_llm_profile, workflow_reviewer_llm_profile):
+        for tier_profile in (
+            workflow_worker_llm_profile,
+            workflow_reviewer_llm_profile,
+        ):
             if tier_profile:
                 apply_llm_profile_context(profile_context, tier_profile)
     if workflow_router_llm_profile:
@@ -525,7 +574,9 @@ def load_runtime_config() -> RuntimeConfig:
         llm_disable_reasoning=_bool_env("LLM_DISABLE_REASONING", False),
         llm_profiles=llm_profiles,
         content_image_model=os.getenv("CONTENT_IMAGE_MODEL", "gpt-image-2"),
-        content_image_scoring_model=os.getenv("CONTENT_IMAGE_SCORING_MODEL", "gpt-4o-mini"),
+        content_image_scoring_model=os.getenv(
+            "CONTENT_IMAGE_SCORING_MODEL", "gpt-4o-mini"
+        ),
         content_image_artifact_dir=os.getenv(
             "CONTENT_IMAGE_ARTIFACT_DIR",
             "artifacts/content_creation",
@@ -539,8 +590,12 @@ def load_runtime_config() -> RuntimeConfig:
             "CREWAI_MEMORY_WORKFLOWS",
             "marketing,content,analytics,bizdev,scheduler,sales_improvement",
         ),
-        crewai_memory_storage_path=os.getenv("CREWAI_MEMORY_STORAGE_PATH", "artifacts/crewai_memory"),
-        crewai_memory_embedder_model=os.getenv("CREWAI_MEMORY_EMBEDDER_MODEL", "text-embedding-3-small"),
+        crewai_memory_storage_path=os.getenv(
+            "CREWAI_MEMORY_STORAGE_PATH", "artifacts/crewai_memory"
+        ),
+        crewai_memory_embedder_model=os.getenv(
+            "CREWAI_MEMORY_EMBEDDER_MODEL", "text-embedding-3-small"
+        ),
         workflow_context_max_chars=_int_env("WORKFLOW_CONTEXT_MAX_CHARS", 12000),
         task_context_max_chars=_int_env("TASK_CONTEXT_MAX_CHARS", 4000),
         workflow_model_tiering_enabled=workflow_model_tiering_enabled,
@@ -565,7 +620,9 @@ def load_runtime_config() -> RuntimeConfig:
             0.75,
         ),
         workflow_router_enabled=_bool_env("WORKFLOW_ROUTER_ENABLED", True),
-        workflow_router_llm_fallback_enabled=_bool_env("WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED", True),
+        workflow_router_llm_fallback_enabled=_bool_env(
+            "WORKFLOW_ROUTER_LLM_FALLBACK_ENABLED", True
+        ),
         workflow_router_confidence_threshold=_float_env_with_default(
             "WORKFLOW_ROUTER_CONFIDENCE_THRESHOLD",
             0.75,
@@ -592,13 +649,23 @@ def load_runtime_config() -> RuntimeConfig:
         amazon_sp_api_access_token=os.getenv("AMAZON_SP_API_ACCESS_TOKEN"),
         amazon_marketplace_ids=os.getenv("AMAZON_MARKETPLACE_IDS"),
         support_knowledge_dir=os.getenv("SUPPORT_KNOWLEDGE_DIR"),
-        support_handoff_webhook_url=_env("SUPPORT_HANDOFF_WEBHOOK_URL", "SLACK_WEBHOOK_URL"),
-        support_session_redis_url=_env("SUPPORT_SESSION_REDIS_URL", "CELERY_BROKER_URL"),
+        support_handoff_webhook_url=_env(
+            "SUPPORT_HANDOFF_WEBHOOK_URL", "SLACK_WEBHOOK_URL"
+        ),
+        support_session_redis_url=_env(
+            "SUPPORT_SESSION_REDIS_URL", "CELERY_BROKER_URL"
+        ),
         support_session_ttl_seconds=_int_env("SUPPORT_SESSION_TTL_SECONDS", 86400),
         support_session_history_limit=_int_env("SUPPORT_SESSION_HISTORY_LIMIT", 20),
-        support_serper_pre_sales_enabled=_bool_env("SUPPORT_SERPER_PRE_SALES_ENABLED", False),
-        support_serper_order_fulfillment_enabled=_bool_env("SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED", False),
-        support_serper_post_sales_enabled=_bool_env("SUPPORT_SERPER_POST_SALES_ENABLED", False),
+        support_serper_pre_sales_enabled=_bool_env(
+            "SUPPORT_SERPER_PRE_SALES_ENABLED", False
+        ),
+        support_serper_order_fulfillment_enabled=_bool_env(
+            "SUPPORT_SERPER_ORDER_FULFILLMENT_ENABLED", False
+        ),
+        support_serper_post_sales_enabled=_bool_env(
+            "SUPPORT_SERPER_POST_SALES_ENABLED", False
+        ),
         holiday_api_key=os.getenv("HOLIDAY_API_KEY"),
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
         google_ads_access_token=os.getenv("GOOGLE_ADS_ACCESS_TOKEN"),
@@ -634,8 +701,12 @@ def load_runtime_config() -> RuntimeConfig:
         pim_custom_api_key=os.getenv("PIM_CUSTOM_API_KEY"),
         intent_classifier_enabled=_bool_env("INTENT_CLASSIFIER_ENABLED", False),
         intent_classifier_model_path=os.getenv("INTENT_CLASSIFIER_MODEL_PATH"),
-        intent_router_llm_fallback_enabled=_bool_env("INTENT_ROUTER_LLM_FALLBACK_ENABLED", True),
-        intent_router_confidence_threshold=_float_env_with_default("INTENT_ROUTER_CONFIDENCE_THRESHOLD", 0.75),
+        intent_router_llm_fallback_enabled=_bool_env(
+            "INTENT_ROUTER_LLM_FALLBACK_ENABLED", True
+        ),
+        intent_router_confidence_threshold=_float_env_with_default(
+            "INTENT_ROUTER_CONFIDENCE_THRESHOLD", 0.75
+        ),
         meta_access_token=os.getenv("META_ACCESS_TOKEN"),
         meta_ad_account_id=os.getenv("META_AD_ACCOUNT_ID"),
         meta_page_id=os.getenv("META_PAGE_ID"),
@@ -644,29 +715,55 @@ def load_runtime_config() -> RuntimeConfig:
         openai_input_cost_per_1m_tokens=_float_env("OPENAI_INPUT_COST_PER_1M_TOKENS"),
         openai_output_cost_per_1m_tokens=_float_env("OPENAI_OUTPUT_COST_PER_1M_TOKENS"),
         workflow_result_cache_enabled=_bool_env("WORKFLOW_RESULT_CACHE_ENABLED", True),
-        workflow_result_cache_ttl_seconds=_int_env("WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600),
-        workflow_async_execution_enabled=_bool_env("WORKFLOW_ASYNC_EXECUTION_ENABLED", True),
+        workflow_result_cache_ttl_seconds=_int_env(
+            "WORKFLOW_RESULT_CACHE_TTL_SECONDS", 3600
+        ),
+        workflow_async_execution_enabled=_bool_env(
+            "WORKFLOW_ASYNC_EXECUTION_ENABLED", True
+        ),
         observability_enabled=_bool_env("OBSERVABILITY_ENABLED", False),
-        observability_capture_input_output=_bool_env("OBSERVABILITY_CAPTURE_INPUT_OUTPUT", False),
+        observability_capture_input_output=_bool_env(
+            "OBSERVABILITY_CAPTURE_INPUT_OUTPUT", False
+        ),
         observability_environment=os.getenv("OBSERVABILITY_ENVIRONMENT", "local"),
         otel_enabled=_bool_env("OTEL_ENABLED", True),
-        otel_global_auto_instrumentation_enabled=_bool_env("OTEL_GLOBAL_AUTO_INSTRUMENTATION_ENABLED", False),
-        otel_httpx_instrumentation_enabled=_bool_env("OTEL_HTTPX_INSTRUMENTATION_ENABLED", False),
-        otel_redis_instrumentation_enabled=_bool_env("OTEL_REDIS_INSTRUMENTATION_ENABLED", False),
-        otel_sqlalchemy_instrumentation_enabled=_bool_env("OTEL_SQLALCHEMY_INSTRUMENTATION_ENABLED", False),
-        otel_celery_instrumentation_enabled=_bool_env("OTEL_CELERY_INSTRUMENTATION_ENABLED", False),
-        fastapi_otel_auto_instrumentation_enabled=_bool_env("FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED", False),
+        otel_global_auto_instrumentation_enabled=_bool_env(
+            "OTEL_GLOBAL_AUTO_INSTRUMENTATION_ENABLED", False
+        ),
+        otel_httpx_instrumentation_enabled=_bool_env(
+            "OTEL_HTTPX_INSTRUMENTATION_ENABLED", False
+        ),
+        otel_redis_instrumentation_enabled=_bool_env(
+            "OTEL_REDIS_INSTRUMENTATION_ENABLED", False
+        ),
+        otel_sqlalchemy_instrumentation_enabled=_bool_env(
+            "OTEL_SQLALCHEMY_INSTRUMENTATION_ENABLED", False
+        ),
+        otel_celery_instrumentation_enabled=_bool_env(
+            "OTEL_CELERY_INSTRUMENTATION_ENABLED", False
+        ),
+        fastapi_otel_auto_instrumentation_enabled=_bool_env(
+            "FASTAPI_OTEL_AUTO_INSTRUMENTATION_ENABLED", False
+        ),
         openinference_crewai_enabled=_bool_env("OPENINFERENCE_CREWAI_ENABLED", False),
         openinference_litellm_enabled=_bool_env("OPENINFERENCE_LITELLM_ENABLED", True),
-        otel_exporter_otlp_traces_endpoint=_env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"),
-        otel_exporter_otlp_protocol=os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+        otel_exporter_otlp_traces_endpoint=_env(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"
+        ),
+        otel_exporter_otlp_protocol=os.getenv(
+            "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"
+        ),
         phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "cross-border-ai-dev"),
         langfuse_base_url=_env("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
         mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI"),
         mlflow_experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "cross-border-ai"),
         mlflow_tracing_enabled=_bool_env("MLFLOW_TRACING_ENABLED", False),
-        mlflow_prompt_registry_enabled=_bool_env("MLFLOW_PROMPT_REGISTRY_ENABLED", False),
-        mlflow_support_prompt_alias=os.getenv("MLFLOW_SUPPORT_PROMPT_ALIAS", "production"),
+        mlflow_prompt_registry_enabled=_bool_env(
+            "MLFLOW_PROMPT_REGISTRY_ENABLED", False
+        ),
+        mlflow_support_prompt_alias=os.getenv(
+            "MLFLOW_SUPPORT_PROMPT_ALIAS", "production"
+        ),
         mlflow_prompt_cache_dir=os.getenv(
             "MLFLOW_PROMPT_CACHE_DIR",
             "artifacts/mlflow_prompt_cache",
@@ -675,13 +772,34 @@ def load_runtime_config() -> RuntimeConfig:
             "MLFLOW_SUPPORT_EVALUATION_DATASET_NAME",
             "support-governance",
         ),
+        mlflow_guardrail_experiment_name=os.getenv(
+            "MLFLOW_GUARDRAIL_EXPERIMENT_NAME",
+            "cross-border-ai-guardrails",
+        ),
+        mlflow_guardrail_evaluation_dataset_name=os.getenv(
+            "MLFLOW_GUARDRAIL_EVALUATION_DATASET_NAME",
+            "guardrail-regression-v1",
+        ),
+        mlflow_guardrail_max_cases=_int_env("MLFLOW_GUARDRAIL_MAX_CASES", 200),
+        mlflow_guardrail_max_judge_calls=_int_env(
+            "MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS",
+            96,
+        ),
+        mlflow_guardrail_suite_timeout_seconds=_int_env(
+            "MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS",
+            1800,
+        ),
+        mlflow_guardrail_judge_model=os.getenv(
+            "MLFLOW_GUARDRAIL_JUDGE_MODEL",
+            "openrouter:/qwen/qwen3.7-plus",
+        ),
         mlflow_automatic_evaluation_enabled=_bool_env(
             "MLFLOW_AUTOMATIC_EVALUATION_ENABLED",
             False,
         ),
         mlflow_genai_judge_default_model=os.getenv(
             "MLFLOW_GENAI_JUDGE_DEFAULT_MODEL",
-            "openai:/gpt-4o-mini",
+            "openrouter:/qwen/qwen3.7-plus",
         ),
         mlflow_git_version_tracking_enabled=_bool_env(
             "MLFLOW_GIT_VERSION_TRACKING_ENABLED",
@@ -692,7 +810,9 @@ def load_runtime_config() -> RuntimeConfig:
         serper_deep_read_enabled=_bool_env("SERPER_DEEP_READ_ENABLED", False),
         serper_deep_read_max_pages=_int_env("SERPER_DEEP_READ_MAX_PAGES", 3),
         serper_deep_read_concurrency=_int_env("SERPER_DEEP_READ_CONCURRENCY", 5),
-        serper_deep_read_timeout_seconds=_int_env("SERPER_DEEP_READ_TIMEOUT_SECONDS", 10),
+        serper_deep_read_timeout_seconds=_int_env(
+            "SERPER_DEEP_READ_TIMEOUT_SECONDS", 10
+        ),
         serper_deep_read_max_chars=_int_env("SERPER_DEEP_READ_MAX_CHARS", 4000),
     )
 
@@ -749,7 +869,11 @@ def merge_runtime_context(
     base_context: RuntimeConfig | dict[str, Any],
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    context = base_context.as_context() if isinstance(base_context, RuntimeConfig) else dict(base_context)
+    context = (
+        base_context.as_context()
+        if isinstance(base_context, RuntimeConfig)
+        else dict(base_context)
+    )
     for key, value in (overrides or {}).items():
         if key in RUNTIME_CONFIG_KEYS and value not in (None, ""):
             context[key] = value

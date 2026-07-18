@@ -31,3 +31,4 @@ opentelemetry-instrumentation-httpx
 opentelemetry-instrumentation-sqlalchemy
 opentelemetry-instrumentation-redis
 mlflow==3.14.0
+litellm

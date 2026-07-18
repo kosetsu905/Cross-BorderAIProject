@@ -1,0 +1,100 @@
+name: Guardrail regression
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dataset-and-unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest ruff
+
+      - name: Validate formatting and lint
+        run: |
+          ruff format --check runtime_config.py services/guardrail_evaluation.py services/mlflow_guardrail_evaluation.py scripts/bootstrap_mlflow_guardrail_evaluation.py scripts/evaluate_guardrails.py tests/test_guardrail_evaluation.py
+          ruff check runtime_config.py services/guardrail_evaluation.py services/mlflow_guardrail_evaluation.py scripts/bootstrap_mlflow_guardrail_evaluation.py scripts/evaluate_guardrails.py tests/test_guardrail_evaluation.py
+
+      - name: Run guardrail harness tests
+        run: pytest tests/test_guardrail_evaluation.py tests/test_llm_config.py tests/test_mlflow_governance.py -q
+
+  live-guardrail-evaluation:
+    needs: dataset-and-unit-tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build evaluator image with Guardrails Hub validators
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: cross-border-ai-guardrail-evaluator:ci
+          secrets: |
+            guardrails_token=${{ secrets.GUARDRAILS_TOKEN }}
+          cache-from: type=gha,scope=guardrail-evaluator
+          cache-to: type=gha,mode=max,scope=guardrail-evaluator
+
+      - name: Start SQL-backed MLflow tracking server
+        run: |
+          docker network create guardrail-ci
+          docker run -d --name guardrail-mlflow --network guardrail-ci cross-border-ai-guardrail-evaluator:ci mlflow server --backend-store-uri sqlite:////tmp/mlflow.db --artifacts-destination /tmp/mlflow-artifacts --host 0.0.0.0 --port 5000
+          for attempt in $(seq 1 30); do
+            if docker run --rm --network guardrail-ci curlimages/curl:8.12.1 -fsS http://guardrail-mlflow:5000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs guardrail-mlflow
+          exit 1
+
+      - name: Run all 200 cases and bounded Qwen judges
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          test -n "$OPENROUTER_API_KEY"
+          test -n "$OPENAI_API_KEY"
+          mkdir -p artifacts/guardrail_evaluation
+          docker run --rm --network guardrail-ci \
+            -e MLFLOW_TRACKING_URI=http://guardrail-mlflow:5000 \
+            -e MLFLOW_TRACING_ENABLED=false \
+            -e MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false \
+            -e MLFLOW_GUARDRAIL_JUDGE_MODEL=openrouter:/qwen/qwen3.7-plus \
+            -e MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openrouter:/qwen/qwen3.7-plus \
+            -e MLFLOW_GUARDRAIL_MAX_CASES=200 \
+            -e MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS=96 \
+            -e MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS=1800 \
+            -e OPENROUTER_API_KEY \
+            -e OPENAI_API_KEY \
+            -v "$PWD/artifacts:/app/artifacts" \
+            cross-border-ai-guardrail-evaluator:ci \
+            python scripts/evaluate_guardrails.py
+
+      - name: Upload guardrail report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrail-evaluation-report
+          path: artifacts/guardrail_evaluation/latest.json
+          if-no-files-found: warn
+
+      - name: Show MLflow diagnostics on failure
+        if: failure()
+        run: docker logs guardrail-mlflow

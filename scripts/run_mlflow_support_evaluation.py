@@ -41,7 +41,8 @@ def main() -> None:
     )
     dataset = mlflow.genai.datasets.get_dataset(name=dataset_name)
     model = str(
-        config_context.get("mlflow_genai_judge_default_model") or "openai:/gpt-4o-mini"
+        config_context.get("mlflow_genai_judge_default_model")
+        or "openrouter:/qwen/qwen3.7-plus"
     )
     scorers = [
         scorer
