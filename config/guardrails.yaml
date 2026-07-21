@@ -1,11 +1,39 @@
 mode: monitor
-config_version: 3
+config_version: 4
 evidence_storage: masked_only
 human_override_requires_reason: true
 
 defaults:
   on_fail: noop
   capture_raw: false
+
+detector_pipeline:
+  version: guardrail-local-v2
+  raw_local_first:
+    - secrets_present
+    - detect_pii
+  semantic:
+    thresholds:
+      prompt_injection:
+        en: 0.84
+        zh: 0.80
+      toxic_language:
+        en: 0.82
+        zh: 0.78
+      forbidden_terms:
+        default: 0.88
+      provenance_llm:
+        default: 0.86
+    qwen:
+      enabled: true
+      profile: ${WORKFLOW_GUARDRAILS_SEMANTIC_MODEL:openrouter_qwen37}
+      timeout_seconds: 8
+      max_attempts: 3
+      fail_closed_actions:
+        - gmail.send
+        - whatsapp.send
+        - sms.send
+        - publish
 
 guards:
   support:
@@ -22,6 +50,8 @@ guards:
           entities:
             - EMAIL_ADDRESS
             - PHONE_NUMBER
+            - IP_ADDRESS
+            - CREDIT_CARD
           args:
             use_local: true
           policy: mask
@@ -29,6 +59,7 @@ guards:
         - id: prompt_injection
           hub: hub://sainatha/prompt_injection_detector
           class_name: PromptInjectionDetector
+          hub_runtime: false
           args:
             llm_callable: ${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}
             threshold: 0.8
@@ -55,6 +86,8 @@ guards:
           entities:
             - EMAIL_ADDRESS
             - PHONE_NUMBER
+            - IP_ADDRESS
+            - CREDIT_CARD
           args:
             use_local: true
           policy: mask
@@ -85,15 +118,19 @@ guards:
             llm_callable: ${WORKFLOW_GUARDRAILS_MODEL:openai_gpt4o_mini}
             validation_method: full
             top_k: 3
-          policy: monitor
+          policy: review_required
           severity: high
     action:
       gmail.send:
         high: review_required
         critical: block
+        policies:
+          toxic_language: block
       whatsapp.send:
         high: review_required
         critical: block
+        policies:
+          toxic_language: block
 
   content:
     input:
@@ -106,6 +143,7 @@ guards:
         - id: prompt_injection
           hub: hub://sainatha/prompt_injection_detector
           class_name: PromptInjectionDetector
+          hub_runtime: false
           args:
             llm_callable: ${WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL:openai_gpt4o_mini}
             threshold: 0.8
@@ -157,3 +195,5 @@ guards:
       publish:
         high: review_required
         critical: block
+        policies:
+          toxic_language: block

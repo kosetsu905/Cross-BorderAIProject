@@ -38,6 +38,8 @@ RUNTIME_CONFIG_KEYS = {
     "workflow_reviewer_llm_profile",
     "workflow_guardrails_model",
     "workflow_guardrails_prompt_injection_model",
+    "workflow_guardrails_semantic_model",
+    "workflow_guardrails_semantic_timeout_seconds",
     "workflow_guardrails_prompt_injection_timeout_seconds",
     "workflow_guardrails_prompt_injection_cache_ttl_seconds",
     "workflow_guardrails_native_tracing_enabled",
@@ -232,9 +234,11 @@ class RuntimeConfig:
     workflow_reviewer_llm_profile: str | None = None
     workflow_guardrails_model: str = "openai_gpt4o_mini"
     workflow_guardrails_prompt_injection_model: str = "openai_gpt4o_mini"
+    workflow_guardrails_semantic_model: str = "openrouter_qwen37"
+    workflow_guardrails_semantic_timeout_seconds: float = 8.0
     workflow_guardrails_prompt_injection_timeout_seconds: float = 5.0
     workflow_guardrails_prompt_injection_cache_ttl_seconds: int = 86400
-    workflow_guardrails_native_tracing_enabled: bool = True
+    workflow_guardrails_native_tracing_enabled: bool = False
     support_auto_send_confidence_threshold: float = 0.75
     workflow_router_enabled: bool = True
     workflow_router_llm_fallback_enabled: bool = True
@@ -341,7 +345,7 @@ class RuntimeConfig:
     mlflow_guardrail_experiment_name: str = "cross-border-ai-guardrails"
     mlflow_guardrail_evaluation_dataset_name: str = "guardrail-regression-v1"
     mlflow_guardrail_max_cases: int = 200
-    mlflow_guardrail_max_judge_calls: int = 96
+    mlflow_guardrail_max_judge_calls: int = 200
     mlflow_guardrail_suite_timeout_seconds: int = 1800
     mlflow_guardrail_judge_model: str = "openrouter:/qwen/qwen3.7-plus"
     mlflow_automatic_evaluation_enabled: bool = False
@@ -543,6 +547,12 @@ def load_runtime_config() -> RuntimeConfig:
     workflow_guardrails_prompt_injection_model = _normalize_profile_name(
         workflow_guardrails_prompt_injection_model
     )
+    workflow_guardrails_semantic_model = (
+        os.getenv("WORKFLOW_GUARDRAILS_SEMANTIC_MODEL") or "openrouter_qwen37"
+    )
+    workflow_guardrails_semantic_model = _normalize_profile_name(
+        workflow_guardrails_semantic_model
+    )
     workflow_router_llm_profile = os.getenv("WORKFLOW_ROUTER_LLM_PROFILE") or None
     workflow_router_llm_profile = (
         _normalize_profile_name(workflow_router_llm_profile)
@@ -603,6 +613,11 @@ def load_runtime_config() -> RuntimeConfig:
         workflow_reviewer_llm_profile=workflow_reviewer_llm_profile,
         workflow_guardrails_model=workflow_guardrails_model,
         workflow_guardrails_prompt_injection_model=workflow_guardrails_prompt_injection_model,
+        workflow_guardrails_semantic_model=workflow_guardrails_semantic_model,
+        workflow_guardrails_semantic_timeout_seconds=_float_env_with_default(
+            "WORKFLOW_GUARDRAILS_SEMANTIC_TIMEOUT_SECONDS",
+            8.0,
+        ),
         workflow_guardrails_prompt_injection_timeout_seconds=_float_env_with_default(
             "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS",
             5.0,
@@ -613,7 +628,7 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         workflow_guardrails_native_tracing_enabled=_bool_env(
             "WORKFLOW_GUARDRAILS_NATIVE_TRACING_ENABLED",
-            True,
+            False,
         ),
         support_auto_send_confidence_threshold=_float_env_with_default(
             "SUPPORT_AUTO_SEND_CONFIDENCE_THRESHOLD",
@@ -783,7 +798,7 @@ def load_runtime_config() -> RuntimeConfig:
         mlflow_guardrail_max_cases=_int_env("MLFLOW_GUARDRAIL_MAX_CASES", 200),
         mlflow_guardrail_max_judge_calls=_int_env(
             "MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS",
-            96,
+            200,
         ),
         mlflow_guardrail_suite_timeout_seconds=_int_env(
             "MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS",

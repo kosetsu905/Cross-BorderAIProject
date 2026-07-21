@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -69,6 +71,32 @@ def test_fixed_dataset_shape_language_split_and_dual_labels() -> None:
     )
     assert {case.workflow_type for case in cases} == {"support", "content"}
     assert {case.stage for case in cases} == {"input", "output", "action", "provenance"}
+
+
+def test_calibration_dataset_is_balanced_and_separate_from_release_suite() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "mlflow"
+        / "guardrail_calibration_dataset.json"
+    )
+    cases = load_guardrail_cases(path, expected_count=600)
+
+    assert len(cases) == 600
+    assert Counter(case.tags["policy"] for case in cases) == {
+        "secrets_present": 100,
+        "detect_pii": 100,
+        "prompt_injection": 100,
+        "forbidden_terms": 100,
+        "toxic_language": 100,
+        "provenance_llm": 100,
+    }
+    assert Counter(case.tags["language"] for case in cases) == {"en": 300, "zh": 300}
+    assert Counter(case.tags["polarity"] for case in cases) == {
+        "positive": 300,
+        "hard_negative": 300,
+    }
+    assert guardrail_coverage_report(cases).ratio == 1.0
 
 
 def test_dataset_covers_every_configured_guardrail_and_action() -> None:
@@ -140,6 +168,10 @@ def test_metrics_and_balanced_gates_pass_for_ideal_policy_results() -> None:
     assert metrics.desired_policy_pass_rate == 1.0
     assert metrics.macro_f1 == 1.0
     assert metrics.config_coverage == 1.0
+    assert metrics.pii_detection_recall == 1.0
+    assert metrics.pii_conditional_masking_recall == 1.0
+    assert metrics.toxicity_recall == 1.0
+    assert metrics.qwen_degraded_rate == 0.0
     assert metrics.current_contract_pass_rate < 1.0
     assert evaluate_guardrail_gates(metrics, judge_metrics=judge_metrics).passed
 

@@ -533,7 +533,7 @@ MLFLOW_SUPPORT_EVALUATION_DATASET_NAME=support-governance
 MLFLOW_GUARDRAIL_EXPERIMENT_NAME=cross-border-ai-guardrails
 MLFLOW_GUARDRAIL_EVALUATION_DATASET_NAME=guardrail-regression-v1
 MLFLOW_GUARDRAIL_MAX_CASES=200
-MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS=96
+MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS=200
 MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS=1800
 MLFLOW_GUARDRAIL_JUDGE_MODEL=openrouter:/qwen/qwen3.7-plus
 MLFLOW_AUTOMATIC_EVALUATION_ENABLED=false
@@ -597,13 +597,20 @@ docker compose -f docker-compose.monitoring.yml up -d mlflow
 docker compose exec fastapi python scripts/bootstrap_mlflow_guardrail_evaluation.py
 ```
 
-Run all deterministic cases plus at most 96 explicitly invoked Qwen3.7 Plus judges:
+Run all deterministic cases plus at most 200 explicitly invoked Qwen3.7 Plus judges:
 
 ```powershell
 docker compose run --rm --no-deps fastapi python scripts/evaluate_guardrails.py
 ```
 
 Use `--skip-judges` for a local deterministic-only diagnostic run and `--report-only` to collect results without failing on quality thresholds. Exit code `0` means the gate passed, `1` means quality thresholds failed, and `2` means evaluator/MLflow/provider infrastructure failed. The redacted report is written to `artifacts/guardrail_evaluation/latest.json`. Full design, metrics, thresholds, and CI settings are documented in `docs/guardrail-evaluation.md`.
+
+The production semantic guardrail uses the `openrouter_qwen37` LLM profile with an eight-second total timeout. Raw Secrets/PII are detected locally and recursively redacted before semantic review. Generate and run the separate 600-case calibration corpus without modifying the frozen release labels:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_guardrail_calibration_dataset.py
+.\.venv\Scripts\python.exe scripts\calibrate_guardrails.py
+```
 
 ## Common Test Commands
 

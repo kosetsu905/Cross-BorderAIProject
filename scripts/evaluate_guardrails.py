@@ -44,6 +44,7 @@ def main() -> None:
     )
     parser.add_argument("--tracking-uri", default=None)
     parser.add_argument("--dataset-path", type=Path, default=None)
+    parser.add_argument("--expected-case-count", type=int, default=None)
     parser.add_argument("--judge-model", default=None)
     parser.add_argument("--max-cases", type=int, default=None)
     parser.add_argument("--max-judge-calls", type=int, default=None)
@@ -118,7 +119,15 @@ def _run(args: argparse.Namespace) -> int:
         args.dataset_path
         or BASE_DIR / "config" / "mlflow" / "guardrail_evaluation_dataset.json"
     )
-    all_cases = load_guardrail_cases(dataset_path)
+    expected_case_count = (
+        args.expected_case_count
+        if args.expected_case_count is not None
+        else (200 if args.dataset_path is None else None)
+    )
+    all_cases = load_guardrail_cases(
+        dataset_path,
+        expected_count=expected_case_count,
+    )
     if args.case_id and (args.start_case or args.end_case):
         raise ValueError("--case-id cannot be combined with --start-case or --end-case")
     if args.case_id:
@@ -253,7 +262,14 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _flat_metrics(payload: dict[str, Any], judge_metrics: Any) -> dict[str, float]:
-    excluded = {"case_count", "dataset_digest", "policy_metrics"}
+    excluded = {
+        "case_count",
+        "dataset_digest",
+        "detector_versions",
+        "policy_false_positive_rates",
+        "policy_metrics",
+        "slice_metrics",
+    }
     metrics = {
         f"guardrail.{key}": float(value)
         for key, value in payload.items()
@@ -262,6 +278,16 @@ def _flat_metrics(payload: dict[str, Any], judge_metrics: Any) -> dict[str, floa
     for policy_id, values in payload["policy_metrics"].items():
         for key in ("precision", "recall", "f1"):
             metrics[f"guardrail.policy.{policy_id}.{key}"] = float(values[key])
+        metrics[f"guardrail.policy.{policy_id}.false_positive_rate"] = float(
+            payload["policy_false_positive_rates"][policy_id]
+        )
+    for slice_name, policy_values in payload["slice_metrics"].items():
+        safe_slice = slice_name.replace(":", ".")
+        for policy_id, values in policy_values.items():
+            for key in ("precision", "recall", "f1"):
+                metrics[f"guardrail.slice.{safe_slice}.{policy_id}.{key}"] = float(
+                    values[key]
+                )
     if judge_metrics is not None:
         metrics["guardrail.judge.pass_rate"] = judge_metrics.pass_rate
         metrics["guardrail.judge.error_rate"] = judge_metrics.error_rate

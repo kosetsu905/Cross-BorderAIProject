@@ -116,6 +116,8 @@ class LLMConfigTests(unittest.TestCase):
             "SUPPORT_LLM_PROFILE": "openai_gpt4o_mini",
             "WORKFLOW_GUARDRAILS_MODEL": "openrouter_gpt4o_mini",
             "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_MODEL": "openai_gpt4o_mini",
+            "WORKFLOW_GUARDRAILS_SEMANTIC_MODEL": "openrouter_gpt4o_mini",
+            "WORKFLOW_GUARDRAILS_SEMANTIC_TIMEOUT_SECONDS": "8",
             "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_TIMEOUT_SECONDS": "5",
             "WORKFLOW_GUARDRAILS_PROMPT_INJECTION_CACHE_TTL_SECONDS": "43200",
             "WORKFLOW_GUARDRAILS_NATIVE_TRACING_ENABLED": "false",
@@ -130,6 +132,10 @@ class LLMConfigTests(unittest.TestCase):
         self.assertEqual(
             config.workflow_guardrails_prompt_injection_model, "openai_gpt4o_mini"
         )
+        self.assertEqual(
+            config.workflow_guardrails_semantic_model, "openrouter_gpt4o_mini"
+        )
+        self.assertEqual(config.workflow_guardrails_semantic_timeout_seconds, 8.0)
         self.assertEqual(
             config.workflow_guardrails_prompt_injection_timeout_seconds, 5.0
         )

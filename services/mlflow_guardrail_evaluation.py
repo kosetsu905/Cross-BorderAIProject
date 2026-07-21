@@ -253,6 +253,20 @@ def log_guardrail_suite_summary(
     client.set_tag(run_id, "guardrail.dataset", evaluation_config.dataset_name)
     client.set_tag(run_id, "guardrail.judge_model", evaluation_config.judge_model)
     client.set_tag(run_id, "guardrail.raw_payloads_uploaded", "false")
+    report_metrics = report.get("metrics") if isinstance(report, dict) else None
+    if isinstance(report_metrics, dict):
+        client.set_tag(
+            run_id,
+            "guardrail.detector_versions",
+            ",".join(
+                str(item) for item in report_metrics.get("detector_versions") or []
+            ),
+        )
+        client.set_tag(
+            run_id,
+            "guardrail.qwen_degraded_rate",
+            str(report_metrics.get("qwen_degraded_rate", 0.0)),
+        )
     with mlflow.start_run(run_id=run_id):
         mlflow.log_dict(report, "guardrail_evaluation_report.json")
 

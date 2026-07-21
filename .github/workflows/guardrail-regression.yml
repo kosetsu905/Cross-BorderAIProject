@@ -24,11 +24,13 @@ jobs:
 
       - name: Validate formatting and lint
         run: |
-          ruff format --check runtime_config.py services/guardrail_evaluation.py services/mlflow_guardrail_evaluation.py scripts/bootstrap_mlflow_guardrail_evaluation.py scripts/evaluate_guardrails.py tests/test_guardrail_evaluation.py
-          ruff check runtime_config.py services/guardrail_evaluation.py services/mlflow_guardrail_evaluation.py scripts/bootstrap_mlflow_guardrail_evaluation.py scripts/evaluate_guardrails.py tests/test_guardrail_evaluation.py
+          ruff format --check runtime_config.py services/workflow_guardrails.py services/guardrail_evaluation.py services/mlflow_guardrail_evaluation.py scripts/bootstrap_mlflow_guardrail_evaluation.py scripts/evaluate_guardrails.py scripts/calibrate_guardrails.py scripts/generate_guardrail_calibration_dataset.py tests/test_workflow_guardrails.py tests/test_guardrail_evaluation.py
+          ruff check runtime_config.py services/workflow_guardrails.py services/guardrail_evaluation.py services/mlflow_guardrail_evaluation.py scripts/bootstrap_mlflow_guardrail_evaluation.py scripts/evaluate_guardrails.py scripts/calibrate_guardrails.py scripts/generate_guardrail_calibration_dataset.py tests/test_workflow_guardrails.py tests/test_guardrail_evaluation.py
 
       - name: Run guardrail harness tests
-        run: pytest tests/test_guardrail_evaluation.py tests/test_llm_config.py tests/test_mlflow_governance.py -q
+        run: |
+          pytest tests/test_workflow_guardrails.py tests/test_guardrail_evaluation.py tests/test_llm_config.py tests/test_mlflow_governance.py -q
+          python scripts/calibrate_guardrails.py
 
   live-guardrail-evaluation:
     needs: dataset-and-unit-tests
@@ -67,6 +69,7 @@ jobs:
       - name: Run all 200 cases and bounded Qwen judges
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_GUARDRAIL_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           test -n "$OPENROUTER_API_KEY"
@@ -79,9 +82,13 @@ jobs:
             -e MLFLOW_GUARDRAIL_JUDGE_MODEL=openrouter:/qwen/qwen3.7-plus \
             -e MLFLOW_GENAI_JUDGE_DEFAULT_MODEL=openrouter:/qwen/qwen3.7-plus \
             -e MLFLOW_GUARDRAIL_MAX_CASES=200 \
-            -e MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS=96 \
+            -e MLFLOW_GUARDRAIL_MAX_JUDGE_CALLS=200 \
             -e MLFLOW_GUARDRAIL_SUITE_TIMEOUT_SECONDS=1800 \
+            -e WORKFLOW_GUARDRAILS_SEMANTIC_MODEL=openrouter_qwen37 \
+            -e WORKFLOW_GUARDRAILS_SEMANTIC_TIMEOUT_SECONDS=8 \
+            -e 'LLM_PROFILES_JSON={"openai_gpt4o_mini":{"llm_provider":"openai","llm_model_name":"gpt-4o-mini","llm_api_key_env":"OPENAI_API_KEY"},"openrouter_qwen37":{"llm_provider":"openrouter","llm_model_name":"qwen/qwen3.7-plus","llm_base_url":"https://openrouter.ai/api/v1","llm_api_key_env":"OPENROUTER_GUARDRAIL_API_KEY","llm_disable_reasoning":true}}' \
             -e OPENROUTER_API_KEY \
+            -e OPENROUTER_GUARDRAIL_API_KEY \
             -e OPENAI_API_KEY \
             -v "$PWD/artifacts:/app/artifacts" \
             cross-border-ai-guardrail-evaluator:ci \
